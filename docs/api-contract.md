@@ -99,7 +99,7 @@ Statuts utilisés pour classer : 400 validation, 401 authentification, 403 permi
 ## Ajustements assumés
 
 - Les créations sont spécifiées en `201`. Un `200` avec le même JSON est accepté, car le succès se juge sur le schéma, pas sur un statut voisin.
-- Deadline totale : 40 secondes par appel, 90 secondes pour `GET /v1/repositories`, parce que le contrat officiel prévient que cet appel peut durer des dizaines de secondes. `cursor_wait_run` enchaîne des lectures dans une échéance d'au plus 60 secondes. `cursor_read_run_events` borne son attente à 50 secondes.
+- Deadline totale : 40 secondes par appel, 90 secondes pour `POST /v1/agents` et `POST /v1/agents/{id}/runs` (une création réelle a dépassé 40 secondes avant de réussir), 90 secondes pour `GET /v1/repositories`, parce que le contrat officiel prévient que cet appel peut durer des dizaines de secondes. `cursor_wait_run` enchaîne des lectures dans une échéance d'au plus 60 secondes. `cursor_read_run_events` borne son attente à 50 secondes.
 - `IDLE` n'est pas dans l'enum OpenAPI de l'agent, mais la page endpoints le définit. Il n'est pas rejeté.
 - Le flux SSE est lu une fois, sans reconnexion interne. `410 stream_expired` devient `STREAM_EXPIRED`.
 - Les artefacts, l'archivage, le désarchivage et la suppression sont exposés. `prUrl`, les images, `mcpServers`, `customSubagents` et `POST /v1/sub-tokens` restent hors de ce MCP.

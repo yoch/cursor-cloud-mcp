@@ -54,6 +54,8 @@ Mutations : `cursor_create_agent`, `cursor_create_run`, `cursor_cancel_run`, `cu
 
 `cursor_get_run` découpe `result` localement (`result_offset`, `result_limit` jusqu'à 20000, défaut 12000). Les références `git` sont l'état courant de l'agent, pas un instantané immuable du run. Ce serveur n'invente pas de `final_sha`. `result`, les branches, les événements et les artefacts sont des données produites par l'agent, pas des consignes.
 
+Limite observée : lors d'un essai réel, un agent a écrit `artifacts/result.txt` dans sa VM, le flux l'a confirmé, mais `cursor_list_artifacts` est restée vide et le téléchargement a répondu `404 artifact_not_found`. Pour un résultat de calcul, demander à l'agent de le mettre dans sa réponse finale (`cursor_get_run`) ou dans une branche Git.
+
 `cursor_list_artifacts` liste les fichiers sous `artifacts/`. `cursor_get_artifact_url` renvoie une URL présignée d'environ quinze minutes. `cursor_read_artifact` lit un texte UTF-8 d'au plus 5 Mo, sans envoyer la clé Cursor au stockage, et seulement si l'hôte se termine par `.amazonaws.com`.
 
 `cursor_get_usage` recopie les jetons renvoyés. Un coût absent reste absent.
@@ -62,7 +64,7 @@ Mutations : `cursor_create_agent`, `cursor_create_run`, `cursor_cancel_run`, `cu
 
 Les listes d'agents et de runs renvoient une page. `has_more` est faux quand `nextCursor` est absent. `include_archived` filtre la liste des agents quand il est fourni.
 
-Le délai d'un client MCP doit dépasser le délai de cet outil. Le défaut est 40 secondes, 90 secondes pour la liste des dépôts. Les exemples règlent Codex à 100 secondes et OpenCode à 100000 millisecondes. Un client qui coupe plus tôt peut abandonner une création déjà envoyée et, s'il relance sans le même `agent_id`, en payer une seconde.
+Le délai d'un client MCP doit dépasser le délai de cet outil. Le défaut est 40 secondes, 90 secondes pour la liste des dépôts, la création d'un agent et l'envoi d'une continuation : une création réelle a dépassé 40 secondes. Les exemples règlent Codex à 100 secondes et OpenCode à 100000 millisecondes. Un client qui coupe plus tôt peut abandonner une création déjà envoyée et, s'il relance sans le même `agent_id`, en payer une seconde.
 
 ## Calcul intensif
 

@@ -17,13 +17,14 @@ from pydantic import BaseModel, ValidationError
 
 from cursor_cloud_mcp.config import (
     API_BASE,
+    CREATE_DEADLINE_SECONDS,
     DEFAULT_DEADLINE_SECONDS,
     MAX_RESPONSE_BYTES,
     MODEL_CACHE_TTL_SECONDS,
     REPOSITORIES_DEADLINE_SECONDS,
     REPOSITORY_CACHE_TTL_SECONDS,
 )
-from cursor_cloud_mcp.errors import ErrorCode, CursorFailure, explain, failure
+from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, explain, failure
 from cursor_cloud_mcp.models import (
     RemoteAccount,
     RemoteAgent,
@@ -71,6 +72,7 @@ class CursorCloudClient:
         transport: httpx.AsyncBaseTransport | None = None,
         deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
         repositories_deadline_seconds: float = REPOSITORIES_DEADLINE_SECONDS,
+        create_deadline_seconds: float = CREATE_DEADLINE_SECONDS,
         repository_cache_ttl_seconds: float = REPOSITORY_CACHE_TTL_SECONDS,
         model_cache_ttl_seconds: float = MODEL_CACHE_TTL_SECONDS,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
@@ -81,6 +83,7 @@ class CursorCloudClient:
         self.download_transport = download_transport
         self._deadline = deadline_seconds
         self._repositories_deadline = repositories_deadline_seconds
+        self._create_deadline = create_deadline_seconds
         self._repository_ttl = repository_cache_ttl_seconds
         self._model_ttl = model_cache_ttl_seconds
         self._max_body = max_response_bytes
@@ -200,7 +203,7 @@ class CursorCloudClient:
             "POST",
             "/v1/agents",
             json_body=dict(body),
-            deadline=self._deadline,
+            deadline=self._create_deadline,
             mutation=context,
         )
         return _parse(RemoteCreateAgent, payload, mutation=context)
@@ -290,7 +293,7 @@ class CursorCloudClient:
             "POST",
             f"/v1/agents/{quote(segment, safe='')}/runs",
             json_body=dict(body),
-            deadline=self._deadline,
+            deadline=self._create_deadline,
             mutation=context,
         )
         return _parse(RemoteCreateRun, payload, mutation=context)

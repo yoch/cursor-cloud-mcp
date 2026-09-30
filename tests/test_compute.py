@@ -1,5 +1,6 @@
 """Catalogue, sessions de calcul, flux, artefacts et garde-fous de suppression."""
 
+import asyncio
 import json
 import logging
 
@@ -9,9 +10,18 @@ from mcp import Client
 
 from cursor_cloud_mcp.client import CursorCloudClient
 from cursor_cloud_mcp.config import Settings, load_settings
-from cursor_cloud_mcp.server import _RedactFilter, _configure_logging, build_server
+from cursor_cloud_mcp.errors import CursorFailure, ErrorCode
+from cursor_cloud_mcp.server import _configure_logging, _RedactFilter, build_server
 from cursor_cloud_mcp.stream import SseParser
-from tests.test_tools import Router, _agent, _data, _error_payload, _run, _session, _settings
+from tests.test_tools import (
+    Router,
+    _agent,
+    _data,
+    _error_payload,
+    _run,
+    _session,
+    _settings,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -404,6 +414,30 @@ async def test_cancel_rejects_a_different_returned_id() -> None:
     finally:
         await client.__aexit__(None, None, None)
     assert _error_payload(refused)["code"] == "INCOMPATIBLE_RESPONSE"
+
+
+async def test_creation_has_a_longer_deadline_than_reads() -> None:
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.6)
+        if request.method == "POST":
+            return _created(_AGENT)
+        return httpx.Response(200, json={"apiKeyName": "demo", "createdAt": "2026-09-30T00:00:00Z"})
+
+    client = CursorCloudClient(
+        api_key="test-secret-key",
+        transport=httpx.MockTransport(slow),
+        deadline_seconds=0.3,
+        create_deadline_seconds=3,
+    )
+    await client.open()
+    try:
+        created = await client.create_agent({"prompt": {"text": "x"}}, agent_id=_AGENT)
+        with pytest.raises(CursorFailure) as caught:
+            await client.get_account()
+    finally:
+        await client.aclose()
+    assert created.agent.id == _AGENT
+    assert caught.value.body.code is ErrorCode.TIMEOUT
 
 
 async def test_rate_limit_without_retry_after_waits_once() -> None:

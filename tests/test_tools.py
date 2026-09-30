@@ -270,9 +270,8 @@ async def test_read_tools_map_the_contract() -> None:
 
 async def test_unknown_status_and_absent_result_are_not_success() -> None:
     def responder(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/runs/" + _RUN):
-            if request.url.path.count("/") == 5:
-                return httpx.Response(200, json=_run(status="PAUSED", result=None))
+        if request.url.path.endswith("/runs/" + _RUN) and request.url.path.count("/") == 5:
+            return httpx.Response(200, json=_run(status="PAUSED", result=None))
         if request.url.path == f"/v1/agents/{_AGENT}":
             return httpx.Response(200, json=_agent(status="MYSTERY"))
         raise AssertionError(request.url.path)

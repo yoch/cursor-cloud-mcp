@@ -1,7 +1,6 @@
 """Client HTTP sans aucun appel réseau réel."""
 
 import asyncio
-import json
 
 import httpx
 import pytest

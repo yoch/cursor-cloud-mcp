@@ -6,10 +6,14 @@ from dataclasses import dataclass
 
 import httpx
 
-from cursor_cloud_mcp.client import CursorCloudClient, read_bounded
-from cursor_cloud_mcp.config import EVENT_TEXT_MAX_CHARS, RESULT_DEFAULT_LIMIT, STREAM_MAX_BYTES
+from cursor_cloud_mcp.client import CursorCloudClient, ResponseTooLarge, read_bounded
+from cursor_cloud_mcp.config import (
+    EVENT_TEXT_MAX_CHARS,
+    RESULT_DEFAULT_LIMIT,
+    STREAM_MAX_BYTES,
+)
 from cursor_cloud_mcp.errors import ErrorCode, failure
-from cursor_cloud_mcp.models import RunEventView, RunEventsView, WaitRunView
+from cursor_cloud_mcp.models import RunEventsView, RunEventView, WaitRunView
 from cursor_cloud_mcp.present import run_view
 from cursor_cloud_mcp.validation import require_event_id, require_segment
 
@@ -48,8 +52,7 @@ class SseParser:
             if line.startswith(":"):
                 continue
             field, _, value = line.partition(":")
-            if value.startswith(" "):
-                value = value[1:]
+            value = value.removeprefix(" ")
             if field == "id":
                 self._event_id = value
             elif field == "event":
@@ -277,5 +280,5 @@ def _retention(response: httpx.Response) -> int | None:
 async def _read_error_body(response: httpx.Response) -> bytes:
     try:
         return await read_bounded(response, 64_000)
-    except Exception:
+    except (httpx.HTTPError, ResponseTooLarge):
         return b""

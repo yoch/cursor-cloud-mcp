@@ -4,7 +4,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from cursor_cloud_mcp.config import NAME_MAX_CHARS, PROMPT_MAX_CHARS, RESULT_DEFAULT_LIMIT, RESULT_MAX_LIMIT
+from cursor_cloud_mcp.config import (
+    NAME_MAX_CHARS,
+    PROMPT_MAX_CHARS,
+    RESULT_DEFAULT_LIMIT,
+    RESULT_MAX_LIMIT,
+)
 
 
 class ModelParam(BaseModel):

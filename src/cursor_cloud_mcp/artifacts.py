@@ -7,7 +7,12 @@ import httpx
 from cursor_cloud_mcp.client import CursorCloudClient, ResponseTooLarge, read_bounded
 from cursor_cloud_mcp.config import ARTIFACT_MAX_BYTES, DEFAULT_DEADLINE_SECONDS
 from cursor_cloud_mcp.errors import ErrorCode, failure
-from cursor_cloud_mcp.models import ArtifactItemView, ArtifactListView, ArtifactTextView, ArtifactUrlView
+from cursor_cloud_mcp.models import (
+    ArtifactItemView,
+    ArtifactListView,
+    ArtifactTextView,
+    ArtifactUrlView,
+)
 from cursor_cloud_mcp.slicing import slice_text
 from cursor_cloud_mcp.validation import require_artifact_path
 

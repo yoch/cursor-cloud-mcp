@@ -233,9 +233,9 @@ class FixtureTransport(httpx.AsyncBaseTransport):
         if last == "expired":
             return _error(410, "stream_expired", "Flux expiré.")
         lines = [
-            'id: 1\nevent: status\ndata: {"runId":"%s","status":"RUNNING"}\n\n' % run_id,
+            f'id: 1\nevent: status\ndata: {{"runId":"{run_id}","status":"RUNNING"}}\n\n',
             'id: 2\nevent: assistant\ndata: {"text":"calcul fictif"}\n\n',
-            'id: 3\nevent: result\ndata: {"runId":"%s","status":"FINISHED","text":"terminé"}\n\n' % run_id,
+            f'id: 3\nevent: result\ndata: {{"runId":"{run_id}","status":"FINISHED","text":"terminé"}}\n\n',
             "id: 4\nevent: done\ndata: {}\n\n",
         ]
         if last in {"1", "2", "3", "4"}:

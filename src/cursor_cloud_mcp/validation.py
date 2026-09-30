@@ -72,8 +72,7 @@ def normalize_repository(url: str) -> str:
             "repository ne doit contenir ni identifiants, ni requête, ni fragment.",
         )
     path = parts.path.strip("/")
-    if path.endswith(".git"):
-        path = path[: -len(".git")]
+    path = path.removesuffix(".git")
     pieces = path.split("/")
     if (
         len(pieces) != 2

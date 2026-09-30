@@ -1,7 +1,13 @@
 """Résolution du modèle et du niveau de réflexion à partir du catalogue Cursor."""
 
 from cursor_cloud_mcp.errors import ErrorCode, failure
-from cursor_cloud_mcp.models import ModelParam, ReasoningParamView, RemoteModel, RemoteModelList, RemoteModelParameter
+from cursor_cloud_mcp.models import (
+    ModelParam,
+    ReasoningParamView,
+    RemoteModel,
+    RemoteModelList,
+    RemoteModelParameter,
+)
 
 _REASONING_IDS = ("effort", "reasoning_effort", "reasoning")
 
