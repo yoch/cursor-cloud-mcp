@@ -1,9 +1,11 @@
 """Client REST Cursor. Les POST ne sont jamais rejoués."""
 
 import asyncio
+import json
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -17,6 +19,7 @@ from cursor_cloud_mcp.config import (
     API_BASE,
     DEFAULT_DEADLINE_SECONDS,
     MAX_RESPONSE_BYTES,
+    MODEL_CACHE_TTL_SECONDS,
     REPOSITORIES_DEADLINE_SECONDS,
     REPOSITORY_CACHE_TTL_SECONDS,
 )
@@ -25,6 +28,8 @@ from cursor_cloud_mcp.models import (
     RemoteAccount,
     RemoteAgent,
     RemoteAgentPage,
+    RemoteArtifactDownload,
+    RemoteArtifactList,
     RemoteCreateAgent,
     RemoteCreateRun,
     RemoteId,
@@ -49,6 +54,11 @@ class MutationContext:
     agent_id: str | None = None
     run_id: str | None = None
     previous_latest_run_id: str | None = None
+    lookup_name: str | None = None
+
+
+class ResponseTooLarge(Exception):
+    """Le corps dépasse la limite lue en flux."""
 
 
 class CursorCloudClient:
@@ -62,18 +72,25 @@ class CursorCloudClient:
         deadline_seconds: float = DEFAULT_DEADLINE_SECONDS,
         repositories_deadline_seconds: float = REPOSITORIES_DEADLINE_SECONDS,
         repository_cache_ttl_seconds: float = REPOSITORY_CACHE_TTL_SECONDS,
+        model_cache_ttl_seconds: float = MODEL_CACHE_TTL_SECONDS,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
+        download_transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._api_key = api_key
         self._transport = transport
+        self.download_transport = download_transport
         self._deadline = deadline_seconds
         self._repositories_deadline = repositories_deadline_seconds
         self._repository_ttl = repository_cache_ttl_seconds
+        self._model_ttl = model_cache_ttl_seconds
         self._max_body = max_response_bytes
         self._http: httpx.AsyncClient | None = None
         self._repo_lock = asyncio.Lock()
         self._repo_cache: tuple[float, RemoteRepositoryList] | None = None
         self._repo_task: asyncio.Task[RemoteRepositoryList] | None = None
+        self._model_lock = asyncio.Lock()
+        self._model_cache: tuple[float, RemoteModelList] | None = None
+        self._model_task: asyncio.Task[RemoteModelList] | None = None
 
     async def open(self) -> None:
         headers = {"Accept": "application/json"}
@@ -87,6 +104,10 @@ class CursorCloudClient:
             timeout=httpx.Timeout(self._deadline),
         )
 
+    @property
+    def deadline_seconds(self) -> float:
+        return self._deadline
+
     async def aclose(self) -> None:
         if self._http is not None:
             await self._http.aclose()
@@ -97,6 +118,28 @@ class CursorCloudClient:
 
     async def list_models(self) -> RemoteModelList:
         return await self._get_model("/v1/models", RemoteModelList, deadline=self._deadline)
+
+    async def cached_models(self) -> tuple[RemoteModelList, bool]:
+        async with self._model_lock:
+            cached = self._model_cache
+            now = time.monotonic()
+            if cached is not None and now - cached[0] < self._model_ttl:
+                return cached[1], True
+            if self._model_task is None or self._model_task.done():
+                self._model_task = asyncio.create_task(self.list_models())
+            task = self._model_task
+        try:
+            payload = await task
+        except Exception:
+            async with self._model_lock:
+                if self._model_task is task:
+                    self._model_task = None
+            raise
+        async with self._model_lock:
+            if self._model_task is task:
+                self._model_cache = (time.monotonic(), payload)
+                self._model_task = None
+        return payload, False
 
     async def list_repositories(self) -> tuple[RemoteRepositoryList, bool]:
         async with self._repo_lock:
@@ -120,11 +163,20 @@ class CursorCloudClient:
                 self._repo_task = None
         return payload, False
 
-    async def list_agents(self, *, limit: int | None, cursor: str | None) -> RemoteAgentPage:
+    async def list_agents(
+        self,
+        *,
+        limit: int | None,
+        cursor: str | None,
+        include_archived: bool | None = None,
+    ) -> RemoteAgentPage:
+        query = _page_query(limit, cursor)
+        if include_archived is not None:
+            query["includeArchived"] = "true" if include_archived else "false"
         return await self._get_model(
             "/v1/agents",
             RemoteAgentPage,
-            query=_page_query(limit, cursor),
+            query=query,
             deadline=self._deadline,
         )
 
@@ -136,8 +188,14 @@ class CursorCloudClient:
             deadline=self._deadline,
         )
 
-    async def create_agent(self, body: Mapping[str, object], *, agent_id: str) -> RemoteCreateAgent:
-        context = MutationContext(agent_id=agent_id)
+    async def create_agent(
+        self,
+        body: Mapping[str, object],
+        *,
+        agent_id: str | None,
+        lookup_name: str | None = None,
+    ) -> RemoteCreateAgent:
+        context = MutationContext(agent_id=agent_id, lookup_name=lookup_name)
         payload = await self._send(
             "POST",
             "/v1/agents",
@@ -162,13 +220,61 @@ class CursorCloudClient:
             deadline=self._deadline,
         )
 
-    async def get_run(self, agent_id: str, run_id: str) -> RemoteRun:
+    async def get_run(self, agent_id: str, run_id: str, *, deadline: float | None = None) -> RemoteRun:
         agent = require_segment(agent_id, label="agent_id")
         run = require_segment(run_id, label="run_id")
         return await self._get_model(
             f"/v1/agents/{quote(agent, safe='')}/runs/{quote(run, safe='')}",
             RemoteRun,
-            deadline=self._deadline,
+            deadline=self._deadline if deadline is None else deadline,
+        )
+
+    def run_stream_path(self, agent_id: str, run_id: str) -> str:
+        agent = require_segment(agent_id, label="agent_id")
+        run = require_segment(run_id, label="run_id")
+        return f"/v1/agents/{quote(agent, safe='')}/runs/{quote(run, safe='')}/stream"
+
+    @asynccontextmanager
+    async def stream_get(
+        self,
+        path: str,
+        *,
+        headers: Mapping[str, str] | None,
+        deadline: float,
+    ) -> AsyncIterator[httpx.Response]:
+        """GET en flux, sans retry. L'appelant ferme la réponse via ce contexte."""
+        if self._http is None:
+            raise failure(ErrorCode.CONFIGURATION_MISSING, "Le client HTTP n'est pas ouvert.")
+        request = self._http.build_request(
+            "GET",
+            path,
+            headers=dict(headers or {}),
+            timeout=httpx.Timeout(deadline),
+        )
+        started = time.perf_counter()
+        try:
+            response = await self._http.send(request, stream=True)
+        except httpx.TimeoutException:
+            raise failure(ErrorCode.TIMEOUT, explain(ErrorCode.TIMEOUT)) from None
+        except httpx.TransportError:
+            raise failure(ErrorCode.TIMEOUT, "Connexion interrompue pendant la lecture.") from None
+        request_id = _request_id(response.headers)
+        _log("GET", path, str(response.status_code), started, request_id)
+        try:
+            yield response
+        finally:
+            await response.aclose()
+
+    def error_from_response(self, response: httpx.Response, raw: bytes) -> CursorFailure:
+        return _status_from(
+            response.status_code,
+            response.headers,
+            raw,
+            mutation=None,
+            request_id=_request_id(response.headers),
+            retry_after=None,
+            blocked_by_deadline=False,
+            secret=self._api_key,
         )
 
     async def create_run(
@@ -201,6 +307,51 @@ class CursorCloudClient:
         )
         if payload is None:
             return RemoteId(id=None)
+        return _parse(RemoteId, payload, mutation=context)
+
+    async def list_artifacts(self, agent_id: str) -> RemoteArtifactList:
+        segment = require_segment(agent_id, label="agent_id")
+        return await self._get_model(
+            f"/v1/agents/{quote(segment, safe='')}/artifacts",
+            RemoteArtifactList,
+            deadline=self._deadline,
+        )
+
+    async def artifact_download(self, agent_id: str, path: str) -> RemoteArtifactDownload:
+        segment = require_segment(agent_id, label="agent_id")
+        return await self._get_model(
+            f"/v1/agents/{quote(segment, safe='')}/artifacts/download",
+            RemoteArtifactDownload,
+            query={"path": path},
+            deadline=self._deadline,
+        )
+
+    async def archive_agent(self, agent_id: str) -> RemoteId:
+        return await self._id_mutation(agent_id, "archive")
+
+    async def unarchive_agent(self, agent_id: str) -> RemoteId:
+        return await self._id_mutation(agent_id, "unarchive")
+
+    async def delete_agent(self, agent_id: str) -> RemoteId:
+        segment = require_segment(agent_id, label="agent_id")
+        context = MutationContext(agent_id=segment)
+        payload = await self._send(
+            "DELETE",
+            f"/v1/agents/{quote(segment, safe='')}",
+            deadline=self._deadline,
+            mutation=context,
+        )
+        return _parse(RemoteId, payload, mutation=context)
+
+    async def _id_mutation(self, agent_id: str, action: str) -> RemoteId:
+        segment = require_segment(agent_id, label="agent_id")
+        context = MutationContext(agent_id=segment)
+        payload = await self._send(
+            "POST",
+            f"/v1/agents/{quote(segment, safe='')}/{action}",
+            deadline=self._deadline,
+            mutation=context,
+        )
         return _parse(RemoteId, payload, mutation=context)
 
     async def get_usage(self, agent_id: str, *, run_id: str | None) -> RemoteUsage:
@@ -255,14 +406,15 @@ class CursorCloudClient:
                     if remaining <= 0:
                         raise TimeoutError
                     started = time.perf_counter()
+                    request = self._http.build_request(
+                        method,
+                        path,
+                        params=dict(query or {}),
+                        json=dict(json_body) if json_body is not None else None,
+                        timeout=httpx.Timeout(remaining),
+                    )
                     try:
-                        response = await self._http.request(
-                            method,
-                            path,
-                            params=dict(query or {}),
-                            json=dict(json_body) if json_body is not None else None,
-                            timeout=httpx.Timeout(remaining),
-                        )
+                        response = await self._http.send(request, stream=True)
                     except httpx.TimeoutException:
                         raise TimeoutError from None
                     except httpx.TransportError:
@@ -271,33 +423,54 @@ class CursorCloudClient:
                             attempt = 1
                             continue
                         raise _transport_failure(mutation) from None
-                    request_id = _request_id(response.headers)
-                    _log(method, path, str(response.status_code), started, request_id)
-                    if response.status_code in _REDIRECTS:
-                        raise _redirect_failure(response, request_id, mutation, self._api_key)
-                    if method == "GET" and attempt == 0 and _retryable(response.status_code):
-                        wait = _retry_after_seconds(response)
-                        remaining = deadline_at - loop.time()
-                        if wait is not None and wait > remaining:
-                            raise _status_failure(
-                                response,
-                                mutation=None,
+                    try:
+                        try:
+                            request_id = _request_id(response.headers)
+                            _log(method, path, str(response.status_code), started, request_id)
+                            if response.status_code in _REDIRECTS:
+                                raise _redirect_failure(response, request_id, mutation, self._api_key)
+                            if method == "GET" and attempt == 0 and _retryable(response.status_code):
+                                header_wait = _retry_after_seconds(response)
+                                wait = 1.0 if header_wait is None and response.status_code == 429 else header_wait
+                                if wait is None:
+                                    wait = 0.0
+                                remaining_now = deadline_at - loop.time()
+                                if wait > remaining_now:
+                                    raw = await read_bounded(response, self._max_body)
+                                    raise _status_from(
+                                        response.status_code,
+                                        response.headers,
+                                        raw,
+                                        mutation=None,
+                                        request_id=request_id,
+                                        retry_after=header_wait,
+                                        blocked_by_deadline=True,
+                                        secret=self._api_key,
+                                    )
+                                attempt = 1
+                                if wait:
+                                    await asyncio.sleep(wait)
+                                continue
+                            raw = await read_bounded(response, self._max_body)
+                            return _interpret_bytes(
+                                response.status_code,
+                                response.headers,
+                                raw,
+                                mutation=mutation,
                                 request_id=request_id,
-                                retry_after=wait,
-                                blocked_by_deadline=True,
                                 secret=self._api_key,
                             )
-                        if wait:
-                            await asyncio.sleep(wait)
-                        attempt = 1
-                        continue
-                    return _interpret(
-                        response,
-                        mutation=mutation,
-                        request_id=request_id,
-                        max_body=self._max_body,
-                        secret=self._api_key,
-                    )
+                        except ResponseTooLarge:
+                            raise _body_failure(
+                                mutation,
+                                _request_id(response.headers),
+                                response.status_code,
+                                "La réponse dépasse la limite locale.",
+                            ) from None
+                    except httpx.TimeoutException:
+                        raise TimeoutError from None
+                    finally:
+                        await response.aclose()
         except TimeoutError:
             raise _timeout_failure(mutation) from None
 
@@ -354,35 +527,49 @@ def _log(method: str, path: str, status: str, started: float, request_id: str | 
     )
 
 
-def _interpret(
-    response: httpx.Response,
+async def read_bounded(response: httpx.Response, limit: int) -> bytes:
+    """Lit le corps en flux et s'arrête au-delà de ``limit``."""
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        if not chunk:
+            continue
+        total += len(chunk)
+        if total > limit:
+            raise ResponseTooLarge
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _interpret_bytes(
+    status: int,
+    headers: httpx.Headers,
+    raw: bytes,
     *,
     mutation: MutationContext | None,
     request_id: str | None,
-    max_body: int,
     secret: str | None,
 ) -> object | None:
-    if response.status_code not in {200, 201}:
-        raise _status_failure(
-            response,
+    if status not in {200, 201}:
+        raise _status_from(
+            status,
+            headers,
+            raw,
             mutation=mutation,
             request_id=request_id,
             retry_after=None,
             blocked_by_deadline=False,
             secret=secret,
         )
-    raw = response.content
-    if len(raw) > max_body:
-        raise _body_failure(mutation, request_id, response.status_code, "La réponse dépasse la limite locale.")
     if not raw:
         return None
-    content_type = response.headers.get("content-type", "")
+    content_type = headers.get("content-type", "")
     if "html" in content_type.lower() or raw.lstrip().startswith(b"<"):
-        raise _body_failure(mutation, request_id, response.status_code, "La réponse est du HTML.")
+        raise _body_failure(mutation, request_id, status, "La réponse est du HTML.")
     try:
-        return response.json()
-    except ValueError:
-        raise _body_failure(mutation, request_id, response.status_code, "La réponse n'est pas du JSON.") from None
+        return json.loads(raw.decode())
+    except (ValueError, UnicodeError):
+        raise _body_failure(mutation, request_id, status, "La réponse n'est pas du JSON.") from None
 
 
 def _parse(model: type[_JSON], payload: object | None, *, mutation: MutationContext | None) -> _JSON:
@@ -396,7 +583,7 @@ def _parse(model: type[_JSON], payload: object | None, *, mutation: MutationCont
                 agent_id=mutation.agent_id,
                 run_id=mutation.run_id,
                 previous_latest_run_id=mutation.previous_latest_run_id,
-                recovery=_RECOVERY,
+                recovery=_recovery_for(mutation),
             ) from None
         raise failure(
             ErrorCode.INCOMPATIBLE_RESPONSE,
@@ -412,7 +599,7 @@ def _timeout_failure(mutation: MutationContext | None) -> CursorFailure:
             agent_id=mutation.agent_id,
             run_id=mutation.run_id,
             previous_latest_run_id=mutation.previous_latest_run_id,
-            recovery=_RECOVERY,
+            recovery=_recovery_for(mutation),
         )
     return failure(ErrorCode.TIMEOUT, explain(ErrorCode.TIMEOUT))
 
@@ -425,7 +612,7 @@ def _transport_failure(mutation: MutationContext | None) -> CursorFailure:
             agent_id=mutation.agent_id,
             run_id=mutation.run_id,
             previous_latest_run_id=mutation.previous_latest_run_id,
-            recovery=_RECOVERY,
+            recovery=_recovery_for(mutation),
         )
     return failure(ErrorCode.TIMEOUT, "Connexion interrompue pendant la lecture.")
 
@@ -443,7 +630,7 @@ def _body_failure(
             agent_id=mutation.agent_id,
             run_id=mutation.run_id,
             previous_latest_run_id=mutation.previous_latest_run_id,
-            recovery=_RECOVERY,
+            recovery=_recovery_for(mutation),
             http_status=status,
             request_id=request_id,
         )
@@ -480,7 +667,7 @@ def _redirect_failure(
             agent_id=mutation.agent_id,
             run_id=mutation.run_id,
             previous_latest_run_id=mutation.previous_latest_run_id,
-            recovery=_RECOVERY,
+            recovery=_recovery_for(mutation),
             http_status=response.status_code,
             request_id=request_id,
         )
@@ -492,8 +679,19 @@ def _redirect_failure(
     )
 
 
-def _status_failure(
-    response: httpx.Response,
+def _recovery_for(mutation: MutationContext | None) -> str:
+    if mutation is not None and mutation.agent_id is None and mutation.lookup_name:
+        return (
+            f"Chercher l'agent nommé {mutation.lookup_name} avec cursor_list_agents "
+            "avant toute nouvelle tentative."
+        )
+    return _RECOVERY
+
+
+def _status_from(
+    status: int,
+    headers: httpx.Headers,
+    raw: bytes,
     *,
     mutation: MutationContext | None,
     request_id: str | None,
@@ -501,9 +699,9 @@ def _status_failure(
     blocked_by_deadline: bool,
     secret: str | None,
 ) -> CursorFailure:
-    remote_code, remote_message = _remote_error(response)
+    remote_code, remote_message = _remote_error_bytes(headers, raw)
     remote_message = _clean(remote_message, secret)
-    code = _classify(response.status_code, remote_code, mutation=mutation is not None)
+    code = _classify(status, remote_code, mutation=mutation is not None)
     if code is ErrorCode.MUTATION_OUTCOME_UNKNOWN and mutation is not None:
         return failure(
             code,
@@ -511,8 +709,8 @@ def _status_failure(
             agent_id=mutation.agent_id,
             run_id=mutation.run_id,
             previous_latest_run_id=mutation.previous_latest_run_id,
-            recovery=_RECOVERY,
-            http_status=response.status_code,
+            recovery=_recovery_for(mutation),
+            http_status=status,
             remote_code=remote_code,
             request_id=request_id,
         )
@@ -529,6 +727,8 @@ def _status_failure(
         recovery = "Relire cet agent avant toute nouvelle création. Ne pas changer l'identifiant."
     if code is ErrorCode.AGENT_BUSY:
         recovery = "Attendre la fin du run ou l'annuler. Ne pas créer un autre agent."
+    if code is ErrorCode.STREAM_EXPIRED:
+        recovery = "Le flux n'est plus rejouable. Lire le résultat avec cursor_get_run."
     return failure(
         code,
         message,
@@ -536,7 +736,7 @@ def _status_failure(
         run_id=run_id,
         previous_latest_run_id=previous,
         recovery=recovery,
-        http_status=response.status_code,
+        http_status=status,
         remote_code=remote_code,
         request_id=request_id,
         retry_after_seconds=retry_after,
@@ -560,6 +760,8 @@ def _classify(status: int, remote_code: str | None, *, mutation: bool) -> ErrorC
         return ErrorCode.NOT_FOUND
     if status == 409:
         return ErrorCode.CONFLICT
+    if remote_code in {"stream_expired", "stream_unavailable"} or status == 410:
+        return ErrorCode.STREAM_EXPIRED
     if status == 400:
         return ErrorCode.VALIDATION
     if status >= 500 and mutation:
@@ -569,13 +771,13 @@ def _classify(status: int, remote_code: str | None, *, mutation: bool) -> ErrorC
     return ErrorCode.INCOMPATIBLE_RESPONSE
 
 
-def _remote_error(response: httpx.Response) -> tuple[str | None, str]:
-    content_type = response.headers.get("content-type", "")
-    if "html" in content_type.lower() or response.content.lstrip().startswith(b"<"):
+def _remote_error_bytes(headers: httpx.Headers, raw: bytes) -> tuple[str | None, str]:
+    content_type = headers.get("content-type", "")
+    if "html" in content_type.lower() or raw.lstrip().startswith(b"<"):
         return None, ""
     try:
-        payload = response.json()
-    except ValueError:
+        payload = json.loads(raw.decode()) if raw else None
+    except (ValueError, UnicodeError):
         return None, ""
     if not isinstance(payload, dict):
         return None, ""

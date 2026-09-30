@@ -11,6 +11,7 @@ from pathlib import Path
 
 from cursor_cloud_mcp.client import CursorCloudClient
 from cursor_cloud_mcp.errors import CursorFailure
+from cursor_cloud_mcp.stream import read_run_events
 
 
 def load_key(root: Path) -> None:
@@ -40,22 +41,57 @@ async def main() -> int:
     try:
         await _read("me", client.get_account, _account)
         await _read("models", client.list_models, _models)
-        await _read("agents", lambda: client.list_agents(limit=5, cursor=None), _agents)
+        agents = await _capture("agents", lambda: client.list_agents(limit=5, cursor=None), _agents)
         await _read("repositories", client.list_repositories, _repositories)
+        if agents is not None and agents.items:
+            agent = agents.items[0]
+            await _read(
+                "artifacts",
+                lambda: client.list_artifacts(agent.id),
+                lambda payload: f"count={len(payload.items)}",
+            )
+            if agent.latestRunId is not None:
+                await _stream(client, agent.id, agent.latestRunId)
     finally:
         await client.aclose()
     return 0
 
 
 async def _read(name: str, call, present) -> None:
+    payload = await _capture(name, call, present)
+    del payload
+
+
+async def _capture(name: str, call, present):
     try:
         payload = await call()
     except CursorFailure as exc:
         print(
             f"{name} FAIL code={exc.body.code.value} http={exc.body.http_status} remote={exc.body.remote_code}"
         )
-        return
+        return None
     print(f"{name} PASS {present(payload)}")
+    return payload
+
+
+async def _stream(client: CursorCloudClient, agent_id: str, run_id: str) -> None:
+    try:
+        view = await read_run_events(
+            client,
+            agent_id=agent_id,
+            run_id=run_id,
+            after_event_id=None,
+            max_wait_seconds=8,
+            max_events=20,
+            include_thinking=False,
+        )
+    except CursorFailure as exc:
+        print(
+            f"stream code={exc.body.code.value} http={exc.body.http_status} remote={exc.body.remote_code}"
+        )
+        return
+    kinds = ",".join(event.kind for event in view.events)
+    print(f"stream PASS events={len(view.events)} kinds={kinds} finished={view.finished}")
 
 
 def _account(payload: object) -> str:

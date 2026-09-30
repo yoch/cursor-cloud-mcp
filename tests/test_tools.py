@@ -1,4 +1,4 @@
-"""Les onze outils, leurs corps REST et leurs erreurs, sur un transport simulé."""
+"""Les outils, leurs corps REST et leurs erreurs, sur un transport simulé."""
 
 import json
 from collections.abc import Callable
@@ -126,17 +126,43 @@ async def test_listing_tools_does_not_call_cursor() -> None:
         "cursor_create_agent",
         "cursor_list_runs",
         "cursor_get_run",
+        "cursor_read_run_events",
+        "cursor_wait_run",
         "cursor_create_run",
         "cursor_cancel_run",
         "cursor_get_usage",
+        "cursor_list_artifacts",
+        "cursor_get_artifact_url",
+        "cursor_read_artifact",
+        "cursor_archive_agent",
+        "cursor_unarchive_agent",
+        "cursor_delete_agent",
     ]
     assert router.calls == []
-    reads = [tool for tool in listed.tools if tool.name.startswith("cursor_get") or tool.name.startswith("cursor_list")]
+    read_names = {
+        "cursor_get_account",
+        "cursor_list_models",
+        "cursor_list_repositories",
+        "cursor_list_agents",
+        "cursor_get_agent",
+        "cursor_list_runs",
+        "cursor_get_run",
+        "cursor_read_run_events",
+        "cursor_wait_run",
+        "cursor_get_usage",
+        "cursor_list_artifacts",
+        "cursor_get_artifact_url",
+        "cursor_read_artifact",
+    }
+    reads = [tool for tool in listed.tools if tool.name in read_names]
+    assert len(reads) == len(read_names)
     assert all(tool.annotations is not None and tool.annotations.read_only_hint is True for tool in reads)
     create = next(tool for tool in listed.tools if tool.name == "cursor_create_agent")
     cancel = next(tool for tool in listed.tools if tool.name == "cursor_cancel_run")
+    delete = next(tool for tool in listed.tools if tool.name == "cursor_delete_agent")
     assert create.annotations is not None and create.annotations.read_only_hint is False
     assert cancel.annotations is not None and cancel.annotations.destructive_hint is True
+    assert delete.annotations is not None and delete.annotations.destructive_hint is True
 
 
 async def test_missing_and_invalid_key_fail_without_network(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -304,6 +330,21 @@ async def test_result_window_reassembles_without_gap() -> None:
 
 async def test_create_agent_sends_exact_rest_fields() -> None:
     def responder(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/v1/models":
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "id": "composer-2",
+                            "displayName": "Composer 2",
+                            "parameters": [
+                                {"id": "fast", "values": [{"value": "true"}, {"value": "false"}]}
+                            ],
+                        }
+                    ]
+                },
+            )
         body = json.loads(request.content.decode())
         assert body["workOnCurrentBranch"] is False
         assert body["autoCreatePR"] is True
@@ -341,8 +382,8 @@ async def test_create_agent_sends_exact_rest_fields() -> None:
         await client.__aexit__(None, None, None)
     assert created["agent_id"] == _AGENT
     assert created["run_id"] == _RUN
-    assert router.calls[0][0] == "POST"
-    assert len(router.calls) == 1
+    assert [call[0] for call in router.calls] == ["GET", "POST"]
+    assert router.calls[1][1] == "/v1/agents"
 
 
 async def test_validation_rejects_sha_url_and_extra_fields_before_http() -> None:
@@ -415,17 +456,17 @@ async def test_create_conflict_returns_the_same_agent_id() -> None:
     assert len(router.calls) == 1
 
 
-async def test_continuation_refuses_incompatible_agents_and_returns_busy() -> None:
-    state = {"mode": "missing"}
+async def test_continuation_refuses_archived_or_current_branch_and_returns_busy() -> None:
+    state = {"mode": "archived"}
 
     def responder(request: httpx.Request) -> httpx.Response:
         if request.method == "GET":
-            if state["mode"] == "missing":
-                agent = _agent()
-                agent.pop("workOnCurrentBranch")
-                return httpx.Response(200, json=agent)
+            if state["mode"] == "archived":
+                return httpx.Response(200, json=_agent(status="ARCHIVED"))
             if state["mode"] == "branch":
                 return httpx.Response(200, json=_agent(workOnCurrentBranch=True))
+            if state["mode"] == "empty":
+                return httpx.Response(200, json=_agent(repos=[], latestRunId="run-previous"))
             if state["mode"] == "multi":
                 return httpx.Response(
                     200,
@@ -437,28 +478,34 @@ async def test_continuation_refuses_incompatible_agents_and_returns_busy() -> No
                     ),
                 )
             return httpx.Response(200, json=_agent(latestRunId="run-previous"))
-        return httpx.Response(409, json={"error": {"code": "agent_busy", "message": "occupé"}})
+        if state["mode"] == "busy":
+            return httpx.Response(409, json={"error": {"code": "agent_busy", "message": "occupé"}})
+        run = _run(status="CREATING", result=None)
+        return httpx.Response(201, json={"run": run})
 
     router = Router(responder)
     client, _router = await _session(router)
     try:
-        missing = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
+        archived = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
         state["mode"] = "branch"
         branch = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
+        state["mode"] = "empty"
+        empty = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
         state["mode"] = "multi"
         multi = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
         state["mode"] = "busy"
         busy = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
     finally:
         await client.__aexit__(None, None, None)
-    assert _error_payload(missing)["code"] == "CONTINUATION_REFUSED"
+    assert _error_payload(archived)["code"] == "CONTINUATION_REFUSED"
     assert _error_payload(branch)["code"] == "CONTINUATION_REFUSED"
-    assert _error_payload(multi)["code"] == "CONTINUATION_REFUSED"
+    assert _data(empty)["agent_id"] == _AGENT
+    assert _data(multi)["run_id"] == _RUN
     busy_payload = _error_payload(busy)
     assert busy_payload["code"] == "AGENT_BUSY"
     assert busy_payload["previous_latest_run_id"] == "run-previous"
     posts = [call for call in router.calls if call[0] == "POST"]
-    assert len(posts) == 1
+    assert len(posts) == 3
 
 
 async def test_cancel_distinguishes_accepted_and_confirmed() -> None:

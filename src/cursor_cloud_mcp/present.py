@@ -1,5 +1,6 @@
 """Projection des payloads Cursor vers les vues MCP. Les champs inconnus sont ignorés."""
 
+from cursor_cloud_mcp.catalog import reasoning_view
 from cursor_cloud_mcp.config import RESULT_MAX_LIMIT
 from cursor_cloud_mcp.errors import ErrorCode, failure
 from cursor_cloud_mcp.models import (
@@ -41,7 +42,10 @@ from cursor_cloud_mcp.models import (
 )
 from cursor_cloud_mcp.slicing import slice_text
 
-_NEXT_POLL = "Appeler cursor_get_run avec le run_id. Ne pas attendre dans cet outil."
+_NEXT_POLL = (
+    "Suivre avec cursor_read_run_events ou cursor_wait_run, puis cursor_get_run. "
+    "Ne pas créer un autre agent."
+)
 
 
 def account_view(remote: RemoteAccount) -> AccountView:
@@ -90,6 +94,7 @@ def model_list_view(remote: RemoteModelList) -> ModelListView:
                 aliases=model.aliases,
                 parameters=parameters,
                 variants=variants,
+                reasoning_param=reasoning_view(model),
             )
         )
     return ModelListView(items=items)
@@ -255,22 +260,15 @@ def usage_view(remote: RemoteUsage) -> UsageView:
 
 
 def ensure_continuation_allowed(agent: RemoteAgent) -> None:
-    repos = agent.repos
-    count = 0 if repos is None else len(repos)
-    if count != 1:
+    if agent.status == "ARCHIVED":
         raise failure(
             ErrorCode.CONTINUATION_REFUSED,
-            f"Continuation autorisée seulement pour un agent explicitement mono-dépôt. Dépôts trouvés : {count}.",
+            "L'agent est archivé. Le désarchiver avec cursor_unarchive_agent avant une continuation.",
         )
-    if agent.workOnCurrentBranch is None:
+    if agent.workOnCurrentBranch is True:
         raise failure(
             ErrorCode.CONTINUATION_REFUSED,
-            "workOnCurrentBranch est absent. La continuation est refusée tant que ce champ n'est pas explicitement false.",
-        )
-    if agent.workOnCurrentBranch is not False:
-        raise failure(
-            ErrorCode.CONTINUATION_REFUSED,
-            "workOnCurrentBranch n'est pas false. Ce MCP ne continue pas un agent qui pousse sur la branche de départ.",
+            "workOnCurrentBranch est true. Ce MCP ne continue pas un agent qui pousse sur la branche de départ.",
         )
 
 

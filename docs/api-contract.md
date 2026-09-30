@@ -1,6 +1,6 @@
 # Contrat API utilisé
 
-Consultation du 30 septembre 2026.
+Consultation du 30 septembre 2026, relue le 1er octobre 2026. L'empreinte du fichier brut est inchangée.
 
 Ce document ne recopie pas l'OpenAPI. Il fixe les champs que ce MCP envoie ou lit. En cas d'écart avec `mission_cursor_cloud_mcp.md`, le contrat officiel relu prime. Les écarts sont listés plus bas.
 
@@ -31,22 +31,36 @@ Authentification retenue : `Authorization: Bearer`. L'OpenAPI accepte aussi Basi
 | `GET /v1/agents/{id}/runs/{runId}` | 200 `Run` | `cursor_get_run` |
 | `POST /v1/agents/{id}/runs` | 201 `CreateRunResponse` | `cursor_create_run` |
 | `POST /v1/agents/{id}/runs/{runId}/cancel` | 200 `IdResponse` | `cursor_cancel_run` |
+| `GET /v1/agents/{id}/runs/{runId}/stream` | 200 `text/event-stream` | `cursor_read_run_events` |
 | `GET /v1/agents/{id}/usage` | 200 `AgentUsageResponse` | `cursor_get_usage` |
+| `GET /v1/agents/{id}/artifacts` | 200 `ListArtifactsResponse` | `cursor_list_artifacts` |
+| `GET /v1/agents/{id}/artifacts/download` | 200 `DownloadArtifactResponse` | `cursor_get_artifact_url`, `cursor_read_artifact` |
+| `POST /v1/agents/{id}/archive` | 200 `IdResponse` | `cursor_archive_agent` |
+| `POST /v1/agents/{id}/unarchive` | 200 `IdResponse` | `cursor_unarchive_agent` |
+| `DELETE /v1/agents/{id}` | 200 `IdResponse` | `cursor_delete_agent` |
 
 ## Champs envoyés
 
 `POST /v1/agents`, uniquement les clés fournies, jamais de `null` :
 
 - `prompt.text` : obligatoire, non vide
-- `repos` : un seul élément `{ "url", "startingRef" }`
+- `repos` : zéro à vingt éléments `{ "url", "startingRef" }`. Absent s'il n'y a pas de dépôt. `startingRef` est un SHA complet de 40 ou 64 caractères hexadécimaux
 - `workOnCurrentBranch` : toujours `false`
 - `autoCreatePR` : booléen, `false` si l'appelant ne demande pas `true`
-- `agentId` : `bc-` suivi d'un UUID, fourni ou généré une fois avant l'envoi
+- `agentId` : `bc-` suivi d'un UUID, fourni ou généré une fois avant l'envoi. Absent quand `envVars` est envoyé : l'API interdit les deux ensemble
 - `name`, `model` (`id` et éventuellement `params[{id,value}]`), `mode` (`agent` ou `plan`) : seulement s'ils sont fournis
+- `env` : `{ "type": "cloud" | "pool" | "machine", "name"? }` seulement s'il est fourni
+- `envVars` : objet de chaînes, au plus 50, seulement s'il est fourni. Les noms ne commencent pas par `CURSOR_`
+
+`model.params` est vérifié contre `GET /v1/models` avant l'envoi. `reasoning_level` est placé dans le premier paramètre présent parmi `effort`, `reasoning_effort` et `reasoning`. `thinking` devient `"true"` ou `"false"` seulement si ce paramètre existe.
 
 `POST /v1/agents/{id}/runs` : `prompt.text`, et `mode` seulement s'il est fourni.
 
-`GET /v1/agents` et `GET /v1/agents/{id}/runs` : `limit` (1 à 100) et `cursor` seulement s'ils sont fournis.
+`GET /v1/agents` et `GET /v1/agents/{id}/runs` : `limit` (1 à 100) et `cursor` seulement s'ils sont fournis. `GET /v1/agents` ajoute `includeArchived` seulement s'il est fourni.
+
+`GET /v1/agents/{id}/runs/{runId}/stream` : en-tête `Last-Event-ID` seulement s'il est fourni. La lecture s'arrête sur `done`, `result` ou `error`, à l'échéance locale, ou à 1 Mo. `heartbeat` et `interaction_update` ne sont pas renvoyés à l'appelant.
+
+`GET /v1/agents/{id}/artifacts/download` : `path`, relatif, préfixe `artifacts/`, sans `..`.
 
 `GET /v1/agents/{id}/usage` : `runId` seulement s'il est fourni.
 
@@ -59,8 +73,10 @@ Authentification retenue : `Authorization: Bearer`. L'OpenAPI accepte aussi Basi
 - Agent : les champs de la page, plus `repos`, `workOnCurrentBranch`, `autoCreatePR` lorsqu'ils sont présents. Une absence reste une absence.
 - Runs, page : `items[]` du schéma `Run` et `nextCursor` selon la même règle.
 - Run : `id`, `agentId`, `status`, `createdAt`, `updatedAt`, et s'ils sont présents `durationMs`, `result`, `git.branches[]` (`repoUrl`, `branch`, `prUrl`). `git` est l'état courant de l'agent, pas un instantané immuable du run. `repoUrl` est renvoyé sans schéma. Aucun `final_sha` n'est inventé.
-- Annulation : `id`.
+- Annulation, archivage, désarchivage, suppression : `id`. Il est comparé à l'identifiant demandé quand il est présent.
 - Usage : `totalUsage` et `runs[].usage` avec `inputTokens`, `outputTokens`, `cacheWriteTokens`, `cacheReadTokens`, `totalTokens`. `usageUuid` s'il est présent. Aucun coût : le schéma n'en contient pas.
+- Artefacts : `items[]` avec `path`, `sizeBytes`, `updatedAt`. Le téléchargement renvoie `url` et `expiresAt`. L'URL présignée n'est suivie que si elle est HTTPS et si l'hôte se termine par `.amazonaws.com`, sans redirection et sans en-tête `Authorization`.
+- Flux : événements `status`, `assistant`, `tool_call`, `result`, `error`, `done`, et `thinking` seulement sur demande. L'en-tête `X-Cursor-Stream-Retention-Seconds` est conservé s'il est présent.
 
 États de run connus : `CREATING`, `RUNNING`, `FINISHED`, `ERROR`, `CANCELLED`, `EXPIRED`. Les quatre derniers sont terminaux. Tout autre état est conservé et n'est pas un succès.
 
@@ -74,7 +90,7 @@ Corps documenté : `{ "error": { "code", "message", "helpUrl"?, "provider"? } }`
 
 Codes cités par le schéma : `unauthorized`, `api_key_not_found`, `plan_required`, `role_forbidden`, `feature_unavailable`, `integration_not_connected`, `validation_error`, `missing_body`, `invalid_model`, `invalid_branch_name`, `repository_required`, `repository_access`, `pr_resolution_failed`, `artifact_not_found`, `service_account_required`, `agent_not_found`, `run_not_found`, `agent_busy`, `agent_archived`, `agent_id_conflict`, `run_not_cancellable`, `rate_limit_exceeded`, `usage_limit_exceeded`, `stream_expired`, `stream_unavailable`, `invalid_last_event_id`, `client_cancelled`, `not_implemented`, `upstream_error`, `internal_error`.
 
-Statuts utilisés pour classer : 400 validation, 401 authentification, 403 permissions (`feature_unavailable` inclus), 404 ressource absente, 409 conflit, 429 quota. Le 429 peut porter `Retry-After`. L'OpenAPI mentionne aussi `X-RateLimit-Limit`, `X-RateLimit-Remaining` et `X-RateLimit-Reset`. Aucun identifiant de requête n'est spécifié : les en-têtes `x-request-id`, `request-id` et `x-cursor-request-id` sont conservés seulement s'ils sont présents.
+Statuts utilisés pour classer : 400 validation, 401 authentification, 403 permissions (`feature_unavailable` inclus), 404 ressource absente, 409 conflit, 410 flux expiré, 429 quota. Le 429 peut porter `Retry-After`. Sans cet en-tête, une seule relance GET attend une seconde, dans la deadline. L'OpenAPI mentionne aussi `X-RateLimit-Limit`, `X-RateLimit-Remaining` et `X-RateLimit-Reset`. Aucun identifiant de requête n'est spécifié : les en-têtes `x-request-id`, `request-id` et `x-cursor-request-id` sont conservés seulement s'ils sont présents.
 
 `GET /v1/agents/{id}/usage` peut répondre `403 feature_unavailable` (accès anticipé).
 
@@ -83,7 +99,10 @@ Statuts utilisés pour classer : 400 validation, 401 authentification, 403 permi
 ## Ajustements assumés
 
 - Les créations sont spécifiées en `201`. Un `200` avec le même JSON est accepté, car le succès se juge sur le schéma, pas sur un statut voisin.
-- Deadline totale : 40 secondes par appel, 90 secondes pour `GET /v1/repositories`, parce que le contrat officiel prévient que cet appel peut durer des dizaines de secondes. Une deadline de 40 secondes rendrait le succès normal indistinguable d'un timeout.
+- Deadline totale : 40 secondes par appel, 90 secondes pour `GET /v1/repositories`, parce que le contrat officiel prévient que cet appel peut durer des dizaines de secondes. `cursor_wait_run` enchaîne des lectures dans une échéance d'au plus 60 secondes. `cursor_read_run_events` borne son attente à 50 secondes.
 - `IDLE` n'est pas dans l'enum OpenAPI de l'agent, mais la page endpoints le définit. Il n'est pas rejeté.
-- Le flux SSE, les artifacts, l'archivage, la suppression, les workers et `prUrl` existent dans l'API et restent hors de ce MCP.
+- Le flux SSE est lu une fois, sans reconnexion interne. `410 stream_expired` devient `STREAM_EXPIRED`.
+- Les artefacts, l'archivage, le désarchivage et la suppression sont exposés. `prUrl`, les images, `mcpServers`, `customSubagents` et `POST /v1/sub-tokens` restent hors de ce MCP.
 - `startingRef` est ignoré par Cursor lorsque `prUrl` est fourni. Ce MCP n'envoie pas `prUrl`.
+- Aucun champ du schéma ne choisit la taille CPU, RAM ou GPU d'une VM Cursor. `env.type` `pool` ou `machine` vise un worker auto-hébergé.
+- `CreateRunRequest` n'a pas de champ `model`. Le modèle d'une session est celui de la création.

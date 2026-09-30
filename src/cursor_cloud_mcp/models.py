@@ -206,6 +206,36 @@ class RemoteId(BaseModel):
     id: str | None = None
 
 
+class RemoteArtifact(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    path: str
+    sizeBytes: int
+    updatedAt: str
+
+
+class RemoteArtifactList(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    items: list[RemoteArtifact]
+
+
+class RemoteArtifactDownload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    url: str
+    expiresAt: str
+
+
+class RepositoryInput(BaseModel):
+    """Dépôt demandé à la création. Le SHA n'est pas vérifié chez GitHub."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str
+    starting_sha: str
+
+
 class AccountView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -248,6 +278,13 @@ class ModelVariantView(BaseModel):
     is_default: bool | None = None
 
 
+class ReasoningParamView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    values: list[str]
+
+
 class ModelView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -257,6 +294,7 @@ class ModelView(BaseModel):
     aliases: list[str] | None = None
     parameters: list[ModelParameterView] | None = None
     variants: list[ModelVariantView] | None = None
+    reasoning_param: ReasoningParamView | None = None
 
 
 class ModelListView(BaseModel):
@@ -426,6 +464,89 @@ class UsageView(BaseModel):
 
     total_usage: TokenUsageView
     runs: list[RunUsageView]
+
+
+class RunEventView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str | None = None
+    kind: Literal["status", "assistant", "tool_call", "thinking", "result", "error", "done"]
+    text: str | None = None
+    status: str | None = None
+    tool_name: str | None = None
+    tool_status: str | None = None
+    tool_args: str | None = None
+    tool_result: str | None = None
+
+
+class RunEventsView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    run_id: str
+    events: list[RunEventView]
+    last_event_id: str | None = None
+    finished: bool
+    run_status: str | None = None
+    retention_seconds: int | None = None
+    truncated: bool
+
+
+class WaitRunView(RunView):
+    timed_out: bool
+
+
+class ArtifactItemView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    size_bytes: int
+    updated_at: str
+
+
+class ArtifactListView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[ArtifactItemView]
+
+
+class ArtifactUrlView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    url: str
+    expires_at: str
+
+
+class ArtifactTextView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    text: str
+    offset: int
+    limit: int
+    total_chars: int
+    truncated: bool
+    next_offset: int | None = None
+    expires_at: str
+
+
+class ArchiveView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    action: Literal["archive", "unarchive"]
+    request_accepted: bool
+    outcome_confirmed: bool
+    observed_status: str | None = None
+    reread_error: str | None = None
+
+
+class DeleteView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    deleted: Literal[True] = True
 
 
 _KNOWN_AGENT_STATUSES = {"ACTIVE", "IDLE", "ARCHIVED"}

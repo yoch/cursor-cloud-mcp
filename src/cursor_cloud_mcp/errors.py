@@ -25,6 +25,8 @@ class ErrorCode(StrEnum):
     CONFLICT = "CONFLICT"
     CONTINUATION_REFUSED = "CONTINUATION_REFUSED"
     UPSTREAM = "UPSTREAM"
+    STREAM_EXPIRED = "STREAM_EXPIRED"
+    DELETE_DISABLED = "DELETE_DISABLED"
 
 
 class ErrorBody(BaseModel):
@@ -123,6 +125,10 @@ def explain(code: ErrorCode) -> str:
             return "Continuation hors du périmètre de ce MCP."
         case ErrorCode.UPSTREAM:
             return "Cursor a renvoyé une erreur."
+        case ErrorCode.STREAM_EXPIRED:
+            return "Le flux de ce run n'est plus disponible."
+        case ErrorCode.DELETE_DISABLED:
+            return "Suppression refusée."
         case _:
             unexpected: Never = code
             raise AssertionError(unexpected)

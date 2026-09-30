@@ -51,7 +51,7 @@ async def test_stdio_auto_and_legacy_negotiate_and_call_tools(tmp_path: Path) ->
     async with Client(params) as client:
         assert client.protocol_version == "2026-07-28"
         listed = await client.list_tools()
-        assert len(listed.tools) == 11
+        assert len(listed.tools) == 19
         assert all(tool.input_schema.get("type") == "object" for tool in listed.tools)
         account = await client.call_tool("cursor_get_account", {})
         assert account.is_error is False
@@ -91,14 +91,14 @@ async def test_stdio_auto_and_legacy_negotiate_and_call_tools(tmp_path: Path) ->
     async with Client(params, mode="legacy") as legacy:
         assert legacy.protocol_version == "2025-11-25"
         listed = await legacy.list_tools()
-        assert len(listed.tools) == 11
+        assert len(listed.tools) == 19
         account = await legacy.call_tool("cursor_get_account", {})
         assert account.is_error is False
 
 
 async def test_stdio_read_only_and_clean_stderr(tmp_path: Path) -> None:
     secret = "stdio-sentinel-secret"
-    params = _params(
+    mixed = _params(
         tmp_path,
         CURSOR_MCP_FIXTURE="1",
         CURSOR_MCP_ALLOW_WRITES="0",
@@ -106,19 +106,24 @@ async def test_stdio_read_only_and_clean_stderr(tmp_path: Path) -> None:
     )
     errlog_path = tmp_path / "stderr.txt"
     with errlog_path.open("w", encoding="utf-8") as errlog:
-        async with Client(stdio_client(params, errlog=errlog)) as client:
-                blocked = await client.call_tool(
-                    "cursor_create_agent",
-                    {
-                        "repository": "https://github.com/example/demo",
-                        "starting_sha": _SHA,
-                        "prompt": secret,
-                    },
-                )
-    assert _payload(blocked)["code"] == "READ_ONLY"
+        async with Client(stdio_client(mixed, errlog=errlog)) as client:
+            blocked = await client.call_tool("cursor_get_account", {})
+    assert _payload(blocked)["code"] == "CONFIGURATION_MISSING"
     stderr = errlog_path.read_text(encoding="utf-8")
     assert secret not in stderr
     assert "Authorization" not in stderr
+
+    readonly = _params(tmp_path, CURSOR_MCP_FIXTURE="1", CURSOR_MCP_ALLOW_WRITES="0")
+    async with Client(readonly) as client:
+        refused = await client.call_tool(
+            "cursor_create_agent",
+            {
+                "repository": "https://github.com/example/demo",
+                "starting_sha": _SHA,
+                "prompt": "lecture seule",
+            },
+        )
+    assert _payload(refused)["code"] == "READ_ONLY"
 
 
 def test_stdout_has_no_banner_and_eof_stops_the_process(tmp_path: Path) -> None:
@@ -157,3 +162,4 @@ def test_stdout_has_no_banner_and_eof_stops_the_process(tmp_path: Path) -> None:
     assert proc.poll() is not None
     stderr = proc.stderr.read().decode() if proc.stderr is not None else ""
     assert "Traceback" not in stderr
+    assert "MODE SIMULÉ" in stderr

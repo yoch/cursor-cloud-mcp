@@ -1,89 +1,69 @@
 # Vérification
 
-Rapport du 30 septembre 2026. Les trois familles ci-dessous ne se remplacent pas.
+Rapport du 1er octobre 2026. Les trois familles ci-dessous ne se remplacent pas.
 
 ## Contenu testé
 
-Aucun commit Git : `git rev-parse HEAD` répond qu'il n'y a pas de révision. `.env` n'est pas suivi.
+Empreinte SHA-256 du contenu hors `.git`, `.venv`, `dist`, `examples/resolved`, `.env` et ce fichier : `bacb94e49a8b9914b76d6c9b971dc4fa31ece01cf6fad90bdb2740301f31f34a`.
 
-Empreinte SHA-256 du contenu présent au moment de `uv run pytest`, hors `.venv`, `.env`, `dist`, `examples/resolved` et ce fichier : `0a264fea002c57e83af97f0bda68a617863cd740df98153a1064b987f96e8a88`.
+Versions utilisées pour `uv run pytest` :
 
-Versions réellement installées dans `.venv` :
-
-- Python `3.13.12` (le paquet exige `>=3.12` ; le Python système `3.12.3` est aussi présent)
+- Python `3.13.12` dans `.venv`, après restauration de cet interpréteur
+- Python `3.12.13`, via `uv run --python 3.12 pytest`, puis l'environnement a été remis sur 3.13.12
 - `mcp==2.2.0`
-- `httpx==0.28.1` pour le client REST de ce projet
-- `httpx2==2.13.1` uniquement comme dépendance du SDK MCP
+- `httpx==0.28.1`
 - `pytest==8.4.2`
 
-Clients :
-
-- Claude Code `2.1.285`
-- Codex CLI `0.153.4`
-- OpenCode `2.0.20`
-
-`uvx pip-audit -r` sur l'export runtime `uv export --no-dev --no-emit-project` : « No known vulnerabilities found ». Des avertissements de cache `cachecontrol` ont été ignorés par l'outil. Cet audit ne prouve pas l'absence de tout défaut.
-
-Le wheel `dist/cursor_cloud_mcp-0.1.0-py3-none-any.whl` s'installe dans un venv vierge `/tmp/cursor-cloud-mcp-wheel`. Le script `cursor-cloud-mcp` de ce venv, avec `CURSOR_MCP_FIXTURE=1`, a répondu à un `initialize` `2025-11-25` par une ligne JSON-RPC commençant par `{`.
+Les dépendances n'ont pas changé depuis l'audit `pip-audit` du 30 septembre 2026, qui n'avait trouvé aucune vulnérabilité connue.
 
 ## Tests simulés
 
-Commande : `uv run pytest`. Résultat : `29 passed`.
+Commande : `uv run pytest`, puis `uv run --python 3.12 pytest`. Résultat : `43 passed` sur les deux interpréteurs.
 
 Ces tests utilisent `httpx.MockTransport` ou `CURSOR_MCP_FIXTURE=1`. Aucun n'appelle `api.cursor.com`.
 
-Couverture : les onze outils, le corps REST de création (`workOnCurrentBranch` faux, `autoCreatePR`, `startingRef`, modèle), SHA, URL, lecture seule, clé non interpolée, `.env` ignoré, états inconnus, résultat long sans trou, deadline sur un corps bloqué, 429, 5xx, POST non rejoué, identifiant conservé, conflit `agent_busy`, stdio du vrai point d'entrée en `2026-07-28` et `2025-11-25`, EOF, stdout sans bannière.
+Couverture ajoutée : validation du catalogue, `reasoning_level`, règles d'environnement, `forward_env`, flux SSE coupé puis repris, `STREAM_EXPIRED`, attente d'un run déjà terminal, téléchargement d'artefact sans en-tête d'autorisation, hôte refusé, suppression sans les deux garde-fous, identifiant d'annulation incohérent, filtre de logs sur un logger enfant, refus fixture plus vraie clé, délai de 1 seconde sur un 429 sans `Retry-After`. Le catalogue stdio compte 19 outils, en `2026-07-28` et `2025-11-25`.
 
 Statut de cette famille : **PASS**.
 
 ## Appels exécutés par les clients
 
-Backend : le binaire `.venv/bin/cursor-cloud-mcp` avec `CURSOR_MCP_FIXTURE=1`. Aucun de ces appels n'est une requête vers Cursor. Les configurations personnelles n'ont pas été modifiées. Les exemples livrés gardent `CURSOR_MCP_ALLOW_WRITES` à `0`. Les sessions de test ont autorisé explicitement les outils de cette invocation (`--allowedTools` pour Claude, `--approve-for-me` et `-c` éphémère pour les mutations Codex, projet temporaire pour OpenCode). `--dangerously-skip-permissions` et `--dangerously-bypass-approvals-and-sandbox` n'ont pas été utilisés.
+Les boucles fixture déjà rapportées le 30 septembre 2026 n'ont pas été rejouées. Cette session a vérifié un seul appel réel, `cursor_get_account`, qui est un GET. Aucune configuration personnelle n'a été modifiée. `CURSOR_MCP_ALLOW_WRITES` valait `0`. La clé n'apparaît pas dans les sorties conservées.
+
+### Serveur stdio, hors LLM : PASS
+
+`python -m cursor_cloud_mcp` lancé par le client MCP Python, avec la clé uniquement dans l'environnement du sous-processus. `cursor_get_account` a renvoyé `api_key_name` `MCP dev`. La clé n'est pas dans le texte de l'outil.
 
 ### Claude Code : PASS
 
-Commandes `claude -p --strict-mcp-config --mcp-config … --permission-mode default`, depuis `/tmp/ccm-clients`.
-
-- Lecture : `cursor_get_account` a renvoyé `api_key_name=fixture`.
-- Boucle : création fictive, `cursor_get_run` sur ce run (`CREATING`), continuation du même `agent_id` avec `previous_latest_run_id` égal au premier run, puis `VALIDATION` / `validation_error` sur le prompt `ERREUR_ATTENDUE`.
-- Lecture seule : `cursor_create_agent` avec `CURSOR_MCP_ALLOW_WRITES=0` a renvoyé `READ_ONLY`.
-
-Ces tours ont consommé le quota Claude de la session (environ 0,13 à 0,19 USD par commande d'après le JSON du client). Ce n'est pas un coût Cursor Cloud.
+`claude -p --strict-mcp-config --mcp-config /tmp/ccm-real/mcp.json`, outil autorisé `mcp__cursor_cloud__cursor_get_account`. La réponse est `MCP dev`.
 
 ### Codex CLI : PASS
 
-`codex exec --ignore-user-config --skip-git-repo-check --ephemeral`, serveur MCP passé par `-c`, sans écrire `~/.codex/config.toml`.
+`codex exec --ignore-user-config --skip-git-repo-check --ephemeral -s read-only`, serveur passé par `-c`, sans écrire `~/.codex/config.toml`. La réponse est `MCP dev`.
 
-- Lecture, sandbox `-s read-only` : l'événement JSONL `mcp_tool_call` `cursor_get_account` est `completed` avec `api_key_name=fixture`.
-- Mutations : le même sandbox a refusé les outils non marqués lecture seule (« MCP tool call requires approval, but approval policy is never »). Relance avec `--approve-for-me`, toujours sans le contournement dangereux : création, lecture du run, continuation du même agent, puis erreur `VALIDATION` du fixture.
-- Lecture seule : `cursor_create_agent` a échoué côté outil avec le code `READ_ONLY`.
+### OpenCode : NON CONCLUANT
 
-### OpenCode : PASS
-
-`opencode mcp list` dans `/tmp/ccm-opencode` a répondu « No MCP servers configured ». `opencode debug config` charge pourtant `opencode.json` et normalise `timeout: 10000` en délais de catalogue et d'exécution, tous deux à 10000 ms. Le modèle Go par défaut a répondu HTTP 403 : un abonnement OpenCode Go est requis. Les appels suivants utilisent `--model opencode/big-pickle`.
-
-- Lecture : l'événement `toolCalls` nomme `cursor_cloud.cursor_get_account` et le texte est le compte fixture.
-- Boucle : `cursor_create_agent`, `cursor_get_run` (`CREATING`), `cursor_create_run` sur le même agent avec le `previous_latest_run_id` du premier run, puis `cursor_create_run` en erreur `VALIDATION`.
-- Lecture seule : `cursor_create_agent` a le statut d'appel `error` et le message contient `READ_ONLY`. Une tentative précédente du même modèle a inventé une erreur JSON-RPC sans appeler l'outil ; elle n'est pas comptée.
+`opencode debug config` dans `/tmp/ccm-opencode` charge le serveur, masque la clé et normalise `timeout` en 100000 ms pour le catalogue et pour l'exécution. Deux commandes `opencode run --model opencode/big-pickle` ont bien nommé `cursor_get_account`. Le modèle a rapporté `CONFIGURATION_MISSING`. Le corps d'erreur brut de l'outil n'était pas dans la sortie capturée. Claude Code et Codex, avec la même clé, ont réussi au même moment.
 
 ## Appels réels à Cursor
 
-Script : `uv run python scripts/live_read.py`. Il exporte `CURSOR_API_KEY` depuis `.env` pour son processus. Le serveur MCP ne charge pas ce fichier. Aucun POST.
+Script : `uv run python scripts/live_read.py`. Il charge `CURSOR_API_KEY` depuis `.env` pour son propre processus. Le serveur MCP ne charge pas ce fichier. Aucun POST.
 
 - `GET /v1/me` : **PASS**, nom de clé `MCP dev`, e-mail présent et non affiché.
 - `GET /v1/models` : **PASS**, 43 modèles, premier id `default`.
-- `GET /v1/agents?limit=5` : **PASS**, 5 agents, `nextCursor` présent, statuts `IDLE`.
-- `GET /v1/repositories` : **PASS**, 75 dépôts.
+- `GET /v1/agents?limit=5` : **PASS**, 5 agents `IDLE`, `nextCursor` présent.
+- `GET /v1/repositories` : **PASS**, 76 dépôts.
+- `GET /v1/agents/{id}/artifacts` sur le premier agent de cette page : **PASS**, 52 artefacts. Les chemins ne sont pas affichés.
+- `GET /v1/agents/{id}/runs/{runId}/stream` sur le dernier run de cet agent : **PASS** au sens du contrat, code `STREAM_EXPIRED`, HTTP 410. Le flux d'un run ancien n'est plus rejouable. Aucun événement n'a été lu.
 
-Statut des lectures réelles : **PASS**.
+L'appel stdio `cursor_get_account` ci-dessus est aussi un GET réel. Il est compté une fois, dans la famille des clients.
 
-Écritures Cloud (création, continuation, annulation réelles) : **NON EXÉCUTÉE**. Aucun dépôt de test ni budget d'écriture n'a été autorisé.
+Écritures Cloud, y compris la session payante minimale sans dépôt : **NON EXÉCUTÉE**. Elle attend une autorisation explicite.
 
 ## Limitations
 
-- Pas de commit, donc pas de SHA Git à citer.
-- Le fixture n'est pas l'API. Les succès clients ci-dessus sont des succès de protocole MCP sur réponses synthétiques.
-- OpenCode 2.0.20 ne liste pas forcément dans `opencode mcp list` un serveur que `debug config` et `run` utilisent. Son `timeout` numérique alimente aussi le délai d'exécution, d'après le chargeur, sans essai d'un outil plus long que 10 secondes.
-- Les mutations Codex non interactives demandent `--approve-for-me` ou une politique équivalente. Le mode read-only du sandbox ne suffit pas.
-- L'usage réel `GET /v1/agents/{id}/usage` n'a pas été appelé, pour ne pas choisir un agent au-delà de la page déjà lue.
-- Aucune publication PyPI.
+- La boucle fixture dans Claude Code, Codex et OpenCode date du 30 septembre 2026 et visait les onze premiers outils.
+- OpenCode 2.0.20 n'a pas montré, dans cette session, que `{env:CURSOR_API_KEY}` arrive jusqu'au processus du serveur. `debug config` montre pourtant une valeur masquée.
+- Le filtre de logs masque la clé et les valeurs transférées d'au moins 8 caractères. Il ne masque pas une valeur plus courte.
+- Aucune publication PyPI, aucun push dans cette session.

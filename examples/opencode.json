@@ -9,7 +9,7 @@
         "CURSOR_MCP_ALLOW_WRITES": "0"
       },
       "enabled": true,
-      "timeout": 10000
+      "timeout": 100000
     }
   }
 }

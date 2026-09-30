@@ -3,7 +3,11 @@
 import re
 from urllib.parse import urlsplit
 
-from cursor_cloud_mcp.config import PROMPT_MAX_CHARS
+from cursor_cloud_mcp.config import (
+    ENV_NAME_MAX_BYTES,
+    ENV_VALUE_MAX_BYTES,
+    PROMPT_MAX_CHARS,
+)
 from cursor_cloud_mcp.errors import ErrorCode, failure
 
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")
@@ -12,6 +16,8 @@ _AGENT_ID = re.compile(
     r"^bc-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 _REPO_PIECE = re.compile(r"[A-Za-z0-9_.-]+")
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_MODES = {"agent", "plan"}
 
 
 def require_prompt(prompt: str) -> str:
@@ -79,3 +85,56 @@ def normalize_repository(url: str) -> str:
             "repository doit viser exactement un dépôt GitHub, sous la forme https://github.com/owner/name.",
         )
     return f"https://github.com/{pieces[0]}/{pieces[1]}"
+
+
+def require_mode(mode: str | None) -> str | None:
+    if mode is None:
+        return None
+    if mode in _MODES:
+        return mode
+    raise failure(ErrorCode.VALIDATION, "mode doit être agent ou plan.")
+
+
+def require_event_id(value: str) -> str:
+    if value.strip() == "" or len(value) > 200 or any(char in value for char in "\r\n"):
+        raise failure(ErrorCode.VALIDATION, "after_event_id est invalide.")
+    return value
+
+
+def require_env_name(name: str) -> str:
+    encoded = name.encode("utf-8")
+    if (
+        name == ""
+        or len(encoded) > ENV_NAME_MAX_BYTES
+        or name.startswith("CURSOR_")
+        or _ENV_NAME.fullmatch(name) is None
+    ):
+        raise failure(
+            ErrorCode.VALIDATION,
+            "Un nom de variable est vide, trop long, commence par CURSOR_ ou contient un caractère refusé.",
+        )
+    return name
+
+
+def require_env_value(value: str) -> str:
+    if value == "" or len(value.encode("utf-8")) > ENV_VALUE_MAX_BYTES:
+        raise failure(
+            ErrorCode.VALIDATION,
+            "Une valeur de variable est vide ou dépasse 4096 octets. La valeur n'est pas renvoyée.",
+        )
+    return value
+
+
+def require_artifact_path(path: str) -> str:
+    if path != path.strip() or len(path) > 512 or "\\" in path or path.startswith("/"):
+        raise failure(
+            ErrorCode.VALIDATION,
+            "Le chemin d'artefact doit être relatif, commencer par artifacts/ et ne pas contenir de .. .",
+        )
+    pieces = path.split("/")
+    if any(piece in {"", ".", ".."} for piece in pieces) or not path.startswith("artifacts/"):
+        raise failure(
+            ErrorCode.VALIDATION,
+            "Le chemin d'artefact doit être relatif, commencer par artifacts/ et ne pas contenir de .. .",
+        )
+    return path

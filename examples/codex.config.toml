@@ -3,7 +3,7 @@ command = "/CHEMIN/ABSOLU/cursor-cloud-mcp/.venv/bin/cursor-cloud-mcp"
 args = []
 env_vars = ["CURSOR_API_KEY"]
 startup_timeout_sec = 10
-tool_timeout_sec = 60
+tool_timeout_sec = 100
 
 [mcp_servers.cursor_cloud.env]
 CURSOR_MCP_ALLOW_WRITES = "0"
