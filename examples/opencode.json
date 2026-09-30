@@ -1,0 +1,15 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "cursor_cloud": {
+      "type": "local",
+      "command": ["/CHEMIN/ABSOLU/cursor-cloud-mcp/.venv/bin/cursor-cloud-mcp"],
+      "environment": {
+        "CURSOR_API_KEY": "{env:CURSOR_API_KEY}",
+        "CURSOR_MCP_ALLOW_WRITES": "0"
+      },
+      "enabled": true,
+      "timeout": 10000
+    }
+  }
+}
