@@ -1,5 +1,7 @@
 # cursor-cloud-mcp
 
+Pour faire installer ou utiliser ce MCP par un agent, donne-lui [`MODE-D-EMPLOI.md`](MODE-D-EMPLOI.md).
+
 Serveur MCP local, sur stdio, qui expose dix-neuf outils pour l'API REST Cursor Cloud Agents v1. Une seule implémentation sert Claude Code, Codex CLI et OpenCode. Il permet à un agent appelant de créer une session Cloud, choisir le modèle et le niveau de réflexion, envoyer des commandes, lire la progression et les fichiers produits, puis archiver ou supprimer la session. Ce n'est pas une plateforme d'orchestration, et le paquet n'est pas publié sur PyPI.
 
 ## Installation locale

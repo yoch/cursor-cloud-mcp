@@ -4,7 +4,7 @@ Rapport du 1er octobre 2026. Les trois familles ci-dessous ne se remplacent pas.
 
 ## Contenu testé
 
-Empreinte SHA-256 des fichiers suivis ou non ignorés, hors `examples/resolved` et ce fichier (`git ls-files -co --exclude-standard`, tri `LC_ALL=C`, `sha256sum` de chaque fichier, puis `sha256sum` de la liste) : `d36d0ff18ec6c4a2cf745cc2be4d7e73951653b4d1142ab3d02ab285c1715b7f`.
+Empreinte SHA-256 des fichiers suivis ou non ignorés, hors `examples/resolved` et ce fichier (`git ls-files -co --exclude-standard`, tri `LC_ALL=C`, `sha256sum` de chaque fichier, puis `sha256sum` de la liste) : `3613b7223fce4b0d0ce340a41f5eeba1c99c48fe644324d60d1feaaa685b85bf`.
 
 Versions utilisées pour `uv run pytest` :
 
