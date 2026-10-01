@@ -14,7 +14,7 @@ from cursor_cloud_mcp.fixture import ERROR_PROMPT, SEEDED_AGENT_ID, SEEDED_RUN_I
 
 pytestmark = pytest.mark.anyio
 
-_SHA = "c" * 40
+_BRANCH = "release/2026"
 
 
 def _env(**extra: str) -> dict[str, str]:
@@ -59,7 +59,7 @@ async def test_stdio_auto_and_legacy_negotiate_and_call_tools(tmp_path: Path) ->
             "cursor_create_agent",
             {
                 "repository": "https://github.com/example/demo",
-                "starting_sha": _SHA,
+                "starting_sha": _BRANCH,
                 "prompt": "Décris le dépôt fictif",
             },
         )
@@ -119,7 +119,7 @@ async def test_stdio_read_only_and_clean_stderr(tmp_path: Path) -> None:
             "cursor_create_agent",
             {
                 "repository": "https://github.com/example/demo",
-                "starting_sha": _SHA,
+                "starting_sha": _BRANCH,
                 "prompt": "lecture seule",
             },
         )

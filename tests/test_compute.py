@@ -25,7 +25,7 @@ from tests.test_tools import (
 
 pytestmark = pytest.mark.anyio
 
-_SHA = "a" * 40
+_BRANCH = "release/2026"
 _AGENT = "bc-22222222-2222-2222-2222-222222222222"
 _RUN = "run-00000000-0000-0000-0000-000000000001"
 _MODELS = {
@@ -172,7 +172,7 @@ async def test_named_cloud_with_repos_and_unpooled_multi_repo_are_local_errors()
             {
                 "prompt": "x",
                 "repository": "https://github.com/acme/demo",
-                "starting_sha": _SHA,
+                "starting_sha": _BRANCH,
                 "env_type": "cloud",
                 "env_name": "Release",
             },
@@ -182,8 +182,8 @@ async def test_named_cloud_with_repos_and_unpooled_multi_repo_are_local_errors()
             {
                 "prompt": "x",
                 "repositories": [
-                    {"url": "https://github.com/acme/demo", "starting_sha": _SHA},
-                    {"url": "https://github.com/acme/other", "starting_sha": _SHA},
+                    {"url": "https://github.com/acme/demo", "starting_sha": _BRANCH},
+                    {"url": "https://github.com/acme/other", "starting_sha": _BRANCH},
                 ],
             },
         )
@@ -222,8 +222,8 @@ async def test_forward_env_reads_allowlist_and_omits_agent_id(monkeypatch: pytes
                     "env_vars": {"PUBLIC": "visible"},
                     "forward_env": ["WORK_TOKEN"],
                     "repositories": [
-                        {"url": "https://github.com/acme/demo", "starting_sha": _SHA},
-                        {"url": "https://github.com/acme/other", "starting_sha": _SHA},
+                        {"url": "https://github.com/acme/demo", "starting_sha": _BRANCH},
+                        {"url": "https://github.com/acme/other", "starting_sha": _BRANCH},
                     ],
                 },
             )

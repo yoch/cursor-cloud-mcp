@@ -11,6 +11,7 @@ from cursor_cloud_mcp.config import (
 from cursor_cloud_mcp.errors import ErrorCode, failure
 
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")
+_BRANCH_FORBIDDEN = re.compile(r"[\x00-\x20\x7f~^:?*\[\\]")
 _SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _AGENT_ID = re.compile(
     r"^bc-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -31,14 +32,33 @@ def require_prompt(prompt: str) -> str:
     return prompt
 
 
-def require_sha(value: str) -> str:
-    if _SHA.fullmatch(value) is None:
+def require_starting_ref(value: str) -> str:
+    """Nom de branche envoyé dans ``startingRef``. Un SHA complet est refusé par l'API."""
+    if _SHA.fullmatch(value) is not None:
         raise failure(
             ErrorCode.VALIDATION,
-            "starting_sha doit être un SHA complet de 40 ou 64 caractères hexadécimaux. "
-            "Ce contrôle ne prouve pas que le commit existe sur GitHub.",
+            "L'API Cursor refuse un SHA complet dans startingRef. "
+            "Pousse ce commit sur une branche, vérifie que sa tête est ce SHA, "
+            "puis passe le nom de la branche dans starting_sha.",
+        )
+    if not _valid_branch_name(value):
+        raise failure(
+            ErrorCode.VALIDATION,
+            "starting_sha doit être un nom de branche Git. "
+            "Ce contrôle ne prouve pas que la branche existe sur GitHub.",
         )
     return value
+
+
+def _valid_branch_name(value: str) -> bool:
+    if value in {"", "@"} or value.startswith(("/", "-")) or value.endswith(("/", ".")):
+        return False
+    if len(value.encode("utf-8")) > 255 or "//" in value or ".." in value or "@{" in value:
+        return False
+    if _BRANCH_FORBIDDEN.search(value) is not None:
+        return False
+    pieces = value.split("/")
+    return all(piece and not piece.startswith(".") and not piece.endswith(".lock") for piece in pieces)
 
 
 def require_segment(value: str, *, label: str) -> str:

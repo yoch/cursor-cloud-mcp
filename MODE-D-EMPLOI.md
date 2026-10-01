@@ -137,6 +137,8 @@ Si ces lectures échouent, corrige la configuration avant toute création.
 
 Conserve `agent_id` et `run_id` dès qu'une création répond. L'état d'exécution est sur le run, pas sur l'agent.
 
+Donne toujours à l'utilisateur l'`url` de chaque agent que tu crées (`https://cursor.com/agents/bc-...`). C'est le lien direct vers l'interface web, et l'utilisateur ne retrouve pas toujours ces agents dans la liste. Un agent archivé est masqué par défaut dans cette liste : `cursor_list_agents` avec `include_archived` à `true` le montre. L'ordre de `cursor_list_agents` n'est pas garanti par date : parcours `next_cursor` ou cherche par `name`.
+
 ### Session de calcul
 
 L'API ne choisit pas la taille CPU, RAM ou GPU d'une VM Cursor. Pour un calcul lourd, `env_type` vaut `pool` ou `machine` (workers sur les machines de l'utilisateur), avec `env_name`. Une VM Cursor hébergée reste `env_type` `cloud`.
@@ -160,7 +162,7 @@ Paramètres utiles de `cursor_create_agent` :
 - `mode` : `agent` ou `plan`.
 - `auto_create_pr` : `false` par défaut.
 - `agent_id` : `bc-<uuid>` fourni par l'appelant, ou omis pour en générer un. Réutilise le même si l'appel est coupé, sauf si tu passes des variables d'environnement.
-- `repository` et `starting_sha` : un dépôt. `starting_sha` est un SHA complet de 40 ou 64 caractères hexadécimaux.
+- `repository` et `starting_sha` : un dépôt. `starting_sha` est un nom de branche, pas un SHA. L'API refuse un SHA complet dans `startingRef`.
 - `repositories` : jusqu'à vingt dépôts. Plusieurs dépôts exigent un pool nommé.
 - `env_type` : `cloud`, `pool` ou `machine`. Un environnement cloud nommé ne se combine pas à des dépôts.
 - `name` : obligatoire si tu passes `env_vars` ou `forward_env`, parce que l'API interdit alors `agentId`.
@@ -179,10 +181,15 @@ Demande dans le prompt que le résultat utile soit dans la réponse finale de l'
 
 ### Dépôt GitHub
 
-Ce MCP ne lit pas le checkout local et ne remplace pas GitHub. L'appelant obtient le dépôt, la branche de base et le SHA exact, puis :
+Ce MCP ne lit pas le checkout local et ne remplace pas GitHub. Pour démarrer sur un commit précis :
+
+1. Pousse ce commit sur une branche.
+2. Vérifie que la tête de cette branche est bien ce SHA.
+3. Appelle `cursor_create_agent` avec `repository` et `starting_sha` égal au nom de la branche (`release/2026`, `publication/certified-dfpn`). Un SHA de 40 ou 64 caractères est refusé avant l'envoi.
 
 ```text
-cursor_create_agent(..., repository, starting_sha)
+Pousser le commit et vérifier la tête de la branche
+→ cursor_create_agent(..., repository, starting_sha=nom-de-branche)
 → cursor_get_run jusqu'à un état terminal
 → relire GitHub : HEAD, diff, checks
 → cursor_create_run sur le même agent si une correction est nécessaire

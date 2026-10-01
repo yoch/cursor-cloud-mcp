@@ -4,7 +4,7 @@ Rapport du 1er octobre 2026. Les trois familles ci-dessous ne se remplacent pas.
 
 ## Contenu testé
 
-Empreinte SHA-256 des fichiers suivis ou non ignorés, hors `examples/resolved` et ce fichier (`git ls-files -co --exclude-standard`, tri `LC_ALL=C`, `sha256sum` de chaque fichier, puis `sha256sum` de la liste) : `3613b7223fce4b0d0ce340a41f5eeba1c99c48fe644324d60d1feaaa685b85bf`.
+Empreinte SHA-256 des fichiers suivis ou non ignorés, hors `examples/resolved` et ce fichier (`git ls-files -co --exclude-standard`, tri `LC_ALL=C`, `sha256sum` de chaque fichier, puis `sha256sum` de la liste) : `c63ba4012df8044b415c7d3628fe01a93f51ceb85e00d2a85e0ec4b997534b03`.
 
 Versions utilisées pour `uv run pytest` :
 
@@ -18,7 +18,7 @@ Les dépendances n'ont pas changé depuis l'audit `pip-audit` du 30 septembre 20
 
 ## Tests simulés
 
-Commande : `uv run pytest`, puis `uv run --python 3.12 pytest`. Résultat : `44 passed` sur les deux interpréteurs.
+Commande : `uv run pytest`, puis `uv run --python 3.12 pytest`. Résultat : `45 passed` sur les deux interpréteurs.
 
 Ces tests utilisent `httpx.MockTransport` ou `CURSOR_MCP_FIXTURE=1`. Aucun n'appelle `api.cursor.com`.
 
@@ -66,7 +66,17 @@ Session payante minimale sans dépôt, autorisée par l'utilisateur, modèle `co
 - `cursor_archive_agent` : **PASS**, statut `ARCHIVED` relu. Aucun agent n'a été supprimé.
 - Artefacts : **ÉCHEC côté API**. Le flux montre une écriture de `/agent/artifacts/result.txt`, mais `GET /artifacts` est resté vide, y compris lors d'une seconde lecture après archivage, et le téléchargement a répondu 404. Limite documentée dans le README et les instructions du serveur.
 
-Autres écritures Cloud (continuation, suppression, `envVars`, dépôts) : **NON EXÉCUTÉES**.
+Création avec dépôt, hors de la session ci-dessus, rapportée le 1er octobre 2026 (issue #1) : un SHA complet dans `startingRef` a répondu `400 validation_error` et n'a rien créé. Le même appel avec le nom de branche dont la tête était ce SHA a répondu `201`. Le MCP refuse désormais un SHA complet et envoie le nom de branche.
+
+Smoke réel de chaque outil, `scripts/smoke_live.py`, serveur stdio réel, `composer-2.5`, deux agents et neuf runs courts, le 1er octobre 2026 :
+
+- Première exécution : 32 sur 33. L'unique échec était une assertion fausse du script : l'API ne renvoie jamais `startingRef` dans `GET /v1/agents/{id}`, vérifié sur trois agents existants. La branche est prouvée par le `201` de la création. Elle a aussi révélé un défaut réel : `cursor_cancel_run` annonçait `outcome_confirmed=True` alors que le run relu était encore `RUNNING`. Correctif : relecture jusqu'à quatre fois, confirmé seulement si l'état est terminal, avec deux tests.
+- Seconde exécution, avec les correctifs : **31 sur 31 PASS**, un `WARN`. Création avec dépôt et branche (`201`), `forward_env` et `env_vars` reçus par l'agent sans recopie de la valeur secrète, continuation, flux SSE, attente, usage, annulation (`CANCELLED` confirmé), archivage, désarchivage, `include_archived`, refus de continuation sur agent archivé, refus de suppression sans la bonne confirmation, et stderr sans la clé ni la valeur transmise. Le `WARN` est la liste d'artefacts, restée vide.
+- `cursor_delete_agent` : **PASS** deux fois, à la première exécution, avec les deux garde-fous. La seconde exécution a gardé ses deux agents (`SMOKE_KEEP=1`).
+
+Observations de l'API : l'ordre de `GET /v1/agents` n'est pas celui de la date de création. `includeArchived=true` ajoute bien les agents archivés.
+
+Non exécutés : `env_type` `pool` et `machine` (aucun worker disponible), plusieurs dépôts, `auto_create_pr`, `mode: plan`, et le niveau de réflexion sur un modèle qui en expose un (`composer-2.5` n'a que `fast`).
 
 ## Limitations
 

@@ -44,7 +44,7 @@ Authentification retenue : `Authorization: Bearer`. L'OpenAPI accepte aussi Basi
 `POST /v1/agents`, uniquement les clés fournies, jamais de `null` :
 
 - `prompt.text` : obligatoire, non vide
-- `repos` : zéro à vingt éléments `{ "url", "startingRef" }`. Absent s'il n'y a pas de dépôt. `startingRef` est un SHA complet de 40 ou 64 caractères hexadécimaux
+- `repos` : zéro à vingt éléments `{ "url", "startingRef" }`. Absent s'il n'y a pas de dépôt. `startingRef` est un nom de branche. Le schéma OpenAPI le type comme `string`, mais un essai réel du 1er octobre 2026 a reçu `400 validation_error` pour un SHA complet de 40 caractères, et `201` pour le nom de branche dont la tête était ce SHA
 - `workOnCurrentBranch` : toujours `false`
 - `autoCreatePR` : booléen, `false` si l'appelant ne demande pas `true`
 - `agentId` : `bc-` suivi d'un UUID, fourni ou généré une fois avant l'envoi. Absent quand `envVars` est envoyé : l'API interdit les deux ensemble
@@ -104,5 +104,6 @@ Statuts utilisés pour classer : 400 validation, 401 authentification, 403 permi
 - Le flux SSE est lu une fois, sans reconnexion interne. `410 stream_expired` devient `STREAM_EXPIRED`.
 - Les artefacts, l'archivage, le désarchivage et la suppression sont exposés. `prUrl`, les images, `mcpServers`, `customSubagents` et `POST /v1/sub-tokens` restent hors de ce MCP.
 - `startingRef` est ignoré par Cursor lorsque `prUrl` est fourni. Ce MCP n'envoie pas `prUrl`.
+- Un SHA complet n'est pas envoyé dans `startingRef`. L'appelant pousse le commit sur une branche et passe le nom de cette branche. Ce contrôle de format ne prouve pas que la branche existe.
 - Aucun champ du schéma ne choisit la taille CPU, RAM ou GPU d'une VM Cursor. `env.type` `pool` ou `machine` vise un worker auto-hébergé.
 - `CreateRunRequest` n'a pas de champ `model`. Le modèle d'une session est celui de la création.

@@ -14,7 +14,7 @@ from cursor_cloud_mcp.server import build_server
 pytestmark = pytest.mark.anyio
 
 _SHA = "a" * 40
-_SHA256 = "b" * 64
+_BRANCH = "release/2026"
 _AGENT = "bc-22222222-2222-2222-2222-222222222222"
 _RUN = "run-00000000-0000-0000-0000-000000000001"
 
@@ -347,7 +347,7 @@ async def test_create_agent_sends_exact_rest_fields() -> None:
         body = json.loads(request.content.decode())
         assert body["workOnCurrentBranch"] is False
         assert body["autoCreatePR"] is True
-        assert body["repos"] == [{"url": "https://github.com/acme/demo", "startingRef": _SHA256}]
+        assert body["repos"] == [{"url": "https://github.com/acme/demo", "startingRef": _BRANCH}]
         assert body["model"] == {"id": "composer-2", "params": [{"id": "fast", "value": "true"}]}
         assert body["mode"] == "plan"
         assert body["agentId"] == _AGENT
@@ -366,7 +366,7 @@ async def test_create_agent_sends_exact_rest_fields() -> None:
                 "cursor_create_agent",
                 {
                     "repository": "https://github.com/acme/demo.git",
-                    "starting_sha": _SHA256,
+                    "starting_sha": _BRANCH,
                     "prompt": "Ajouter une note",
                     "name": "Note",
                     "model_id": "composer-2",
@@ -391,7 +391,11 @@ async def test_validation_rejects_sha_url_and_extra_fields_before_http() -> None
     try:
         short = await client.call_tool(
             "cursor_create_agent",
-            {"repository": "https://github.com/acme/demo", "starting_sha": "abc", "prompt": "x"},
+            {"repository": "https://github.com/acme/demo", "starting_sha": _SHA, "prompt": "x"},
+        )
+        nested = await client.call_tool(
+            "cursor_create_agent",
+            {"repository": "https://github.com/acme/demo", "starting_sha": "feature/../x", "prompt": "x"},
         )
         secret_url = await client.call_tool(
             "cursor_create_agent",
@@ -409,6 +413,8 @@ async def test_validation_rejects_sha_url_and_extra_fields_before_http() -> None
     finally:
         await client.__aexit__(None, None, None)
     assert _error_payload(short)["code"] == "VALIDATION"
+    assert "branche" in str(_error_payload(short)["message"])
+    assert _error_payload(nested)["code"] == "VALIDATION"
     assert _error_payload(secret_url)["code"] == "VALIDATION"
     assert "token" not in json.dumps(_error_payload(secret_url))
     assert _error_payload(blank)["code"] == "VALIDATION"
@@ -441,7 +447,7 @@ async def test_create_conflict_returns_the_same_agent_id() -> None:
             "cursor_create_agent",
             {
                 "repository": "https://github.com/acme/demo",
-                "starting_sha": _SHA,
+                "starting_sha": _BRANCH,
                 "prompt": "x",
                 "agent_id": _AGENT,
             },
@@ -505,6 +511,47 @@ async def test_continuation_refuses_archived_or_current_branch_and_returns_busy(
     assert busy_payload["previous_latest_run_id"] == "run-previous"
     posts = [call for call in router.calls if call[0] == "POST"]
     assert len(posts) == 3
+
+
+async def test_cancel_confirms_only_a_terminal_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("cursor_cloud_mcp.server.CANCEL_REREAD_PAUSE_SECONDS", 0)
+    reads = {"n": 0}
+
+    def settles(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": _RUN})
+        reads["n"] += 1
+        status = "RUNNING" if reads["n"] < 3 else "CANCELLED"
+        return httpx.Response(200, json=_run(status=status, result=None))
+
+    client, _router = await _session(Router(settles))
+    try:
+        settled = _data(await client.call_tool("cursor_cancel_run", {"agent_id": _AGENT, "run_id": _RUN}))
+    finally:
+        await client.__aexit__(None, None, None)
+    assert reads["n"] == 3
+    assert settled["observed_status"] == "CANCELLED"
+    assert settled["observed_terminal"] is True
+    assert settled["outcome_confirmed"] is True
+
+    stuck_reads = {"n": 0}
+
+    def never_settles(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(200, json={"id": _RUN})
+        stuck_reads["n"] += 1
+        return httpx.Response(200, json=_run(status="RUNNING", result=None))
+
+    client, _router = await _session(Router(never_settles))
+    try:
+        stuck = _data(await client.call_tool("cursor_cancel_run", {"agent_id": _AGENT, "run_id": _RUN}))
+    finally:
+        await client.__aexit__(None, None, None)
+    assert stuck_reads["n"] == 4
+    assert stuck["cancel_request_accepted"] is True
+    assert stuck["observed_status"] == "RUNNING"
+    assert stuck["observed_terminal"] is False
+    assert stuck["outcome_confirmed"] is False
 
 
 async def test_cancel_distinguishes_accepted_and_confirmed() -> None:

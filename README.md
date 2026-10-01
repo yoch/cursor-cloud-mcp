@@ -48,7 +48,7 @@ Mutations : `cursor_create_agent`, `cursor_create_run`, `cursor_cancel_run`, `cu
 
 `cursor_list_models` met en cache le catalogue dix minutes et indique, pour chaque modèle, `reasoning_param` : le nom réel du niveau de réflexion (`effort`, `reasoning_effort` ou `reasoning`) et les valeurs permises. `xhigh` et `extra-high` ne sont pas traduits.
 
-`cursor_create_agent` peut démarrer sans dépôt, avec un dépôt (`repository` et `starting_sha`) ou avec jusqu'à vingt dépôts (`repositories`, SHA complet chacun). `env_type` vaut `cloud`, `pool` ou `machine`. Un pool nommé est exigé pour plusieurs dépôts. Un environnement cloud nommé ne se combine pas à des dépôts. `reasoning_level` et `thinking` sont vérifiés contre le catalogue avant l'envoi. `workOnCurrentBranch` est imposé à `false`. `autoCreatePR` suit l'appelant (`false` par défaut). L'identifiant `bc-<uuid>` est celui de l'appelant ou généré une fois avant l'envoi. Il faut le réutiliser si l'appel est coupé. Avec `env_vars` ou `forward_env`, l'API interdit `agentId` : `name` devient obligatoire et une issue inconnue se résout en cherchant ce nom. La réponse contient `agent_id`, `run_id` et l'URL, sans attendre la fin du run.
+`cursor_create_agent` peut démarrer sans dépôt, avec un dépôt (`repository` et `starting_sha`) ou avec jusqu'à vingt dépôts (`repositories`). `starting_sha` est un nom de branche, envoyé tel quel dans `startingRef`. Un SHA complet de 40 ou 64 caractères est refusé localement : l'API répond `400 validation_error` si on lui envoie un SHA. `env_type` vaut `cloud`, `pool` ou `machine`. Un pool nommé est exigé pour plusieurs dépôts. Un environnement cloud nommé ne se combine pas à des dépôts. `reasoning_level` et `thinking` sont vérifiés contre le catalogue avant l'envoi. `workOnCurrentBranch` est imposé à `false`. `autoCreatePR` suit l'appelant (`false` par défaut). L'identifiant `bc-<uuid>` est celui de l'appelant ou généré une fois avant l'envoi. Il faut le réutiliser si l'appel est coupé. Avec `env_vars` ou `forward_env`, l'API interdit `agentId` : `name` devient obligatoire et une issue inconnue se résout en cherchant ce nom. La réponse contient `agent_id`, `run_id` et l'URL, sans attendre la fin du run.
 
 `cursor_create_run` envoie une commande de suite au même agent. Le modèle et le niveau de réflexion restent ceux de la création : l'API ne permet pas de les changer. La continuation est refusée si l'agent est archivé ou si `workOnCurrentBranch` vaut `true`. Zéro, un ou plusieurs dépôts sont acceptés. Un conflit « agent occupé » est rendu à l'appelant.
 
@@ -64,7 +64,7 @@ Limite observée : lors d'un essai réel, un agent a écrit `artifacts/result.tx
 
 `cursor_archive_agent` et `cursor_unarchive_agent` sont réversibles. `cursor_delete_agent` est définitif.
 
-Les listes d'agents et de runs renvoient une page. `has_more` est faux quand `nextCursor` est absent. `include_archived` filtre la liste des agents quand il est fourni.
+Les listes d'agents et de runs renvoient une page. `has_more` est faux quand `nextCursor` est absent. `include_archived` filtre la liste des agents quand il est fourni : `true` ajoute les agents archivés, qui sont sinon absents. L'ordre des agents n'est pas garanti par date de création (constaté en réel). Chaque agent porte son `url` (`https://cursor.com/agents/bc-...`), le lien direct vers l'interface web.
 
 Le délai d'un client MCP doit dépasser le délai de cet outil. Le défaut est 40 secondes, 90 secondes pour la liste des dépôts, la création d'un agent et l'envoi d'une continuation : une création réelle a dépassé 40 secondes. Les exemples règlent Codex à 100 secondes et OpenCode à 100000 millisecondes. Un client qui coupe plus tôt peut abandonner une création déjà envoyée et, s'il relance sans le même `agent_id`, en payer une seconde.
 
@@ -87,11 +87,11 @@ Les valeurs secrètes passent par `forward_env`, dont les noms sont listés dans
 
 ## Boucle GitHub
 
-Ce MCP ne remplace pas GitHub. L'appelant lit le dépôt, la branche de base et le SHA exact, puis enchaîne :
+Ce MCP ne remplace pas GitHub. L'appelant pousse le commit voulu sur une branche, vérifie que la tête de cette branche est ce SHA, puis enchaîne :
 
 ```text
-Lire GitHub : dépôt, base, SHA exact
-→ cursor_create_agent(..., starting_sha=SHA)
+Pousser le commit sur une branche et vérifier sa tête
+→ cursor_create_agent(..., starting_sha=nom-de-branche)
 → conserver agent_id et run_id
 → cursor_get_run(...) jusqu'à un état terminal
 → relire GitHub : HEAD, diff, checks, reviews
@@ -101,7 +101,7 @@ Lire GitHub : dépôt, base, SHA exact
 
 `FINISHED` ne prouve ni que les tests ont tourné, ni que la pull request est correcte. Un état inconnu n'est pas un succès. Après un timeout ou une coupure de mutation, le code `MUTATION_OUTCOME_UNKNOWN` interdit un rejeu automatique : il faut relire l'agent dont l'identifiant est renvoyé. Changer cet identifiant peut créer un doublon. Une coupure du client n'annule pas le run Cloud.
 
-L'annulation ne supprime pas les commits déjà poussés. Si la relecture après annulation échoue, la demande est acceptée mais son résultat n'est pas confirmé.
+L'annulation ne supprime pas les commits déjà poussés. Elle est asynchrone : le serveur relit le run jusqu'à quatre fois, à deux secondes d'intervalle, et `outcome_confirmed` n'est vrai que si l'état relu est terminal. Un run encore `RUNNING` reste non confirmé. Si la relecture échoue, la demande est acceptée mais son résultat n'est pas confirmé.
 
 ## Configurations
 

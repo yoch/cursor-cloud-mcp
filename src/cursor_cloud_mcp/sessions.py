@@ -28,7 +28,7 @@ from cursor_cloud_mcp.validation import (
     require_env_value,
     require_mode,
     require_prompt,
-    require_sha,
+    require_starting_ref,
 )
 
 
@@ -194,13 +194,21 @@ def _repositories(
     if single:
         if repository is None or starting_sha is None:
             raise failure(ErrorCode.VALIDATION, "repository et starting_sha vont ensemble.")
-        return [{"url": normalize_repository(repository), "startingRef": require_sha(starting_sha)}]
+        return [
+            {
+                "url": normalize_repository(repository),
+                "startingRef": require_starting_ref(starting_sha),
+            }
+        ]
     if not repositories:
         return []
     if len(repositories) > REPO_MAX_COUNT:
         raise failure(ErrorCode.VALIDATION, "20 dépôts au plus.")
     return [
-        {"url": normalize_repository(item.url), "startingRef": require_sha(item.starting_sha)}
+        {
+            "url": normalize_repository(item.url),
+            "startingRef": require_starting_ref(item.starting_sha),
+        }
         for item in repositories
     ]
 

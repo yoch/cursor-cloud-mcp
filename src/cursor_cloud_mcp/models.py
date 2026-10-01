@@ -233,7 +233,7 @@ class RemoteArtifactDownload(BaseModel):
 
 
 class RepositoryInput(BaseModel):
-    """Dépôt demandé à la création. Le SHA n'est pas vérifié chez GitHub."""
+    """Dépôt demandé à la création. ``starting_sha`` est un nom de branche, pas un SHA."""
 
     model_config = ConfigDict(extra="forbid")
 
