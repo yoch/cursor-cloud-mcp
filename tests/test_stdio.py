@@ -51,7 +51,7 @@ async def test_stdio_auto_and_legacy_negotiate_and_call_tools(tmp_path: Path) ->
     async with Client(params) as client:
         assert client.protocol_version == "2026-07-28"
         listed = await client.list_tools()
-        assert len(listed.tools) == 19
+        assert len(listed.tools) == 16
         assert all(tool.input_schema.get("type") == "object" for tool in listed.tools)
         account = await client.call_tool("cursor_get_account", {})
         assert account.is_error is False
@@ -59,7 +59,7 @@ async def test_stdio_auto_and_legacy_negotiate_and_call_tools(tmp_path: Path) ->
             "cursor_create_agent",
             {
                 "repository": "https://github.com/example/demo",
-                "starting_sha": _BRANCH,
+                "starting_ref": _BRANCH,
                 "prompt": "Décris le dépôt fictif",
             },
         )
@@ -107,7 +107,7 @@ async def test_stdio_auto_and_legacy_negotiate_and_call_tools(tmp_path: Path) ->
     async with Client(params, mode="legacy") as legacy:
         assert legacy.protocol_version == "2025-11-25"
         listed = await legacy.list_tools()
-        assert len(listed.tools) == 19
+        assert len(listed.tools) == 16
         account = await legacy.call_tool("cursor_get_account", {})
         assert account.is_error is False
 
@@ -135,7 +135,7 @@ async def test_stdio_read_only_and_clean_stderr(tmp_path: Path) -> None:
             "cursor_create_agent",
             {
                 "repository": "https://github.com/example/demo",
-                "starting_sha": _BRANCH,
+                "starting_ref": _BRANCH,
                 "prompt": "lecture seule",
             },
         )

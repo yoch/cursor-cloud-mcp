@@ -2,7 +2,7 @@
 
 Consigne pour un agent qui doit installer ou utiliser ce serveur MCP. Lis ce fichier en entier avant d'agir. Le détail du contrat API est dans `docs/api-contract.md`. Le dépannage étendu est dans le `README.md`.
 
-Ce serveur est local, sur stdio. Il expose dix-neuf outils pour l'API REST Cursor Cloud Agents v1. Il sert à créer une session Cloud, choisir le modèle et le niveau de réflexion, envoyer une commande, lire le retour, puis archiver ou supprimer la session. Ce n'est pas une plateforme d'orchestration. Le paquet n'est pas sur PyPI : il se lance depuis une copie de ce dépôt.
+Ce serveur est local, sur stdio. Il expose seize outils pour l'API REST Cursor Cloud Agents v1. Il sert à créer une session Cloud, choisir le modèle et le niveau de réflexion, envoyer une commande, lire le retour, puis archiver ou supprimer la session. Ce n'est pas une plateforme d'orchestration. Le paquet n'est pas sur PyPI : il se lance depuis une copie de ce dépôt.
 
 ## Règles
 
@@ -128,7 +128,7 @@ Vérifie avec `opencode debug config`, puis un appel d'outil dans une session. `
 Une fois le client redémarré et la clé présente dans l'environnement du processus MCP :
 
 1. `cursor_get_account` — la clé est acceptée. La réponse contient le nom de la clé, pas le secret.
-2. `cursor_list_models` — relève `id` et `reasoning_param` du modèle voulu. Le cache dure dix minutes. Utilise un `id` renvoyé, sans alias.
+2. `cursor_list_models` — relève `id`, `params`, `defaults` et `reasoning_param` du modèle voulu. Le cache dure dix minutes. Un alias qui ne désigne qu'un modèle est accepté ; si `restricted_combinations` est vrai, `cursor_list_models(model_id=...)` liste les combinaisons valides.
 3. `cursor_list_repositories` seulement si un dépôt est nécessaire. Cet appel est lent et fortement limité (1 requête par minute, 30 par heure).
 
 Si ces lectures échouent, corrige la configuration avant toute création.
@@ -137,7 +137,7 @@ Si ces lectures échouent, corrige la configuration avant toute création.
 
 Conserve `agent_id` et `run_id` dès qu'une création répond. L'état d'exécution est sur le run, pas sur l'agent.
 
-Donne toujours à l'utilisateur l'`url` de chaque agent que tu crées (`https://cursor.com/agents/bc-...`). C'est le lien direct vers l'interface web, et l'utilisateur ne retrouve pas toujours ces agents dans la liste. Un agent archivé est masqué par défaut dans cette liste : `cursor_list_agents` avec `include_archived` à `true` le montre. L'ordre de `cursor_list_agents` n'est pas garanti par date : parcours `next_cursor` ou cherche par `name`.
+Donne toujours à l'utilisateur l'`url` de chaque agent que tu crées (`https://cursor.com/agents/bc-...`). C'est le lien direct vers l'interface web, et l'utilisateur ne retrouve pas toujours ces agents dans la liste. Un agent archivé est masqué par défaut dans cette liste : `cursor_list_agents` avec `include_archived` à `true` le montre. L'ordre de `cursor_list_agents` n'est pas garanti par date : cherche avec `cursor_list_agents(name=...)`, qui parcourt jusqu'à cinq pages et indique `scanned`, ou avec `pr_url` pour l'agent d'une pull request.
 
 ### Session de calcul
 
@@ -147,8 +147,9 @@ L'API ne choisit pas la taille CPU, RAM ou GPU d'une VM Cursor. Pour un calcul l
 cursor_list_models
 → cursor_create_agent(prompt, model_id, reasoning_level, env_type, env_name, name)
 → conserver agent_id et run_id
-→ cursor_read_run_events ou cursor_wait_run
-→ cursor_get_run pour le texte final
+→ cursor_get_run(wait_seconds=60), à répéter tant que timed_out est vrai
+→ cursor_read_run_events seulement pour suivre la progression en cours
+→ cursor_get_run pour le texte final, cursor_get_usage pour le coût
 → cursor_create_run sur le même agent si une suite est nécessaire
 → cursor_archive_agent quand la session n'est plus utile
 ```
@@ -156,28 +157,28 @@ cursor_list_models
 Paramètres utiles de `cursor_create_agent` :
 
 - `prompt` : la tâche.
-- `model_id` : un `id` de `cursor_list_models`.
-- `reasoning_level` : une valeur listée dans `reasoning_param` de ce modèle (`effort`, `reasoning_effort` ou `reasoning` selon le modèle). `xhigh` et `extra-high` ne sont pas traduits.
-- `thinking` : seulement si le catalogue de ce modèle l'accepte.
+- `model_id` : un `id` de `cursor_list_models`, ou un alias qui ne désigne qu'un modèle.
+- `reasoning_level` : une valeur de `params[reasoning_param]` de ce modèle (`effort`, `reasoning_effort` ou `reasoning` selon le modèle). `xhigh` et `extra-high` ne sont pas traduits.
+- `model_params` : les autres paramètres, par exemple `[{"id": "thinking", "value": "true"}]`. Une combinaison absente du catalogue est refusée avant l'envoi.
 - `mode` : `agent` ou `plan`.
 - `auto_create_pr` : `false` par défaut.
-- `agent_id` : `bc-<uuid>` fourni par l'appelant, ou omis pour en générer un. Réutilise le même si l'appel est coupé, sauf si tu passes des variables d'environnement.
-- `repository` et `starting_ref` : un dépôt. `starting_ref` est un nom de branche, pas un SHA (`starting_sha` est l'ancien nom, encore accepté). Un SHA complet est refusé localement, après un refus de l'API observé le 1er octobre 2026.
+- `agent_id` : facultatif. Omis, le serveur en génère un et le renvoie, même dans `MUTATION_OUTCOME_UNKNOWN`. Réutilise-le si l'appel est coupé. Donne aussi un `name` reconnaissable : c'est ce qui permet de retrouver l'agent si ton client coupe l'appel avant toute réponse.
+- `repository` et `starting_ref` : un dépôt. `starting_ref` est un nom de branche, pas un SHA. Un SHA complet est refusé localement, après un refus de l'API observé le 1er octobre 2026.
 - `repositories` : jusqu'à vingt dépôts. Plusieurs dépôts exigent un pool nommé.
 - `env_type` : `cloud`, `pool` ou `machine`. Un environnement cloud nommé ne se combine pas à des dépôts.
 - `name` : obligatoire si tu passes `env_vars` ou `forward_env`, parce que l'API interdit alors `agentId`.
 
 `cursor_create_run` envoie la commande suivante au même agent. Le modèle et le niveau de réflexion restent ceux de la création. Refusé si l'agent est archivé, si son statut est inconnu, ou si `workOnCurrentBranch` n'est pas explicitement `false`. Un agent occupé se relit, il ne se contourne pas.
 
-`cursor_read_run_events` lit un extrait du flux (20 secondes par défaut, 50 au plus). Reprends avec `after_event_id` égal au `last_event_id` renvoyé. `cursor_wait_run` relit l'état toutes les cinq secondes, 60 secondes au plus. `timed_out` signifie que le run continue : rappelle l'outil ou lis `cursor_get_run`.
+`cursor_get_run` avec `wait_seconds` (jusqu'à 60) relit l'état toutes les cinq secondes jusqu'à un état terminal. `timed_out` signifie que le run continue : rappelle-le. `cursor_read_run_events` lit un extrait du flux (20 secondes par défaut, 50 au plus), texte de l'assistant regroupé ; reprends avec `after_event_id` égal au `last_event_id` renvoyé.
 
-`cursor_get_run` donne l'état et le texte final. Un résultat long se découpe avec `result_offset` et `result_limit` (défaut 12000, maximum 20000). `FINISHED` ne prouve ni que les tests ont tourné, ni qu'une pull request est correcte.
+`cursor_get_run` donne l'état, le texte final et l'éventuelle `error` du run. Un résultat long se découpe avec `result_offset` et `result_limit` (défaut 12000, maximum 20000). `FINISHED` ne prouve ni que les tests ont tourné, ni qu'une pull request est correcte.
 
 ### Résultat à récupérer
 
 Demande dans le prompt que le résultat utile soit dans la réponse finale de l'agent. Lis-la avec `cursor_get_run`.
 
-`cursor_list_artifacts` peut rester vide même si l'agent a écrit un fichier dans sa VM : c'est une limite observée de l'API (`404 artifact_not_found` au téléchargement). Si la liste contient un chemin `artifacts/...`, `cursor_read_artifact` lit un texte UTF-8 d'au plus 5 Mo. Un binaire passe par `cursor_get_artifact_url` (URL présignée d'environ quinze minutes).
+`cursor_list_artifacts` peut rester vide même si l'agent a écrit un fichier dans sa VM : c'est une limite observée de l'API (`404 artifact_not_found` au téléchargement). Si la liste contient un chemin `artifacts/...`, `cursor_read_artifact` lit un texte UTF-8 d'au plus 5 Mo. Pour un binaire ou un fichier trop gros, il rend l'URL présignée (environ quinze minutes) ; `url_only=true` la rend sans télécharger.
 
 ### Dépôt GitHub
 
@@ -199,20 +200,20 @@ Pousser le commit et vérifier la tête de la branche
 
 ### Secrets
 
-`forward_env` ne peut lire que les noms listés dans `CURSOR_MCP_FORWARD_ENV` (séparés par des virgules). La valeur ne passe pas par l'argument de l'outil. `env_vars` ne convient qu'aux valeurs déjà connues de l'agent appelant. Les deux sont incompatibles avec un `agent_id` fourni par l'appelant : fournis `name`, et si l'issue est inconnue, retrouve l'agent par ce nom avec `cursor_list_agents`.
+`forward_env` ne peut lire que les noms listés dans `CURSOR_MCP_FORWARD_ENV` (séparés par des virgules). La valeur ne passe pas par l'argument de l'outil. `env_vars` ne convient qu'aux valeurs déjà connues de l'agent appelant. Les deux sont incompatibles avec un `agent_id` fourni par l'appelant : fournis `name`, et si l'issue est inconnue, retrouve l'agent avec `cursor_list_agents(name=...)`.
 
 ### Fin de session
 
-`cursor_archive_agent` est réversible (`cursor_unarchive_agent`). Un agent archivé se lit encore et n'accepte plus de continuation. `cursor_delete_agent` est définitif : ne l'appelle que sur demande explicite, avec les deux variables à `1` et `confirm_agent_id` égal à `agent_id`.
+`cursor_archive_agent` est réversible (`unarchive=true`). Un agent archivé se lit encore et n'accepte plus de continuation. `cursor_delete_agent` est définitif : ne l'appelle que sur demande explicite, avec les deux variables à `1` et `confirm_agent_id` égal à `agent_id`.
 
-`cursor_get_usage` recopie les jetons renvoyés. Un coût absent reste absent.
+`cursor_get_usage` recopie les jetons et le coût renvoyés (centimes de dollar, au total et par run). Un coût absent reste absent.
 
 ## Si l'appel est coupé
 
 `MUTATION_OUTCOME_UNKNOWN` signifie que la création a peut-être réussi. Ne renvoie pas `cursor_create_agent` avec un nouvel `agent_id`.
 
 - Si tu avais un `agent_id` : `cursor_get_agent` avec celui renvoyé, puis `cursor_list_runs`.
-- Si la création passait par `name` (variables d'environnement) : `cursor_list_agents` et cherche ce nom.
+- Si la création passait par `name` (variables d'environnement) : `cursor_list_agents(name=...)`.
 
 Un client qui coupe avant 95 secondes peut abandonner une création déjà envoyée. Augmente le délai du client, ne relance pas à l'aveugle.
 

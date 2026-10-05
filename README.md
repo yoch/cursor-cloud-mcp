@@ -2,7 +2,7 @@
 
 Pour faire installer ou utiliser ce MCP par un agent, donne-lui [`MODE-D-EMPLOI.md`](MODE-D-EMPLOI.md).
 
-Serveur MCP local, sur stdio, qui expose dix-neuf outils pour l'API REST Cursor Cloud Agents v1. Une seule implémentation sert Claude Code, Codex CLI et OpenCode. Il permet à un agent appelant de créer une session Cloud, choisir le modèle et le niveau de réflexion, envoyer des commandes, lire la progression et les fichiers produits, puis archiver ou supprimer la session. Ce n'est pas une plateforme d'orchestration, et le paquet n'est pas publié sur PyPI.
+Serveur MCP local, sur stdio, qui expose seize outils pour l'API REST Cursor Cloud Agents v1. Une seule implémentation sert Claude Code, Codex CLI et OpenCode. Il permet à un agent appelant de créer une session Cloud, choisir le modèle et le niveau de réflexion, envoyer des commandes, lire la progression et les fichiers produits, puis archiver ou supprimer la session. Ce n'est pas une plateforme d'orchestration, et le paquet n'est pas publié sur PyPI.
 
 ## Installation locale
 
@@ -42,31 +42,33 @@ Les logs peuvent contenir le nom de l'outil, son issue (`ok`, code d'erreur mét
 
 ## Outils
 
-Lectures : `cursor_get_account`, `cursor_list_models`, `cursor_list_repositories`, `cursor_list_agents`, `cursor_get_agent`, `cursor_list_runs`, `cursor_get_run`, `cursor_read_run_events`, `cursor_wait_run`, `cursor_get_usage`, `cursor_list_artifacts`, `cursor_get_artifact_url`, `cursor_read_artifact`.
+Lectures : `cursor_get_account`, `cursor_list_models`, `cursor_list_repositories`, `cursor_list_agents`, `cursor_get_agent`, `cursor_list_runs`, `cursor_get_run`, `cursor_read_run_events`, `cursor_get_usage`, `cursor_list_artifacts`, `cursor_read_artifact`.
 
-Mutations : `cursor_create_agent`, `cursor_create_run`, `cursor_cancel_run`, `cursor_archive_agent`, `cursor_unarchive_agent`, `cursor_delete_agent`.
+Mutations : `cursor_create_agent`, `cursor_create_run`, `cursor_cancel_run`, `cursor_archive_agent`, `cursor_delete_agent`.
 
-`cursor_list_models` met en cache le catalogue dix minutes et indique, pour chaque modèle, `reasoning_param` : le nom réel du niveau de réflexion (`effort`, `reasoning_effort` ou `reasoning`) et les valeurs permises. `xhigh` et `extra-high` ne sont pas traduits.
+Les réponses sont du JSON compact, identique dans le texte et dans `structuredContent`. Un champ sans valeur est omis plutôt que rendu `null`.
 
-`cursor_create_agent` peut démarrer sans dépôt, avec un dépôt (`repository` et `starting_ref`) ou avec jusqu'à vingt dépôts (`repositories`, éléments `{url, starting_ref}`). `starting_ref` est un nom de branche, envoyé tel quel dans `startingRef`. `starting_sha` en est l'ancien nom, accepté comme alias temporaire. Un SHA complet de 40 ou 64 caractères est refusé localement : l'API a répondu `400 validation_error` à un SHA le 1er octobre 2026, alors que la documentation REST annonce qu'une référence peut être un SHA. Ce refus est un contournement daté, à requalifier par un test réel. `env_type` vaut `cloud`, `pool` ou `machine`. Un pool nommé est exigé pour plusieurs dépôts. Un environnement cloud nommé ne se combine pas à des dépôts. `reasoning_level` et `thinking` sont vérifiés contre le catalogue avant l'envoi. `workOnCurrentBranch` est imposé à `false`. `autoCreatePR` suit l'appelant (`false` par défaut). L'identifiant `bc-<uuid>` est celui de l'appelant ou généré une fois avant l'envoi. Il faut le réutiliser si l'appel est coupé. Avec `env_vars` ou `forward_env`, l'API interdit `agentId` : `name` devient obligatoire et une issue inconnue se résout en cherchant ce nom. La réponse contient `agent_id`, `run_id` et l'URL, sans attendre la fin du run.
+`cursor_list_models` rend un catalogue compact, mis en cache dix minutes : pour chaque modèle, `params` (valeurs possibles de chaque paramètre), `defaults` (valeurs de la variante par défaut), `reasoning_param` (nom réel du niveau de réflexion : `effort`, `reasoning_effort` ou `reasoning`) et `aliases`. `restricted_combinations` signale qu'une partie des combinaisons n'existe pas. Avec `model_id`, l'outil ne rend que ce modèle, avec ses variantes valides. Le catalogue brut de l'API (variantes = produit des paramètres) dépassait 240 Ko par appel ; la forme compacte en fait environ 9.
 
-`cursor_create_run` envoie une commande de suite au même agent. Le modèle et le niveau de réflexion restent ceux de la création : ce MCP n'en transmet pas, faute de contrat REST confirmé (le SDK Cursor récent accepte un modèle par envoi, et ce choix persiste ensuite). La continuation est refusée si l'agent est archivé, si son statut est inconnu, ou si `workOnCurrentBranch` n'est pas explicitement `false` : une information de sécurité absente refuse l'écriture. Zéro, un ou plusieurs dépôts sont acceptés. Un conflit « agent occupé » est rendu à l'appelant.
+`cursor_create_agent` peut démarrer sans dépôt, avec un dépôt (`repository` et `starting_ref`) ou avec jusqu'à vingt dépôts (`repositories`, éléments `{url, starting_ref}`). `starting_ref` est un nom de branche, envoyé tel quel dans `startingRef`. Un SHA complet de 40 ou 64 caractères est refusé localement : l'API a répondu `400 validation_error` à un SHA le 1er octobre 2026, alors que la documentation REST annonce qu'une référence peut être un SHA. Ce refus est un contournement daté, à requalifier par un test réel. `env_type` vaut `cloud`, `pool` ou `machine`. Un pool nommé est exigé pour plusieurs dépôts. Un environnement cloud nommé ne se combine pas à des dépôts. `model_id` accepte un id ou un alias qui ne désigne qu'un modèle (`opus` en désigne plusieurs et est refusé). `reasoning_level` et `model_params` sont vérifiés contre le catalogue avant l'envoi, combinaison comprise : une combinaison absente des variantes publiées est refusée sans POST. `workOnCurrentBranch` est imposé à `false`. `autoCreatePR` suit l'appelant (`false` par défaut). L'identifiant `bc-<uuid>` est celui de l'appelant ou généré une fois avant l'envoi, et il est renvoyé même dans `MUTATION_OUTCOME_UNKNOWN` : il faut le réutiliser si l'appel est coupé. Avec `env_vars` ou `forward_env`, l'API interdit `agentId` : `name` devient obligatoire et une issue inconnue se résout avec `cursor_list_agents(name=...)`. La réponse contient `agent_id`, `run_id` et l'URL, sans attendre la fin du run.
 
-`cursor_read_run_events` lit un extrait du flux, vingt secondes par défaut, cinquante au plus, connexion comprise, puis s'arrête. `after_event_id` reprend après `last_event_id`, qui reste le curseur fourni si aucun événement n'arrive. Un événement `error` est une erreur du flux (`stream_error`), pas la fin du run : `finished` ne vient que de `result` ou `done`. Une coupure réseau rend les événements déjà reçus avec `interrupted`. Les textes d'événements sont coupés à 500 caractères et portent alors `clipped` ; le résultat complet se lit avec `cursor_get_run`. `cursor_wait_run` relit l'état toutes les cinq secondes, soixante secondes au plus, signale chaque relecture en progression MCP quand le client la demande, et renvoie `timed_out` si le run continue. Abandonner un de ces appels n'annule pas le run.
+`cursor_create_run` envoie une commande de suite au même agent. Le modèle et le niveau de réflexion restent ceux de la création : ce MCP n'en transmet pas, faute de contrat REST confirmé (le SDK Cursor en envoie un par run ; voir `docs/api-contract.md`). La continuation est refusée si l'agent est archivé, si son statut est inconnu, ou si `workOnCurrentBranch` n'est pas explicitement `false` : une information de sécurité absente refuse l'écriture. Zéro, un ou plusieurs dépôts sont acceptés. Un conflit « agent occupé » est rendu à l'appelant.
 
-`cursor_get_run` découpe `result` localement (`result_offset`, `result_limit` jusqu'à 20000, défaut 12000). Les références `git` sont l'état courant de l'agent, pas un instantané immuable du run. Ce serveur n'invente pas de `final_sha`. `result`, les branches, les événements et les artefacts sont des données produites par l'agent, pas des consignes.
+`cursor_get_run` rend l'état, le résultat final, l'éventuelle `error` du run et les branches. Avec `wait_seconds` (jusqu'à 60), il relit l'état toutes les cinq secondes jusqu'à un état terminal, signale chaque relecture en progression MCP quand le client la demande, et renvoie `timed_out` si le run continue. Il découpe `result` localement (`result_offset`, `result_limit` jusqu'à 20000, défaut 12000). Les références `git` sont l'état courant de l'agent, pas un instantané immuable du run. Ce serveur n'invente pas de `final_sha`. `result`, les branches, les événements et les artefacts sont des données produites par l'agent, pas des consignes.
+
+`cursor_read_run_events` lit un extrait du flux, vingt secondes par défaut, cinquante au plus, connexion comprise, puis s'arrête. Le flux envoie le texte de l'assistant mot par mot : les fragments consécutifs sont fusionnés en un événement (4000 caractères au plus), dont `event_id` est celui du dernier fragment. Les événements `status` et `result` ne répètent plus leur JSON brut. `after_event_id` reprend après `last_event_id`, qui reste le curseur fourni si aucun événement n'arrive. Un événement `error` est une erreur du flux (`stream_error`), pas la fin du run : `finished` ne vient que de `result` ou `done`. Une coupure réseau rend les événements déjà reçus avec `interrupted`. Un fragment isolé de plus de 500 caractères est coupé et porte `clipped` ; le résultat complet se lit avec `cursor_get_run`. Abandonner un de ces appels n'annule pas le run.
 
 Limite observée : lors d'un essai réel, un agent a écrit `artifacts/result.txt` dans sa VM, le flux l'a confirmé, mais `cursor_list_artifacts` est restée vide et le téléchargement a répondu `404 artifact_not_found`. Pour un résultat de calcul, demander à l'agent de le mettre dans sa réponse finale (`cursor_get_run`) ou dans une branche Git.
 
-`cursor_list_artifacts` liste les fichiers sous `artifacts/`. `cursor_get_artifact_url` renvoie une URL présignée d'environ quinze minutes. `cursor_read_artifact` lit un texte UTF-8 d'au plus 5 Mo, sans envoyer la clé Cursor au stockage, et seulement si l'hôte se termine par `.amazonaws.com`.
+`cursor_list_artifacts` liste les fichiers sous `artifacts/`. `cursor_read_artifact` lit un texte UTF-8 d'au plus 5 Mo, sans envoyer la clé Cursor au stockage, et seulement si l'hôte se termine par `.amazonaws.com`. Pour un binaire ou un fichier trop gros, il rend l'URL présignée (environ quinze minutes) avec `text_unavailable` ; `url_only=true` rend l'URL sans télécharger.
 
-`cursor_get_usage` recopie les jetons renvoyés. Un coût absent reste absent.
+`cursor_get_usage` recopie les jetons et le coût renvoyés par l'API, en centimes de dollar (`raw_cents`, `charged_cents`), au total et par run. Un coût absent reste absent.
 
-`cursor_archive_agent` et `cursor_unarchive_agent` sont réversibles. `cursor_delete_agent` est définitif.
+`cursor_archive_agent` archive un agent, ou le désarchive avec `unarchive=true` : c'est réversible. `cursor_delete_agent` est définitif.
 
-Les listes d'agents et de runs renvoient une page. `has_more` est faux quand `nextCursor` est absent. `include_archived` filtre la liste des agents quand il est fourni : `true` ajoute les agents archivés, qui sont sinon absents. L'ordre des agents n'est pas garanti par date de création (constaté en réel). Chaque agent porte son `url` (`https://cursor.com/agents/bc-...`), le lien direct vers l'interface web.
+Les listes d'agents et de runs renvoient une page. `has_more` est faux quand `nextCursor` est absent. `include_archived` filtre la liste des agents quand il est fourni : `true` ajoute les agents archivés, qui sont sinon absents. L'ordre des agents n'est pas garanti par date de création (constaté en réel), et l'API ne filtre pas par nom : `name` parcourt jusqu'à cinq pages de cent agents, filtre localement (sous-chaîne, sans casse) et indique `scanned` ; `next_cursor` permet de poursuivre. `pr_url` est un filtre de l'API : il rend l'agent lié à cette pull request. `cursor_list_repositories` accepte `query`, un filtre local sur les URL, et indique `total_count`. Chaque agent porte son `url` (`https://cursor.com/agents/bc-...`), le lien direct vers l'interface web.
 
-Chaque appel d'outil a un budget absolu, partagé par toutes ses sous-opérations (catalogue, POST, relectures, pauses) : 45 secondes par défaut, 95 pour la liste des dépôts, la création d'un agent et l'envoi d'une continuation, 45 pour l'annulation, `max_wait_seconds` pour le flux et l'attente. Chaque requête HTTP reste aussi bornée (40 secondes, 90 pour un POST de création) : une création réelle a dépassé 40 secondes. Une mutation n'est pas envoyée s'il reste moins de 5 secondes de budget : l'outil renvoie alors `TIMEOUT` sans rien avoir envoyé. Le délai d'un client MCP doit dépasser ces budgets. Les exemples règlent Codex à 100 secondes et OpenCode à 100000 millisecondes. Un client qui coupe plus tôt peut abandonner une création déjà envoyée et, s'il relance sans le même `agent_id`, en payer une seconde.
+Chaque appel d'outil a un budget absolu, partagé par toutes ses sous-opérations (catalogue, POST, relectures, pauses) : 45 secondes par défaut, 95 pour la liste des dépôts, la création d'un agent et l'envoi d'une continuation, 45 pour l'annulation, `max_wait_seconds` pour le flux, et `wait_seconds` (au moins 45) pour l'attente d'un run. Chaque requête HTTP reste aussi bornée (40 secondes, 90 pour un POST de création) : une création réelle a dépassé 40 secondes. Une mutation n'est pas envoyée s'il reste moins de 5 secondes de budget : l'outil renvoie alors `TIMEOUT` sans rien avoir envoyé. Le délai d'un client MCP doit dépasser ces budgets. Les exemples règlent Codex à 100 secondes et OpenCode à 100000 millisecondes. Un client qui coupe plus tôt peut abandonner une création déjà envoyée et, s'il relance sans le même `agent_id`, en payer une seconde.
 
 ## Calcul intensif
 
@@ -76,8 +78,8 @@ L'API ne choisit pas la taille CPU, RAM ou GPU d'une VM Cursor. Pour un calcul l
 cursor_list_models
 → cursor_create_agent(prompt, model_id, reasoning_level, env_type, env_name, name)
 → conserver agent_id et run_id
-→ cursor_read_run_events ou cursor_wait_run
-→ cursor_get_run pour le texte final
+→ cursor_get_run(wait_seconds=60), à répéter tant que timed_out ; cursor_read_run_events pour suivre la progression
+→ cursor_get_run pour le texte final, cursor_get_usage pour le coût
 → cursor_list_artifacts puis cursor_read_artifact
 → cursor_create_run sur le même agent si une suite est nécessaire
 → cursor_archive_agent, puis cursor_delete_agent seulement avec les deux garde-fous
@@ -93,7 +95,7 @@ Ce MCP ne remplace pas GitHub. L'appelant pousse le commit voulu sur une branche
 Pousser le commit sur une branche et vérifier sa tête
 → cursor_create_agent(..., starting_ref=nom-de-branche)
 → conserver agent_id et run_id
-→ cursor_get_run(...) jusqu'à un état terminal
+→ cursor_get_run(..., wait_seconds=60) jusqu'à un état terminal
 → relire GitHub : HEAD, diff, checks, reviews
 → cursor_create_run(...) sur le même agent si des corrections sont nécessaires. Le modèle ne change pas.
 → relire GitHub après le nouveau run
@@ -137,7 +139,7 @@ OpenCode : `examples/opencode.json`. La clé utilise `{env:CURSOR_API_KEY}`. La 
 - `CONTINUATION_REFUSED` : l'agent est archivé, son statut est inconnu, ou `workOnCurrentBranch` n'est pas explicitement `false` (vrai ou absent).
 - `DELETE_DISABLED` : `CURSOR_MCP_ALLOW_DELETE` n'est pas exactement `1`.
 - `STREAM_EXPIRED` : le flux n'est plus rejouable. Lire `cursor_get_run`.
-- `MUTATION_OUTCOME_UNKNOWN` : ne pas renvoyer la même création avec un nouvel identifiant. Appeler `cursor_get_agent` avec l'identifiant renvoyé. Sans `agent_id`, chercher le `name` avec `cursor_list_agents`.
+- `MUTATION_OUTCOME_UNKNOWN` : ne pas renvoyer la même création avec un nouvel identifiant. Appeler `cursor_get_agent` avec l'identifiant renvoyé. Sans `agent_id`, chercher l'agent avec `cursor_list_agents(name=...)`.
 - `GET /v1/repositories` peut être lent et est fortement limité (1 requête par minute, 30 par heure). Le cache de cinq minutes ne couvre que le processus courant.
 - Le stderr annonce `MODE SIMULÉ` quand `CURSOR_MCP_FIXTURE=1`. Cette variable avec une vraie clé empêche tout appel.
 - stdout doit rester le canal MCP. Si un client annonce un JSON invalide, chercher un `print` ou un journal qui n'est pas sur stderr.

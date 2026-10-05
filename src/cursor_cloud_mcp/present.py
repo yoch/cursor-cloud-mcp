@@ -1,8 +1,9 @@
 """Projection des payloads Cursor vers les vues MCP. Les champs inconnus sont ignorés."""
 
+import json
 from typing import Literal
 
-from cursor_cloud_mcp.catalog import reasoning_view
+from cursor_cloud_mcp.catalog import default_selection, find_model, reasoning_parameter, restricted
 from cursor_cloud_mcp.config import RESULT_MAX_LIMIT
 from cursor_cloud_mcp.errors import ErrorCode, failure
 from cursor_cloud_mcp.models import (
@@ -10,21 +11,20 @@ from cursor_cloud_mcp.models import (
     AgentPageView,
     AgentView,
     CancelView,
+    CostView,
     CreateAgentView,
     CreateRunView,
     GitBranchView,
     GitView,
     ModelListView,
-    ModelParameterView,
-    ModelSelectionView,
-    ModelValueView,
-    ModelVariantView,
     ModelView,
     RemoteAccount,
     RemoteAgent,
     RemoteAgentPage,
+    RemoteCost,
     RemoteCreateAgent,
     RemoteCreateRun,
+    RemoteModel,
     RemoteModelList,
     RemoteRepositoryList,
     RemoteRun,
@@ -45,10 +45,7 @@ from cursor_cloud_mcp.models import (
 )
 from cursor_cloud_mcp.slicing import slice_text
 
-_NEXT_POLL = (
-    "Suivre avec cursor_read_run_events ou cursor_wait_run, puis cursor_get_run. "
-    "Ne pas créer un autre agent."
-)
+_NEXT_POLL = "Suivre avec cursor_get_run (wait_seconds) ou cursor_read_run_events. Ne pas créer un autre agent."
 
 
 def account_view(remote: RemoteAccount) -> AccountView:
@@ -62,50 +59,52 @@ def account_view(remote: RemoteAccount) -> AccountView:
     )
 
 
-def model_list_view(remote: RemoteModelList) -> ModelListView:
-    items: list[ModelView] = []
-    for model in remote.items:
-        parameters = None
-        if model.parameters is not None:
-            parameters = [
-                ModelParameterView(
-                    id=parameter.id,
-                    display_name=parameter.displayName,
-                    values=[
-                        ModelValueView(value=item.value, display_name=item.displayName)
-                        for item in parameter.values
-                    ],
-                )
-                for parameter in model.parameters
-            ]
-        variants = None
-        if model.variants is not None:
-            variants = [
-                ModelVariantView(
-                    params=[ModelSelectionView(id=param.id, value=param.value) for param in variant.params],
-                    display_name=variant.displayName,
-                    description=variant.description,
-                    is_default=variant.isDefault,
-                )
-                for variant in model.variants
-            ]
-        items.append(
-            ModelView(
-                id=model.id,
-                display_name=model.displayName,
-                description=model.description,
-                aliases=model.aliases,
-                parameters=parameters,
-                variants=variants,
-                reasoning_param=reasoning_view(model),
-            )
-        )
-    return ModelListView(items=items)
+def model_list_view(remote: RemoteModelList, *, model_id: str | None = None) -> ModelListView:
+    """Catalogue compact. Avec model_id, un seul modèle et ses variantes valides."""
+    if model_id is not None:
+        model = find_model(remote, model_id)
+        variants = [
+            {item.id: item.value for item in variant.params if item.id in _published(model)}
+            for variant in model.variants or []
+        ]
+        unique = [item for index, item in enumerate(variants) if item and item not in variants[:index]]
+        return ModelListView(items=[_model_view(model).model_copy(update={"variants": unique or None})])
+    return ModelListView(items=[_model_view(model) for model in remote.items])
 
 
-def repository_list_view(remote: RemoteRepositoryList, *, cache_hit: bool, ttl_seconds: int) -> RepositoryListView:
+def _model_view(model: RemoteModel) -> ModelView:
+    params = {parameter.id: [item.value for item in parameter.values] for parameter in model.parameters or []}
+    reasoning = reasoning_parameter(model)
+    return ModelView(
+        id=model.id,
+        display_name=model.displayName,
+        description=model.description,
+        aliases=model.aliases or None,
+        params=params or None,
+        defaults=default_selection(model),
+        reasoning_param=None if reasoning is None else reasoning.id,
+        restricted_combinations=restricted(model) or None,
+    )
+
+
+def _published(model: RemoteModel) -> set[str]:
+    return {parameter.id for parameter in model.parameters or []}
+
+
+def repository_list_view(
+    remote: RemoteRepositoryList,
+    *,
+    cache_hit: bool,
+    ttl_seconds: int,
+    query: str | None = None,
+) -> RepositoryListView:
+    urls = [item.url for item in remote.items]
+    if query is not None:
+        needle = query.casefold()
+        urls = [url for url in urls if needle in url.casefold()]
     return RepositoryListView(
-        items=[item.url for item in remote.items],
+        items=urls,
+        total_count=len(remote.items),
         cache_ttl_seconds=ttl_seconds,
         cache_hit=cache_hit,
     )
@@ -118,6 +117,10 @@ def agent_page_view(remote: RemoteAgentPage) -> AgentPageView:
         next_cursor=cursor,
         has_more=has_more,
     )
+
+
+def next_page(remote: RemoteAgentPage) -> tuple[str | None, bool]:
+    return _cursor(remote.nextCursor)
 
 
 def agent_view(remote: RemoteAgent) -> AgentView:
@@ -183,25 +186,19 @@ def run_view(remote: RemoteRun, *, offset: int, limit: int) -> RunView:
         "updated_at": remote.updatedAt,
         "duration_ms": remote.durationMs,
         "git": git,
-        "result_offset": offset,
-        "result_limit": limit,
+        "error": _run_error(remote.error),
     }
     if remote.result is None:
         if offset != 0:
             raise failure(ErrorCode.VALIDATION, "Ce run n'a pas de champ result à découper.")
-        return RunView(
-            result_present=False,
-            result=None,
-            result_total_chars=None,
-            result_truncated=False,
-            next_result_offset=None,
-            **common,
-        )
+        return RunView(result_present=False, **common)
     chunk, truncated, next_offset = slice_text(remote.result, offset, limit)
     return RunView(
         result_present=True,
         result=chunk,
         result_total_chars=len(remote.result),
+        result_offset=offset,
+        result_limit=limit,
         result_truncated=truncated,
         next_result_offset=next_offset,
         **common,
@@ -265,11 +262,37 @@ def cancel_view(
 def usage_view(remote: RemoteUsage) -> UsageView:
     return UsageView(
         total_usage=tokens_from(remote.totalUsage),
+        total_cost=_cost(remote.cost),
         runs=[
-            RunUsageView(run_id=item.id, usage_uuid=item.usageUuid, usage=tokens_from(item.usage))
+            RunUsageView(
+                run_id=item.id,
+                usage_uuid=item.usageUuid,
+                usage=tokens_from(item.usage),
+                cost=_cost(item.cost),
+            )
             for item in remote.runs
         ],
     )
+
+
+def _cost(remote: RemoteCost | None) -> CostView | None:
+    if remote is None:
+        return None
+    return CostView(raw_cents=round(remote.rawCostCents, 4), charged_cents=round(remote.chargedCents, 4))
+
+
+def _run_error(value: object) -> str | None:
+    """``error`` est libre dans le contrat : message lisible si présent, sinon JSON compact borné."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value[:2000]
+    if isinstance(value, dict):
+        message = value.get("message")
+        code = value.get("code")
+        if isinstance(message, str):
+            return f"{code}: {message}"[:2000] if isinstance(code, str) else message[:2000]
+    return json.dumps(value, ensure_ascii=False)[:2000]
 
 
 def ensure_continuation_allowed(agent: RemoteAgent) -> None:
@@ -277,7 +300,7 @@ def ensure_continuation_allowed(agent: RemoteAgent) -> None:
     if agent.status == "ARCHIVED":
         raise failure(
             ErrorCode.CONTINUATION_REFUSED,
-            "L'agent est archivé. Le désarchiver avec cursor_unarchive_agent avant une continuation.",
+            "L'agent est archivé. Le désarchiver avec cursor_archive_agent (unarchive=true) avant une continuation.",
         )
     if not agent_status_known(agent.status):
         raise failure(

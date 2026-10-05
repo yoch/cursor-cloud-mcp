@@ -10,13 +10,9 @@ import httpx
 
 from cursor_cloud_mcp import budget
 from cursor_cloud_mcp.client import CursorCloudClient, ResponseTooLarge, read_bounded
-from cursor_cloud_mcp.config import (
-    EVENT_TEXT_MAX_CHARS,
-    RESULT_DEFAULT_LIMIT,
-    STREAM_MAX_BYTES,
-)
+from cursor_cloud_mcp.config import EVENT_MERGED_MAX_CHARS, EVENT_TEXT_MAX_CHARS, STREAM_MAX_BYTES
 from cursor_cloud_mcp.errors import ErrorCode, failure
-from cursor_cloud_mcp.models import RunEventsView, RunEventView, WaitRunView
+from cursor_cloud_mcp.models import RunEventsView, RunEventView, RunView
 from cursor_cloud_mcp.present import run_view
 from cursor_cloud_mcp.validation import require_event_id, require_segment
 
@@ -119,14 +115,17 @@ async def wait_run(
     agent_id: str,
     run_id: str,
     max_wait_seconds: float,
+    offset: int,
+    limit: int,
     progress: Callable[[int, str], Awaitable[None]] | None = None,
-) -> WaitRunView:
+) -> RunView:
+    """Relit le run toutes les cinq secondes jusqu'à un état terminal ou l'échéance."""
     require_segment(agent_id, label="agent_id")
     require_segment(run_id, label="run_id")
     loop = asyncio.get_running_loop()
     deadline = budget.deadline_at(max_wait_seconds)
     reads = 0
-    last: WaitRunView | None = None
+    last: RunView | None = None
     while True:
         remaining = deadline - loop.time()
         if remaining <= 0:
@@ -134,8 +133,8 @@ async def wait_run(
                 raise failure(ErrorCode.TIMEOUT, "Délai d'attente dépassé avant la première lecture.")
             return last.model_copy(update={"timed_out": True})
         remote = await client.get_run(agent_id, run_id, deadline=min(client.deadline_seconds, remaining))
-        view = run_view(remote, offset=0, limit=RESULT_DEFAULT_LIMIT)
-        last = WaitRunView(**view.model_dump(), timed_out=False)
+        view = run_view(remote, offset=offset, limit=limit)
+        last = view.model_copy(update={"timed_out": False})
         reads += 1
         if progress is not None:
             await progress(reads, f"Statut relu : {view.status}")
@@ -191,7 +190,7 @@ async def _collect(
                     view = _simplify(raw_event)
                     if view.status is not None and view.kind in {"status", "result"}:
                         run_status = view.status
-                    events.append(view)
+                    _append(events, view)
                     if view.kind == "error":
                         # Erreur du flux : elle ne prouve pas, seule, la fin du run.
                         stream_error = True
@@ -228,21 +227,61 @@ def _simplify(event: SseEvent) -> RunEventView:
     payload = _payload(event.data)
     status = _string_field(payload, "status")
     if event.event == "tool_call":
+        # Le SDK Cursor lit aussi la forme imbriquée sous data.
+        if isinstance(payload, dict) and "name" not in payload and isinstance(payload.get("data"), dict):
+            payload = payload["data"]
+            status = _string_field(payload, "status")
         args, args_clipped = _clip(payload.get("args") if isinstance(payload, dict) else None)
         result, result_clipped = _clip(payload.get("result") if isinstance(payload, dict) else None)
         return RunEventView(
             event_id=event.event_id,
             kind="tool_call",
-            status=status,
+            call_id=_string_field(payload, "callId"),
             tool_name=_string_field(payload, "name"),
             tool_status=status,
             tool_args=args,
             tool_result=result,
-            clipped=args_clipped or result_clipped,
+            clipped=(args_clipped or result_clipped) or None,
         )
-    text, clipped = _text_of(payload, event.data)
     kind = event.event if event.event in {"status", "thinking", "result", "error", "done"} else "assistant"
-    return RunEventView(event_id=event.event_id, kind=kind, text=text, status=status, clipped=clipped)
+    if kind in {"status", "result", "done"}:
+        # Leur JSON brut répète status et git : seul un vrai texte est gardé.
+        text, clipped = _clip(_message_of(payload))
+        return RunEventView(event_id=event.event_id, kind=kind, text=text, status=status, clipped=clipped or None)
+    text, clipped = _text_of(payload, event.data)
+    return RunEventView(event_id=event.event_id, kind=kind, text=text, status=status, clipped=clipped or None)
+
+
+def _append(events: list[RunEventView], view: RunEventView) -> None:
+    """Le flux envoie le texte mot par mot : les fragments consécutifs forment un seul événement."""
+    previous = events[-1] if events else None
+    if previous is not None and _completes(previous, view):
+        # Un appel d'outil arrive deux fois (running, puis terminé) : seul le dernier état est gardé.
+        events[-1] = view
+        return
+    if (
+        previous is not None
+        and view.kind in {"assistant", "thinking"}
+        and previous.kind == view.kind
+        and not previous.clipped
+        and not view.clipped
+        and previous.text is not None
+        and view.text is not None
+        and len(previous.text) + len(view.text) <= EVENT_MERGED_MAX_CHARS
+    ):
+        events[-1] = previous.model_copy(
+            update={"text": previous.text + view.text, "event_id": view.event_id or previous.event_id}
+        )
+        return
+    events.append(view)
+
+
+def _completes(previous: RunEventView, view: RunEventView) -> bool:
+    if previous.kind != "tool_call" or view.kind != "tool_call" or previous.tool_status != "running":
+        return False
+    if previous.call_id is not None or view.call_id is not None:
+        return previous.call_id == view.call_id
+    return previous.tool_name == view.tool_name and previous.tool_args == view.tool_args
 
 
 def _payload(data: str) -> object:
@@ -267,6 +306,15 @@ def _text_of(payload: object, raw: str) -> tuple[str | None, bool]:
     if raw:
         return _clip(raw)
     return None, False
+
+
+def _message_of(payload: object) -> str | None:
+    if isinstance(payload, dict):
+        for key in ("result", "text", "message"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
 
 
 def _string_field(payload: object, key: str) -> str | None:

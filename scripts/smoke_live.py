@@ -1,4 +1,4 @@
-"""Smoke test réel, PAYANT, des dix-neuf outils, sur le vrai serveur stdio.
+"""Smoke test réel, PAYANT, des seize outils, sur le vrai serveur stdio.
 
 Opt-in : `SMOKE_PAID=1`. Deux agents `composer-2.5`, quelques runs très courts,
 et suppression de ces deux agents à la fin, sauf avec `SMOKE_KEEP=1` qui les
@@ -24,6 +24,16 @@ BRANCH = os.environ.get("SMOKE_BRANCH", "main")
 FWD_VALUE = "smoke-forwarded-value-12345678"
 PUB_VALUE = "smoke-public-value-87654321"
 SHA = "a" * 40
+# Variables réseau transmises au serveur si elles existent : proxy et autorité de certification
+# d'un environnement géré. Sans elles, le serveur ne joint pas l'API derrière un proxy.
+NETWORK_ENV = (
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+)
 
 Result = tuple[bool, dict[str, object]]
 
@@ -84,8 +94,8 @@ async def wait_terminal(
     for _ in range(rounds):
         ok, data = await call(
             client,
-            "cursor_wait_run",
-            {"agent_id": agent_id, "run_id": run_id, "max_wait_seconds": 60},
+            "cursor_get_run",
+            {"agent_id": agent_id, "run_id": run_id, "wait_seconds": 60},
         )
         if not ok or not data.get("timed_out"):
             return data
@@ -114,6 +124,7 @@ async def main() -> int:
             "CURSOR_MCP_ALLOW_DELETE": "1",
             "CURSOR_MCP_FORWARD_ENV": "SMOKE_FWD",
             "SMOKE_FWD": FWD_VALUE,
+            **{name: os.environ[name] for name in NETWORK_ENV if name in os.environ},
         },
         cwd=root,
     )
@@ -143,7 +154,7 @@ async def main() -> int:
 
 async def run_all(client: Client, report: Report, created: list[str]) -> None:
     listed = await client.list_tools()
-    report.check("tools/list", len(listed.tools) == 19, f"outils={len(listed.tools)}")
+    report.check("tools/list", len(listed.tools) == 16, f"outils={len(listed.tools)}")
 
     ok, data = await call(client, "cursor_get_account")
     report.check("cursor_get_account", ok, f"key_name_present={'api_key_name' in data}")
@@ -154,16 +165,11 @@ async def run_all(client: Client, report: Report, created: list[str]) -> None:
     report.check(
         "cursor_list_models",
         composer is not None,
-        f"modèles={len(models)} {MODEL}=présent",
+        f"modèles={len(models)} {MODEL}={'présent' if composer else 'absent'}",
     )
-    params = [item["id"] for item in (composer or {}).get("parameters") or []]  # type: ignore[index]
-    fast_values = [
-        value["value"]
-        for item in (composer or {}).get("parameters") or []  # type: ignore[union-attr]
-        if item["id"] == "fast"
-        for value in item["values"]
-    ]
-    print(f"      {MODEL} paramètres={params} fast={fast_values}")
+    model_params: dict[str, list[str]] = (composer or {}).get("params") or {}  # type: ignore[assignment]
+    fast_values = model_params.get("fast", [])
+    print(f"      {MODEL} paramètres={sorted(model_params)} fast={fast_values}")
 
     ok, data = await call(client, "cursor_list_repositories")
     repos = [str(item) for item in data.get("items", [])] if ok else []  # type: ignore[union-attr]
@@ -213,11 +219,12 @@ async def smoke_repo_agent(
     fast_values: list[str],
 ) -> str | None:
     agent_id = f"bc-{uuid.uuid4()}"
+    repo_name = f"smoke-repo-{uuid.uuid4().hex[:8]}"
     args: dict[str, object] = {
         "prompt": "Réponds uniquement par le mot OK. N'exécute aucune commande et ne modifie aucun fichier.",
         "repository": REPO_URL,
         "starting_ref": BRANCH,
-        "name": "smoke-repo",
+        "name": repo_name,
         "model_id": MODEL,
         "agent_id": agent_id,
     }
@@ -274,7 +281,7 @@ async def smoke_repo_agent(
 
     data = await wait_terminal(client, agent_id, run_id)
     report.check(
-        "cursor_wait_run",
+        "cursor_get_run (wait_seconds)",
         data.get("status") == "FINISHED",
         f"statut={data.get('status')} timed_out={data.get('timed_out')}",
     )
@@ -296,7 +303,12 @@ async def smoke_repo_agent(
     ok, data = await call(client, "cursor_get_usage", {"agent_id": agent_id})
     if ok:
         total = data["total_usage"]["total_tokens"]  # type: ignore[index]
-        report.check("cursor_get_usage", total > 0, f"jetons={total}")
+        cost = data.get("total_cost") or {}
+        report.check(
+            "cursor_get_usage",
+            total > 0,
+            f"jetons={total} coût_facturé_cents={cost.get('charged_cents', 'absent')}",  # type: ignore[union-attr]
+        )
     else:
         report.add(
             "cursor_get_usage",
@@ -304,9 +316,13 @@ async def smoke_repo_agent(
             f"code={code_of(data)} (fonction à accès anticipé)",
         )
 
-    ok, data = await call(client, "cursor_list_agents", {"limit": 10})
+    ok, data = await call(client, "cursor_list_agents", {"name": repo_name})
     names = {item["agent_id"] for item in data.get("items", [])} if ok else set()  # type: ignore[union-attr]
-    report.check("cursor_list_agents", agent_id in names, f"trouvé={agent_id in names}")
+    report.check(
+        "cursor_list_agents (name)",
+        agent_id in names,
+        f"trouvé={agent_id in names} parcourus={data.get('scanned')}",
+    )
 
     ok, data = await call(
         client,
@@ -402,9 +418,11 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
     if items:
         path = items[0]
         ok, data = await call(
-            client, "cursor_get_artifact_url", {"agent_id": agent_id, "path": path}
+            client,
+            "cursor_read_artifact",
+            {"agent_id": agent_id, "path": path, "url_only": True},
         )
-        report.check("cursor_get_artifact_url", ok, f"url_présente={'url' in data}")
+        report.check("cursor_read_artifact (url_only)", ok, f"url_présente={'url' in data}")
         ok, data = await call(
             client, "cursor_read_artifact", {"agent_id": agent_id, "path": path}
         )
@@ -413,7 +431,7 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
         )
     else:
         report.add(
-            "cursor_get_artifact_url",
+            "cursor_read_artifact (url_only)",
             "WARN",
             "aucun artefact listé (limite connue de l'API)",
         )
@@ -480,9 +498,11 @@ async def smoke_lifecycle(client: Client, report: Report, agent_id: str) -> None
         not ok and code_of(data) == "CONTINUATION_REFUSED",
         code_of(data),
     )
-    ok, data = await call(client, "cursor_unarchive_agent", {"agent_id": agent_id})
+    ok, data = await call(
+        client, "cursor_archive_agent", {"agent_id": agent_id, "unarchive": True}
+    )
     report.check(
-        "cursor_unarchive_agent",
+        "cursor_archive_agent (unarchive)",
         ok and bool(data.get("outcome_confirmed")),
         f"statut={data.get('observed_status')}",
     )

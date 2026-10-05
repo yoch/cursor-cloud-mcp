@@ -45,6 +45,8 @@ class ErrorBody(BaseModel):
     remote_code: str | None = None
     request_id: str | None = None
     retry_after_seconds: float | None = None
+    help_url: str | None = None
+    provider: str | None = None
 
 
 class CursorFailure(Exception):
@@ -72,6 +74,8 @@ def failure(
     remote_code: str | None = None,
     request_id: str | None = None,
     retry_after_seconds: float | None = None,
+    help_url: str | None = None,
+    provider: str | None = None,
 ) -> CursorFailure:
     return CursorFailure(
         ErrorBody(
@@ -86,6 +90,8 @@ def failure(
             remote_code=remote_code,
             request_id=request_id,
             retry_after_seconds=retry_after_seconds,
+            help_url=help_url,
+            provider=provider,
         )
     )
 

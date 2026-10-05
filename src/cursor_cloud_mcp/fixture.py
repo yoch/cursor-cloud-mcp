@@ -275,11 +275,14 @@ class FixtureTransport(httpx.AsyncBaseTransport):
             "cacheReadTokens": 0,
             "totalTokens": 5,
         }
+        cost = {"rawCostCents": 0.5, "chargedCents": 0.5}
+        total = len(rows) * 0.5
         return _json(
             200,
             {
                 "totalUsage": usage,
-                "runs": [{"id": row["id"], "usage": usage} for row in rows],
+                "cost": {"rawCostCents": total, "chargedCents": total},
+                "runs": [{"id": row["id"], "usage": usage, "cost": cost} for row in rows],
             },
         )
 

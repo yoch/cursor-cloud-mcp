@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from cursor_cloud_mcp.config import (
     NAME_MAX_CHARS,
@@ -79,6 +79,7 @@ class RemoteRun(BaseModel):
     updatedAt: str
     durationMs: int | None = None
     result: str | None = None
+    error: object | None = None
     git: RemoteGit | None = None
 
 
@@ -190,12 +191,20 @@ class RemoteTokenUsage(BaseModel):
     totalTokens: int
 
 
+class RemoteCost(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    rawCostCents: float
+    chargedCents: float
+
+
 class RemoteRunUsage(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
     usage: RemoteTokenUsage
     usageUuid: str | None = None
+    cost: RemoteCost | None = None
 
 
 class RemoteUsage(BaseModel):
@@ -203,6 +212,7 @@ class RemoteUsage(BaseModel):
 
     totalUsage: RemoteTokenUsage
     runs: list[RemoteRunUsage]
+    cost: RemoteCost | None = None
 
 
 class RemoteId(BaseModel):
@@ -233,25 +243,16 @@ class RemoteArtifactDownload(BaseModel):
 
 
 class RepositoryInput(BaseModel):
-    """Dépôt demandé à la création. ``starting_ref`` est un nom de branche ; ``starting_sha`` en est l'ancien nom."""
+    """Dépôt demandé à la création. ``starting_ref`` est un nom de branche."""
 
     model_config = ConfigDict(extra="forbid")
 
     url: str
-    starting_ref: str | None = None
-    starting_sha: str | None = None
-
-    @model_validator(mode="after")
-    def _one_ref(self) -> "RepositoryInput":
-        if self.starting_ref is None and self.starting_sha is None:
-            raise ValueError("starting_ref est requis (starting_sha est accepté comme ancien nom)")
-        if self.starting_ref is not None and self.starting_sha is not None and self.starting_ref != self.starting_sha:
-            raise ValueError("starting_ref et starting_sha se contredisent")
-        return self
+    starting_ref: str
 
     @property
     def ref(self) -> str:
-        return self.starting_ref if self.starting_ref is not None else str(self.starting_sha)
+        return self.starting_ref
 
 
 class AccountView(BaseModel):
@@ -265,54 +266,20 @@ class AccountView(BaseModel):
     user_last_name: str | None = None
 
 
-class ModelValueView(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    value: str
-    display_name: str | None = None
-
-
-class ModelParameterView(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    display_name: str | None = None
-    values: list[ModelValueView]
-
-
-class ModelSelectionView(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    value: str
-
-
-class ModelVariantView(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    params: list[ModelSelectionView]
-    display_name: str
-    description: str | None = None
-    is_default: bool | None = None
-
-
-class ReasoningParamView(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str
-    values: list[str]
-
-
 class ModelView(BaseModel):
+    """Forme compacte : une valeur par paramètre, sans le produit cartésien des variantes."""
+
     model_config = ConfigDict(extra="forbid")
 
     id: str
     display_name: str
     description: str | None = None
     aliases: list[str] | None = None
-    parameters: list[ModelParameterView] | None = None
-    variants: list[ModelVariantView] | None = None
-    reasoning_param: ReasoningParamView | None = None
+    params: dict[str, list[str]] | None = None
+    defaults: dict[str, str] | None = None
+    reasoning_param: str | None = None
+    restricted_combinations: bool | None = None
+    variants: list[dict[str, str]] | None = None
 
 
 class ModelListView(BaseModel):
@@ -325,6 +292,7 @@ class RepositoryListView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[str]
+    total_count: int
     cache_ttl_seconds: int
     cache_hit: bool
 
@@ -364,6 +332,7 @@ class AgentPageView(BaseModel):
     items: list[AgentSummaryView]
     next_cursor: str | None = None
     has_more: bool
+    scanned: int | None = None
 
 
 class AgentView(AgentSummaryView):
@@ -395,7 +364,7 @@ class RunSummaryView(BaseModel):
     agent_id: str
     status: str
     status_known: bool
-    terminal: bool | None
+    terminal: bool | None = None
     created_at: str
     updated_at: str
     duration_ms: int | None = None
@@ -412,12 +381,14 @@ class RunPageView(BaseModel):
 class RunView(RunSummaryView):
     result_present: bool
     result: str | None = None
-    result_offset: int = 0
-    result_limit: int = RESULT_DEFAULT_LIMIT
+    result_offset: int | None = None
+    result_limit: int | None = None
     result_total_chars: int | None = None
-    result_truncated: bool = False
+    result_truncated: bool | None = None
     next_result_offset: int | None = None
+    error: str | None = None
     git: GitView | None = None
+    timed_out: bool | None = None
 
 
 class CreateAgentView(BaseModel):
@@ -468,20 +439,31 @@ class TokenUsageView(BaseModel):
     total_tokens: int
 
 
+class CostView(BaseModel):
+    """Coût tel que l'API le renvoie, en centimes de dollar. Absent si l'API ne le donne pas."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    raw_cents: float
+    charged_cents: float
+
+
 class RunUsageView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     run_id: str
     usage_uuid: str | None = None
     usage: TokenUsageView
+    cost: CostView | None = None
 
 
 class UsageView(BaseModel):
-    """Jetons réellement renvoyés. Aucun champ de coût : l'API n'en fournit pas."""
+    """Jetons et coût réellement renvoyés. Rien n'est estimé."""
 
     model_config = ConfigDict(extra="forbid")
 
     total_usage: TokenUsageView
+    total_cost: CostView | None = None
     runs: list[RunUsageView]
 
 
@@ -492,11 +474,12 @@ class RunEventView(BaseModel):
     kind: Literal["status", "assistant", "tool_call", "thinking", "result", "error", "done"]
     text: str | None = None
     status: str | None = None
+    call_id: str | None = None
     tool_name: str | None = None
     tool_status: str | None = None
     tool_args: str | None = None
     tool_result: str | None = None
-    clipped: bool = False
+    clipped: bool | None = None
 
 
 class RunEventsView(BaseModel):
@@ -512,10 +495,6 @@ class RunEventsView(BaseModel):
     run_status: str | None = None
     retention_seconds: int | None = None
     truncated: bool
-
-
-class WaitRunView(RunView):
-    timed_out: bool
 
 
 class ArtifactItemView(BaseModel):
@@ -540,17 +519,21 @@ class ArtifactUrlView(BaseModel):
     expires_at: str
 
 
-class ArtifactTextView(BaseModel):
+class ArtifactReadView(BaseModel):
+    """Texte d'un artefact, ou son URL présignée s'il n'est pas lisible comme texte ou si elle est demandée."""
+
     model_config = ConfigDict(extra="forbid")
 
     path: str
-    text: str
-    offset: int
-    limit: int
-    total_chars: int
-    truncated: bool
-    next_offset: int | None = None
     expires_at: str
+    url: str | None = None
+    text_unavailable: Literal["not_utf8", "too_large"] | None = None
+    text: str | None = None
+    offset: int | None = None
+    limit: int | None = None
+    total_chars: int | None = None
+    truncated: bool | None = None
+    next_offset: int | None = None
 
 
 class ArchiveView(BaseModel):

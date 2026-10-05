@@ -166,7 +166,7 @@ async def test_reasoning_level_is_resolved_before_post() -> None:
         body = json.loads(request.content.decode())
         assert body["model"] == {
             "id": "grok-4.6",
-            "params": [{"id": "effort", "value": "high"}, {"id": "thinking", "value": "true"}],
+            "params": [{"id": "thinking", "value": "true"}, {"id": "effort", "value": "high"}],
         }
         assert "repos" not in body
         assert body["workOnCurrentBranch"] is False
@@ -181,7 +181,7 @@ async def test_reasoning_level_is_resolved_before_post() -> None:
                     "prompt": "Calcule 2+2 et écris artifacts/result.txt",
                     "model_id": "grok-4.6",
                     "reasoning_level": "high",
-                    "thinking": True,
+                    "model_params": [{"id": "thinking", "value": "true"}],
                     "agent_id": _AGENT,
                 },
             )
@@ -191,6 +191,89 @@ async def test_reasoning_level_is_resolved_before_post() -> None:
     assert created["agent_id"] == _AGENT
     assert router.calls[0][1] == "/v1/models"
     assert router.calls[1][0] == "POST"
+
+
+_CATALOG = {
+    "items": [
+        {
+            "id": "gpt-5.5",
+            "displayName": "GPT-5.5",
+            "aliases": ["gpt-5-5", "gpt"],
+            "parameters": [
+                {"id": "reasoning", "values": [{"value": "low"}, {"value": "high"}]},
+                {"id": "fast", "values": [{"value": "false"}, {"value": "true"}]},
+            ],
+            # Trois variantes sur quatre combinaisons : low + fast n'existe pas.
+            "variants": [
+                {
+                    "params": [{"id": "reasoning", "value": "low"}, {"id": "fast", "value": "false"}],
+                    "displayName": "GPT-5.5",
+                    "isDefault": True,
+                },
+                {"params": [{"id": "reasoning", "value": "high"}, {"id": "fast", "value": "false"}], "displayName": "x"},
+                {"params": [{"id": "reasoning", "value": "high"}, {"id": "fast", "value": "true"}], "displayName": "x"},
+            ],
+        },
+        {"id": "gpt-5.4", "displayName": "GPT-5.4", "aliases": ["gpt"]},
+    ]
+}
+
+
+async def test_model_catalog_is_compact_and_detailed_on_request() -> None:
+    client, _router = await _session(Router(lambda _request: httpx.Response(200, json=_CATALOG)))
+    try:
+        compact = _data(await client.call_tool("cursor_list_models", {}))
+        detail = _data(await client.call_tool("cursor_list_models", {"model_id": "gpt-5-5"}))
+        ambiguous = await client.call_tool("cursor_list_models", {"model_id": "gpt"})
+    finally:
+        await client.__aexit__(None, None, None)
+    first = compact["items"][0]
+    assert first == {
+        "id": "gpt-5.5",
+        "display_name": "GPT-5.5",
+        "aliases": ["gpt-5-5", "gpt"],
+        "params": {"reasoning": ["low", "high"], "fast": ["false", "true"]},
+        "defaults": {"reasoning": "low", "fast": "false"},
+        "reasoning_param": "reasoning",
+        "restricted_combinations": True,
+    }
+    assert compact["items"][1] == {"id": "gpt-5.4", "display_name": "GPT-5.4", "aliases": ["gpt"]}
+    assert [item["id"] for item in detail["items"]] == ["gpt-5.5"]
+    assert {"reasoning": "low", "fast": "true"} not in detail["items"][0]["variants"]
+    assert len(detail["items"][0]["variants"]) == 3
+    assert "gpt-5.5" in str(_error_payload(ambiguous)["message"])
+
+
+async def test_alias_and_invalid_combination_are_resolved_before_post() -> None:
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json=_CATALOG)
+        body = json.loads(request.content.decode())
+        assert body["model"] == {"id": "gpt-5.5", "params": [{"id": "reasoning", "value": "high"}]}
+        return _created(body["agentId"])
+
+    client, router = await _session(Router(responder))
+    try:
+        created = await client.call_tool(
+            "cursor_create_agent", {"prompt": "x", "model_id": "gpt-5-5", "reasoning_level": "high"}
+        )
+        refused = await client.call_tool(
+            "cursor_create_agent",
+            {
+                "prompt": "x",
+                "model_id": "gpt-5.5",
+                "reasoning_level": "low",
+                "model_params": [{"id": "fast", "value": "true"}],
+            },
+        )
+        ambiguous = await client.call_tool("cursor_create_agent", {"prompt": "x", "model_id": "gpt"})
+    finally:
+        await client.__aexit__(None, None, None)
+    assert created.is_error is False
+    assert _error_payload(refused)["code"] == "VALIDATION"
+    assert "Combinaison" in str(_error_payload(refused)["message"])
+    assert _error_payload(ambiguous)["code"] == "VALIDATION"
+    assert [call[0] for call in router.calls].count("POST") == 1
 
 
 async def test_unknown_reasoning_value_does_not_post() -> None:
@@ -222,7 +305,7 @@ async def test_named_cloud_with_repos_and_unpooled_multi_repo_are_local_errors()
             {
                 "prompt": "x",
                 "repository": "https://github.com/acme/demo",
-                "starting_sha": _BRANCH,
+                "starting_ref": _BRANCH,
                 "env_type": "cloud",
                 "env_name": "Release",
             },
@@ -232,8 +315,8 @@ async def test_named_cloud_with_repos_and_unpooled_multi_repo_are_local_errors()
             {
                 "prompt": "x",
                 "repositories": [
-                    {"url": "https://github.com/acme/demo", "starting_sha": _BRANCH},
-                    {"url": "https://github.com/acme/other", "starting_sha": _BRANCH},
+                    {"url": "https://github.com/acme/demo", "starting_ref": _BRANCH},
+                    {"url": "https://github.com/acme/other", "starting_ref": _BRANCH},
                 ],
             },
         )
@@ -272,8 +355,8 @@ async def test_forward_env_reads_allowlist_and_omits_agent_id(monkeypatch: pytes
                     "env_vars": {"PUBLIC": "visible"},
                     "forward_env": ["WORK_TOKEN"],
                     "repositories": [
-                        {"url": "https://github.com/acme/demo", "starting_sha": _BRANCH},
-                        {"url": "https://github.com/acme/other", "starting_sha": _BRANCH},
+                        {"url": "https://github.com/acme/demo", "starting_ref": _BRANCH},
+                        {"url": "https://github.com/acme/other", "starting_ref": _BRANCH},
                     ],
                 },
             )
@@ -342,8 +425,8 @@ async def test_wait_run_returns_when_terminal() -> None:
     try:
         view = _data(
             await client.call_tool(
-                "cursor_wait_run",
-                {"agent_id": _AGENT, "run_id": _RUN, "max_wait_seconds": 5},
+                "cursor_get_run",
+                {"agent_id": _AGENT, "run_id": _RUN, "wait_seconds": 5},
             )
         )
     finally:
@@ -385,12 +468,57 @@ async def test_artifact_download_has_no_cursor_authorization_and_rejects_other_h
             )
         )
         refused = await client.call_tool(
-            "cursor_get_artifact_url",
-            {"agent_id": _AGENT, "path": "../secrets"},
+            "cursor_read_artifact",
+            {"agent_id": _AGENT, "path": "../secrets", "url_only": True},
+        )
+        located = _data(
+            await client.call_tool(
+                "cursor_read_artifact",
+                {"agent_id": _AGENT, "path": "artifacts/result.txt", "url_only": True},
+            )
         )
     assert text["text"] == "résultat"
     assert "url" not in text
     assert _error_payload(refused)["code"] == "VALIDATION"
+    assert located == {
+        "path": "artifacts/result.txt",
+        "expires_at": "2026-10-01T00:15:00Z",
+        "url": "https://bucket.s3.us-east-1.amazonaws.com/result.txt",
+    }
+
+
+async def test_binary_or_large_artifact_returns_its_url() -> None:
+    def api(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "url": "https://bucket.s3.us-east-1.amazonaws.com/" + request.url.params["path"],
+                "expiresAt": "2026-10-01T00:15:00Z",
+            },
+        )
+
+    def download(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith(".png"):
+            return httpx.Response(200, content=b"\x89PNG\xff\xfe")
+        return httpx.Response(200, content=b"x" * 5_000_001)
+
+    server = build_server(
+        _settings(),
+        transport=httpx.MockTransport(api),
+        download_transport=httpx.MockTransport(download),
+    )
+    async with Client(server) as client:
+        binary = _data(
+            await client.call_tool("cursor_read_artifact", {"agent_id": _AGENT, "path": "artifacts/plot.png"})
+        )
+        large = _data(
+            await client.call_tool("cursor_read_artifact", {"agent_id": _AGENT, "path": "artifacts/big.txt"})
+        )
+    assert binary["text_unavailable"] == "not_utf8"
+    assert binary["url"].endswith("artifacts/plot.png")
+    assert "text" not in binary
+    assert large["text_unavailable"] == "too_large"
+    assert "text" not in large
 
 
 async def test_presigned_host_outside_amazonaws_is_not_fetched() -> None:

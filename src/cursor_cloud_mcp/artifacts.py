@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from typing import Literal
 
 import httpx
 
@@ -12,7 +13,7 @@ from cursor_cloud_mcp.errors import ErrorCode, failure
 from cursor_cloud_mcp.models import (
     ArtifactItemView,
     ArtifactListView,
-    ArtifactTextView,
+    ArtifactReadView,
     ArtifactUrlView,
 )
 from cursor_cloud_mcp.slicing import slice_text
@@ -46,23 +47,27 @@ async def read_artifact(
     *,
     offset: int,
     limit: int,
-) -> ArtifactTextView:
+    url_only: bool = False,
+) -> ArtifactReadView:
+    """Texte UTF-8 de 5 Mo au plus. Sinon, ou sur demande, l'URL présignée à télécharger ailleurs."""
     located = await artifact_url(client, agent_id, path)
-    raw = await fetch_presigned(
-        located.url,
-        transport=client.download_transport,
-        max_bytes=ARTIFACT_MAX_BYTES,
-        deadline=DEFAULT_DEADLINE_SECONDS,
-    )
+    if url_only:
+        return ArtifactReadView(path=located.path, expires_at=located.expires_at, url=located.url)
+    try:
+        raw = await fetch_presigned(
+            located.url,
+            transport=client.download_transport,
+            max_bytes=ARTIFACT_MAX_BYTES,
+            deadline=DEFAULT_DEADLINE_SECONDS,
+        )
+    except _TooLarge:
+        return _unreadable(located, "too_large")
     try:
         text = raw.decode("utf-8")
     except UnicodeError:
-        raise failure(
-            ErrorCode.INCOMPATIBLE_RESPONSE,
-            "L'artefact n'est pas du texte UTF-8. Utiliser cursor_get_artifact_url pour le récupérer autrement.",
-        ) from None
+        return _unreadable(located, "not_utf8")
     chunk, truncated, next_offset = slice_text(text, offset, limit)
-    return ArtifactTextView(
+    return ArtifactReadView(
         path=located.path,
         text=chunk,
         offset=offset,
@@ -71,6 +76,19 @@ async def read_artifact(
         truncated=truncated,
         next_offset=next_offset,
         expires_at=located.expires_at,
+    )
+
+
+class _TooLarge(Exception):
+    """Artefact au-delà de la limite de lecture texte : l'URL est rendue à la place."""
+
+
+def _unreadable(located: ArtifactUrlView, reason: Literal["not_utf8", "too_large"]) -> ArtifactReadView:
+    return ArtifactReadView(
+        path=located.path,
+        expires_at=located.expires_at,
+        url=located.url,
+        text_unavailable=reason,
     )
 
 
@@ -120,10 +138,7 @@ async def _read_download(response: httpx.Response, max_bytes: int) -> bytes:
     try:
         return await read_bounded(response, max_bytes)
     except ResponseTooLarge:
-        raise failure(
-            ErrorCode.INCOMPATIBLE_RESPONSE,
-            "L'artefact dépasse 5 Mo. Utiliser cursor_get_artifact_url.",
-        ) from None
+        raise _TooLarge from None
 
 
 def _require_presigned(url: str) -> None:

@@ -124,18 +124,15 @@ async def test_listing_tools_does_not_call_cursor() -> None:
         "cursor_list_agents",
         "cursor_get_agent",
         "cursor_create_agent",
+        "cursor_create_run",
         "cursor_list_runs",
         "cursor_get_run",
         "cursor_read_run_events",
-        "cursor_wait_run",
-        "cursor_create_run",
         "cursor_cancel_run",
         "cursor_get_usage",
         "cursor_list_artifacts",
-        "cursor_get_artifact_url",
         "cursor_read_artifact",
         "cursor_archive_agent",
-        "cursor_unarchive_agent",
         "cursor_delete_agent",
     ]
     assert router.calls == []
@@ -148,10 +145,8 @@ async def test_listing_tools_does_not_call_cursor() -> None:
         "cursor_list_runs",
         "cursor_get_run",
         "cursor_read_run_events",
-        "cursor_wait_run",
         "cursor_get_usage",
         "cursor_list_artifacts",
-        "cursor_get_artifact_url",
         "cursor_read_artifact",
     }
     reads = [tool for tool in listed.tools if tool.name in read_names]
@@ -255,7 +250,7 @@ async def test_read_tools_map_the_contract() -> None:
         await client.__aexit__(None, None, None)
     assert account["api_key_name"] == "prod"
     assert models["items"][0]["id"] == "composer-2"
-    assert models["items"][0]["parameters"][0]["values"][0]["value"] == "true"
+    assert models["items"][0]["params"] == {"fast": ["true"]}
     assert repos["items"] == ["https://github.com/acme/demo"]
     assert repos["cache_hit"] is False
     assert agents["next_cursor"] == "page-b"
@@ -287,9 +282,9 @@ async def test_unknown_status_and_absent_result_are_not_success() -> None:
     assert agent["status_known"] is False
     assert run["status"] == "PAUSED"
     assert run["status_known"] is False
-    assert run["terminal"] is None
+    assert "terminal" not in run
     assert run["result_present"] is False
-    assert run["result"] is None
+    assert "result" not in run
     assert "final_sha" not in json.dumps(run)
 
 
@@ -316,7 +311,7 @@ async def test_result_window_reassembles_without_gap() -> None:
             assert isinstance(chunk, str)
             pieces.append(chunk)
             if view["result_truncated"] is False:
-                assert view["next_result_offset"] is None
+                assert "next_result_offset" not in view
                 break
             assert view["next_result_offset"] == offset + len(chunk)
             offset = int(view["next_result_offset"])
@@ -366,7 +361,7 @@ async def test_create_agent_sends_exact_rest_fields() -> None:
                 "cursor_create_agent",
                 {
                     "repository": "https://github.com/acme/demo.git",
-                    "starting_sha": _BRANCH,
+                    "starting_ref": _BRANCH,
                     "prompt": "Ajouter une note",
                     "name": "Note",
                     "model_id": "composer-2",
@@ -391,23 +386,23 @@ async def test_validation_rejects_sha_url_and_extra_fields_before_http() -> None
     try:
         short = await client.call_tool(
             "cursor_create_agent",
-            {"repository": "https://github.com/acme/demo", "starting_sha": _SHA, "prompt": "x"},
+            {"repository": "https://github.com/acme/demo", "starting_ref": _SHA, "prompt": "x"},
         )
         nested = await client.call_tool(
             "cursor_create_agent",
-            {"repository": "https://github.com/acme/demo", "starting_sha": "feature/../x", "prompt": "x"},
+            {"repository": "https://github.com/acme/demo", "starting_ref": "feature/../x", "prompt": "x"},
         )
         secret_url = await client.call_tool(
             "cursor_create_agent",
             {
                 "repository": "https://user:token@github.com/acme/demo",
-                "starting_sha": _SHA,
+                "starting_ref": _SHA,
                 "prompt": "x",
             },
         )
         blank = await client.call_tool(
             "cursor_create_agent",
-            {"repository": "https://github.com/acme/demo", "starting_sha": _SHA, "prompt": "   "},
+            {"repository": "https://github.com/acme/demo", "starting_ref": _SHA, "prompt": "   "},
         )
         extra = await client.call_tool("cursor_get_account", {"unexpected": True})
     finally:
@@ -428,7 +423,7 @@ async def test_read_only_blocks_mutations() -> None:
     try:
         blocked = await client.call_tool(
             "cursor_create_agent",
-            {"repository": "https://github.com/acme/demo", "starting_sha": _SHA, "prompt": "x"},
+            {"repository": "https://github.com/acme/demo", "starting_ref": _SHA, "prompt": "x"},
         )
     finally:
         await client.__aexit__(None, None, None)
@@ -447,7 +442,7 @@ async def test_create_conflict_returns_the_same_agent_id() -> None:
             "cursor_create_agent",
             {
                 "repository": "https://github.com/acme/demo",
-                "starting_sha": _BRANCH,
+                "starting_ref": _BRANCH,
                 "prompt": "x",
                 "agent_id": _AGENT,
             },

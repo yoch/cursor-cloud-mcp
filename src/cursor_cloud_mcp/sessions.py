@@ -46,7 +46,6 @@ async def perform_create(
     model_id: str | None,
     model_params: list[ModelParam] | None,
     reasoning_level: str | None,
-    thinking: bool | None,
     mode: str | None,
     auto_create_pr: bool,
     agent_id: str | None,
@@ -71,7 +70,6 @@ async def perform_create(
         model_id=model_id,
         model_params=model_params,
         reasoning_level=reasoning_level,
-        thinking=thinking,
     )
     body: dict[str, object] = {
         "prompt": {"text": checked_prompt},
@@ -167,13 +165,12 @@ async def _model_body(
     model_id: str | None,
     model_params: list[ModelParam] | None,
     reasoning_level: str | None,
-    thinking: bool | None,
 ) -> dict[str, object] | None:
     if model_id is None:
-        if model_params or reasoning_level is not None or thinking is not None:
+        if model_params or reasoning_level is not None:
             raise failure(
                 ErrorCode.VALIDATION,
-                "model_id est requis avec model_params, reasoning_level ou thinking. "
+                "model_id est requis avec model_params ou reasoning_level. "
                 "Aucun identifiant de modèle n'est inventé.",
             )
         return None
@@ -185,7 +182,6 @@ async def _model_body(
         model_id=model_id,
         model_params=model_params,
         reasoning_level=reasoning_level,
-        thinking=thinking,
     )
 
 
