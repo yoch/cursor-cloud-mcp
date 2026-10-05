@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.17"
+      - name: Installation verrouillée
+        run: uv sync --locked --python ${{ matrix.python }}
+      - name: Contrôle statique
+        run: uvx ruff@0.16.10 check src tests scripts
+      - name: Tests (aucun appel Cursor réel)
+        run: uv run --locked pytest
+      - name: Installation du paquet construit
+        run: |
+          uv build --wheel
+          python_bin="$(uv python find ${{ matrix.python }})"
+          "$python_bin" -m venv /tmp/wheel-env
+          /tmp/wheel-env/bin/pip install dist/*.whl
+          /tmp/wheel-env/bin/python -c "from cursor_cloud_mcp.server import build_server; from cursor_cloud_mcp.config import load_settings; build_server(load_settings())"

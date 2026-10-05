@@ -12,6 +12,12 @@ RESULT_MAX_LIMIT = 20_000
 DEFAULT_DEADLINE_SECONDS = 40.0
 REPOSITORIES_DEADLINE_SECONDS = 90.0
 CREATE_DEADLINE_SECONDS = 90.0
+# Budgets absolus par appel d'outil : lectures, relectures et pauses comprises.
+TOOL_BUDGET_SECONDS = 45.0
+CREATE_TOOL_BUDGET_SECONDS = 95.0
+CANCEL_TOOL_BUDGET_SECONDS = 45.0
+# Une mutation n'est pas envoyée s'il reste moins que ce temps (ou la moitié de son délai).
+MUTATION_MIN_SECONDS = 5.0
 REPOSITORY_CACHE_TTL_SECONDS = 300.0
 MODEL_CACHE_TTL_SECONDS = 600.0
 MAX_RESPONSE_BYTES = 8_000_000

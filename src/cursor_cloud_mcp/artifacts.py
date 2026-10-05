@@ -1,10 +1,12 @@
 """Liste, URL et lecture texte des artefacts. Le téléchargement n'envoie pas la clé Cursor."""
 
+import asyncio
 import logging
 
 import httpx
 
-from cursor_cloud_mcp.client import CursorCloudClient, ResponseTooLarge, read_bounded
+from cursor_cloud_mcp import budget
+from cursor_cloud_mcp.client import CursorCloudClient, ResponseTooLarge, close_quietly, read_bounded
 from cursor_cloud_mcp.config import ARTIFACT_MAX_BYTES, DEFAULT_DEADLINE_SECONDS
 from cursor_cloud_mcp.errors import ErrorCode, failure
 from cursor_cloud_mcp.models import (
@@ -79,35 +81,49 @@ async def fetch_presigned(
     max_bytes: int,
     deadline: float,
 ) -> bytes:
+    """Téléchargement borné de bout en bout : connexion, lecture et fermeture."""
     _require_presigned(url)
-    async with httpx.AsyncClient(transport=transport, follow_redirects=False, timeout=httpx.Timeout(deadline)) as http:
-        request = http.build_request("GET", url)
-        if "authorization" in {name.lower() for name in request.headers}:
-            raise failure(ErrorCode.VALIDATION, "Le téléchargement ne doit pas porter la clé Cursor.")
-        try:
-            response = await http.send(request, stream=True)
-        except httpx.TimeoutException:
-            raise failure(ErrorCode.TIMEOUT, "Délai dépassé pendant le téléchargement de l'artefact.") from None
-        except httpx.TransportError:
-            raise failure(ErrorCode.TIMEOUT, "Téléchargement de l'artefact interrompu.") from None
-        try:
-            logger.info("artifact_download status=%s", response.status_code)
-            if response.status_code in _REDIRECTS:
-                raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "Redirection de téléchargement refusée.")
-            if response.status_code != 200:
-                raise failure(
-                    ErrorCode.UPSTREAM,
-                    f"Téléchargement de l'artefact refusé ({response.status_code}).",
-                )
-            try:
-                return await read_bounded(response, max_bytes)
-            except ResponseTooLarge:
-                raise failure(
-                    ErrorCode.INCOMPATIBLE_RESPONSE,
-                    "L'artefact dépasse 5 Mo. Utiliser cursor_get_artifact_url.",
-                ) from None
-        finally:
-            await response.aclose()
+    deadline_at = budget.deadline_at(deadline)
+    remaining = deadline_at - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        raise failure(ErrorCode.TIMEOUT, "Budget de l'outil épuisé avant le téléchargement de l'artefact.")
+    try:
+        async with asyncio.timeout_at(deadline_at):
+            async with httpx.AsyncClient(
+                transport=transport,
+                follow_redirects=False,
+                timeout=httpx.Timeout(remaining),
+            ) as http:
+                request = http.build_request("GET", url)
+                if "authorization" in {name.lower() for name in request.headers}:
+                    raise failure(ErrorCode.VALIDATION, "Le téléchargement ne doit pas porter la clé Cursor.")
+                response = await http.send(request, stream=True)
+                try:
+                    return await _read_download(response, max_bytes)
+                finally:
+                    await close_quietly(response)
+    except (TimeoutError, httpx.TimeoutException):
+        raise failure(ErrorCode.TIMEOUT, "Délai dépassé pendant le téléchargement de l'artefact.") from None
+    except httpx.RequestError:
+        raise failure(ErrorCode.TIMEOUT, "Téléchargement de l'artefact interrompu.") from None
+
+
+async def _read_download(response: httpx.Response, max_bytes: int) -> bytes:
+    logger.info("artifact_download status=%s", response.status_code)
+    if response.status_code in _REDIRECTS:
+        raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "Redirection de téléchargement refusée.")
+    if response.status_code != 200:
+        raise failure(
+            ErrorCode.UPSTREAM,
+            f"Téléchargement de l'artefact refusé ({response.status_code}).",
+        )
+    try:
+        return await read_bounded(response, max_bytes)
+    except ResponseTooLarge:
+        raise failure(
+            ErrorCode.INCOMPATIBLE_RESPONSE,
+            "L'artefact dépasse 5 Mo. Utiliser cursor_get_artifact_url.",
+        ) from None
 
 
 def _require_presigned(url: str) -> None:

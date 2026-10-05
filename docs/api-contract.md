@@ -58,7 +58,7 @@ Authentification retenue : `Authorization: Bearer`. L'OpenAPI accepte aussi Basi
 
 `GET /v1/agents` et `GET /v1/agents/{id}/runs` : `limit` (1 à 100) et `cursor` seulement s'ils sont fournis. `GET /v1/agents` ajoute `includeArchived` seulement s'il est fourni.
 
-`GET /v1/agents/{id}/runs/{runId}/stream` : en-tête `Last-Event-ID` seulement s'il est fourni. La lecture s'arrête sur `done`, `result` ou `error`, à l'échéance locale, ou à 1 Mo. `heartbeat` et `interaction_update` ne sont pas renvoyés à l'appelant.
+`GET /v1/agents/{id}/runs/{runId}/stream` : en-tête `Last-Event-ID` seulement s'il est fourni. La lecture s'arrête sur `done`, `result` ou `error`, à l'échéance locale, ou à 1 Mo. `error` est une erreur du flux, rendue comme `stream_error` : seuls `result` et `done` marquent `finished`. Le décodage UTF-8 est incrémental, pour qu'un caractère coupé entre deux blocs réseau reste intact. `heartbeat` et `interaction_update` ne sont pas renvoyés à l'appelant.
 
 `GET /v1/agents/{id}/artifacts/download` : `path`, relatif, préfixe `artifacts/`, sans `..`.
 
@@ -99,11 +99,36 @@ Statuts utilisés pour classer : 400 validation, 401 authentification, 403 permi
 ## Ajustements assumés
 
 - Les créations sont spécifiées en `201`. Un `200` avec le même JSON est accepté, car le succès se juge sur le schéma, pas sur un statut voisin.
-- Deadline totale : 40 secondes par appel, 90 secondes pour `POST /v1/agents` et `POST /v1/agents/{id}/runs` (une création réelle a dépassé 40 secondes avant de réussir), 90 secondes pour `GET /v1/repositories`, parce que le contrat officiel prévient que cet appel peut durer des dizaines de secondes. `cursor_wait_run` enchaîne des lectures dans une échéance d'au plus 60 secondes. `cursor_read_run_events` borne son attente à 50 secondes.
+- Budget par outil : une seule échéance absolue par appel MCP, transmise en temps restant à chaque requête, relecture et pause (45 secondes par défaut, 95 pour la création, la continuation et la liste des dépôts, 45 pour l'annulation, `max_wait_seconds` pour le flux et l'attente). Une mutation n'est pas envoyée s'il reste moins de 5 secondes, ou moins de la moitié de son propre délai.
+- Deadline par requête, à l'intérieur de ce budget : 40 secondes par appel, 90 secondes pour `POST /v1/agents` et `POST /v1/agents/{id}/runs` (une création réelle a dépassé 40 secondes avant de réussir), 90 secondes pour `GET /v1/repositories`, parce que le contrat officiel prévient que cet appel peut durer des dizaines de secondes. `cursor_wait_run` enchaîne des lectures dans une échéance d'au plus 60 secondes. `cursor_read_run_events` borne son attente à 50 secondes.
 - `IDLE` n'est pas dans l'enum OpenAPI de l'agent, mais la page endpoints le définit. Il n'est pas rejeté.
 - Le flux SSE est lu une fois, sans reconnexion interne. `410 stream_expired` devient `STREAM_EXPIRED`.
 - Les artefacts, l'archivage, le désarchivage et la suppression sont exposés. `prUrl`, les images, `mcpServers`, `customSubagents` et `POST /v1/sub-tokens` restent hors de ce MCP.
 - `startingRef` est ignoré par Cursor lorsque `prUrl` est fourni. Ce MCP n'envoie pas `prUrl`.
-- Un SHA complet n'est pas envoyé dans `startingRef`. L'appelant pousse le commit sur une branche et passe le nom de cette branche. Ce contrôle de format ne prouve pas que la branche existe.
+- Un SHA complet n'est pas envoyé dans `startingRef`. L'appelant pousse le commit sur une branche et passe le nom de cette branche dans `starting_ref` (`starting_sha` reste un alias temporaire). Ce contrôle de format ne prouve pas que la branche existe. C'est un contournement daté de l'observation du 1er octobre 2026 : la documentation REST et le bridge SDK v1.0.36 annoncent qu'une référence peut inclure un SHA. Il ne sera retiré qu'après un test réel explicitement autorisé.
+- Une continuation exige `workOnCurrentBranch` explicitement `false` et un statut d'agent connu. Le schéma autorise l'absence de ce champ ; ce MCP la traite comme un refus, pas comme une autorisation. Une lecture conserve au contraire un état inconnu tel quel.
+- Une coupure après l'envoi d'une mutation — en-têtes reçus ou non, pendant la lecture, le décodage ou la fermeture du corps — donne `MUTATION_OUTCOME_UNKNOWN` avec les identifiants, le statut HTTP et le request id connus. Aucune mutation n'est rejouée. Une erreur de fermeture après un corps complet (selon `Content-Length`) n'écrase pas le résultat.
 - Aucun champ du schéma ne choisit la taille CPU, RAM ou GPU d'une VM Cursor. `env.type` `pool` ou `machine` vise un worker auto-hébergé.
-- `CreateRunRequest` n'a pas de champ `model`. Le modèle d'une session est celui de la création.
+- `CreateRunRequest` n'a pas de champ `model` dans l'OpenAPI consulté. Le modèle d'une session est celui de la création pour ce MCP.
+
+## Matrice de support
+
+Reprise de l'audit externe portant sur le bridge Cursor v1.0.36 et le SDK MCP 2.3.0 ; les colonnes « REST » et « SDK » n'ont pas été relues ici (cursor.com inaccessible depuis l'environnement de cette livraison). « SDK seul » signifie présent dans les contrats du bridge du SDK Cursor, non annoncé sur les endpoints REST utilisés : rien n'est envoyé sans contrat REST confirmé.
+
+| Capacité | Ce MCP | REST documenté | SDK Cursor seul | Vérifié en réel |
+|---|---|---|---|---|
+| Création, continuation, annulation, archivage, suppression | oui | oui | oui | oui (1er octobre 2026) |
+| `startingRef` en nom de branche | oui | oui | oui | oui |
+| `startingRef` en SHA complet | refusé localement | annoncé | annoncé | refusé (400) le 1er octobre 2026 |
+| Images dans le prompt | non | oui | oui | non |
+| Serveurs MCP distants (`mcpServers`) | non | oui | oui | non |
+| Sous-agents personnalisés | non | oui | oui | non |
+| Référence de PR (`prUrl`) | non | oui | oui | non |
+| Clé d'idempotence (création, envoi) | non (`agentId` fixé par l'appelant à la place) | non | oui | non |
+| Modèle par envoi (persistant ensuite) | non | non | oui | non |
+| Variables d'environnement limitées à un run | non | non | oui | non |
+| Coût brut / facturé (`raw_cost_cents`, `charged_cents`) | non (jetons seulement) | non | oui, éventuellement absent | non |
+| Conversation d'un run, observation avec reprise | non (flux SSE et `cursor_get_run`) | non | oui | non |
+| Métadonnées persistantes d'agent | non | non | oui | non |
+
+Priorités retenues pour une prochaine livraison : profils MCP préapprouvés et images, avec schémas stricts et tests de contrat. Le reste du SDK attend un contrat REST.

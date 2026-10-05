@@ -47,7 +47,7 @@ Le processus MCP doit hériter de cette variable, ou la recevoir via le champ d'
 
 Remplace le chemin par le binaire absolu de cette machine. Les modèles versionnés sont dans `examples/`. Les copies déjà résolues, si elles existent, sont dans `examples/resolved/` et ne modifient aucun profil personnel.
 
-Le délai du client doit dépasser 90 secondes. Une création réelle a dépassé 40 secondes. Les exemples règlent Codex à 100 secondes et OpenCode à 100000 millisecondes.
+Le délai du client doit dépasser 95 secondes, le budget complet d'une création ou d'une continuation. Une création réelle a dépassé 40 secondes. Les exemples règlent Codex à 100 secondes et OpenCode à 100000 millisecondes.
 
 Pour autoriser création, continuation, annulation et archivage, mets `CURSOR_MCP_ALLOW_WRITES` à `1` dans la configuration, puis redémarre le client. Laisse `0` pour un usage en lecture seule.
 
@@ -162,12 +162,12 @@ Paramètres utiles de `cursor_create_agent` :
 - `mode` : `agent` ou `plan`.
 - `auto_create_pr` : `false` par défaut.
 - `agent_id` : `bc-<uuid>` fourni par l'appelant, ou omis pour en générer un. Réutilise le même si l'appel est coupé, sauf si tu passes des variables d'environnement.
-- `repository` et `starting_sha` : un dépôt. `starting_sha` est un nom de branche, pas un SHA. L'API refuse un SHA complet dans `startingRef`.
+- `repository` et `starting_ref` : un dépôt. `starting_ref` est un nom de branche, pas un SHA (`starting_sha` est l'ancien nom, encore accepté). Un SHA complet est refusé localement, après un refus de l'API observé le 1er octobre 2026.
 - `repositories` : jusqu'à vingt dépôts. Plusieurs dépôts exigent un pool nommé.
 - `env_type` : `cloud`, `pool` ou `machine`. Un environnement cloud nommé ne se combine pas à des dépôts.
 - `name` : obligatoire si tu passes `env_vars` ou `forward_env`, parce que l'API interdit alors `agentId`.
 
-`cursor_create_run` envoie la commande suivante au même agent. Le modèle et le niveau de réflexion restent ceux de la création. Refusé si l'agent est archivé ou si `workOnCurrentBranch` vaut `true`. Un agent occupé se relit, il ne se contourne pas.
+`cursor_create_run` envoie la commande suivante au même agent. Le modèle et le niveau de réflexion restent ceux de la création. Refusé si l'agent est archivé, si son statut est inconnu, ou si `workOnCurrentBranch` n'est pas explicitement `false`. Un agent occupé se relit, il ne se contourne pas.
 
 `cursor_read_run_events` lit un extrait du flux (20 secondes par défaut, 50 au plus). Reprends avec `after_event_id` égal au `last_event_id` renvoyé. `cursor_wait_run` relit l'état toutes les cinq secondes, 60 secondes au plus. `timed_out` signifie que le run continue : rappelle l'outil ou lis `cursor_get_run`.
 
@@ -185,11 +185,11 @@ Ce MCP ne lit pas le checkout local et ne remplace pas GitHub. Pour démarrer su
 
 1. Pousse ce commit sur une branche.
 2. Vérifie que la tête de cette branche est bien ce SHA.
-3. Appelle `cursor_create_agent` avec `repository` et `starting_sha` égal au nom de la branche (`release/2026`, `publication/certified-dfpn`). Un SHA de 40 ou 64 caractères est refusé avant l'envoi.
+3. Appelle `cursor_create_agent` avec `repository` et `starting_ref` égal au nom de la branche (`release/2026`, `publication/certified-dfpn`). Un SHA de 40 ou 64 caractères est refusé avant l'envoi.
 
 ```text
 Pousser le commit et vérifier la tête de la branche
-→ cursor_create_agent(..., repository, starting_sha=nom-de-branche)
+→ cursor_create_agent(..., repository, starting_ref=nom-de-branche)
 → cursor_get_run jusqu'à un état terminal
 → relire GitHub : HEAD, diff, checks
 → cursor_create_run sur le même agent si une correction est nécessaire
@@ -214,14 +214,14 @@ Pousser le commit et vérifier la tête de la branche
 - Si tu avais un `agent_id` : `cursor_get_agent` avec celui renvoyé, puis `cursor_list_runs`.
 - Si la création passait par `name` (variables d'environnement) : `cursor_list_agents` et cherche ce nom.
 
-Un client qui coupe avant 90 secondes peut abandonner une création déjà envoyée. Augmente le délai du client, ne relance pas à l'aveugle.
+Un client qui coupe avant 95 secondes peut abandonner une création déjà envoyée. Augmente le délai du client, ne relance pas à l'aveugle.
 
 ## Dépannage
 
 - Les outils sont listés mais chaque appel dit que la clé est absente : `CURSOR_API_KEY` n'est pas dans l'environnement du processus MCP. Le `.env` du dépôt n'est pas lu.
 - La clé apparaît comme non interpolée : la valeur est encore `${CURSOR_API_KEY}` ou `{env:CURSOR_API_KEY}`.
 - Une mutation répond `READ_ONLY` : `CURSOR_MCP_ALLOW_WRITES` n'est pas exactement `1`, ou le client n'a pas été redémarré.
-- `CONTINUATION_REFUSED` : l'agent est archivé, ou `workOnCurrentBranch` vaut `true`.
+- `CONTINUATION_REFUSED` : l'agent est archivé, son statut est inconnu, ou `workOnCurrentBranch` n'est pas explicitement `false`.
 - `DELETE_DISABLED` : `CURSOR_MCP_ALLOW_DELETE` n'est pas exactement `1`.
 - `STREAM_EXPIRED` : le flux n'est plus rejouable. Lis `cursor_get_run`.
 - Le stderr annonce `MODE SIMULÉ` : `CURSOR_MCP_FIXTURE=1`. Ce mode refuse une vraie clé et ne contacte pas Cursor. Ne l'active pas pour un usage réel.

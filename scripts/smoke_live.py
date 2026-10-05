@@ -24,7 +24,6 @@ BRANCH = os.environ.get("SMOKE_BRANCH", "main")
 FWD_VALUE = "smoke-forwarded-value-12345678"
 PUB_VALUE = "smoke-public-value-87654321"
 SHA = "a" * 40
-TERMINAL = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}
 
 Result = tuple[bool, dict[str, object]]
 
@@ -185,7 +184,7 @@ async def run_all(client: Client, report: Report, created: list[str]) -> None:
     ok, data = await call(
         client,
         "cursor_create_agent",
-        {"prompt": "x", "repository": REPO_URL, "starting_sha": SHA, "model_id": MODEL},
+        {"prompt": "x", "repository": REPO_URL, "starting_ref": SHA, "model_id": MODEL},
     )
     report.check(
         "SHA refusé localement", not ok and code_of(data) == "VALIDATION", code_of(data)
@@ -217,7 +216,7 @@ async def smoke_repo_agent(
     args: dict[str, object] = {
         "prompt": "Réponds uniquement par le mot OK. N'exécute aucune commande et ne modifie aucun fichier.",
         "repository": REPO_URL,
-        "starting_sha": BRANCH,
+        "starting_ref": BRANCH,
         "name": "smoke-repo",
         "model_id": MODEL,
         "agent_id": agent_id,
@@ -248,6 +247,12 @@ async def smoke_repo_agent(
         "cursor_get_agent",
         ok and same_repo,
         f"dépôt_rattaché={same_repo} url_présente={'url' in data}",
+    )
+    # La continuation est refusée si ce champ manque : le contrat réel doit le fournir.
+    report.check(
+        "workOnCurrentBranch renvoyé",
+        ok and data.get("work_on_current_branch") is False,
+        f"work_on_current_branch={data.get('work_on_current_branch')}",
     )
 
     ok, data = await call(
@@ -445,9 +450,8 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
         "cursor_cancel_run",
         ok
         and bool(data.get("cancel_request_accepted"))
-        and bool(data.get("outcome_confirmed"))
-        == (data.get("observed_status") in TERMINAL),
-        f"accepté={data.get('cancel_request_accepted')} confirmé={data.get('outcome_confirmed')} "
+        and bool(data.get("outcome_confirmed")) == (data.get("observed_status") == "CANCELLED"),
+        f"accepté={data.get('cancel_request_accepted')} issue={data.get('outcome')} "
         f"statut={data.get('observed_status')}",
     )
 

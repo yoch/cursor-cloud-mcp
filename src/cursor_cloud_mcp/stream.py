@@ -1,11 +1,14 @@
 """Lecture bornée du flux SSE d'un run et attente par relectures."""
 
 import asyncio
+import codecs
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import httpx
 
+from cursor_cloud_mcp import budget
 from cursor_cloud_mcp.client import CursorCloudClient, ResponseTooLarge, read_bounded
 from cursor_cloud_mcp.config import (
     EVENT_TEXT_MAX_CHARS,
@@ -88,7 +91,10 @@ async def read_run_events(
     if after_event_id is not None:
         headers["Last-Event-ID"] = after_event_id
     path = client.run_stream_path(agent_id, run_id)
-    async with client.stream_get(path, headers=headers, deadline=max_wait_seconds) as response:
+    # Une seule échéance pour l'ouverture et la collecte.
+    deadline_at = budget.deadline_at(max_wait_seconds)
+    loop = asyncio.get_running_loop()
+    async with client.stream_get(path, headers=headers, deadline=max(0.1, deadline_at - loop.time())) as response:
         if response.status_code in {301, 302, 303, 307, 308}:
             raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "Redirection du flux refusée.")
         if response.status_code != 200:
@@ -99,7 +105,8 @@ async def read_run_events(
             response,
             agent_id=agent_id,
             run_id=run_id,
-            max_wait_seconds=max_wait_seconds,
+            deadline_at=deadline_at,
+            after_event_id=after_event_id,
             max_events=max_events,
             include_thinking=include_thinking,
             retention_seconds=retention,
@@ -112,11 +119,13 @@ async def wait_run(
     agent_id: str,
     run_id: str,
     max_wait_seconds: float,
+    progress: Callable[[int, str], Awaitable[None]] | None = None,
 ) -> WaitRunView:
     require_segment(agent_id, label="agent_id")
     require_segment(run_id, label="run_id")
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + max_wait_seconds
+    deadline = budget.deadline_at(max_wait_seconds)
+    reads = 0
     last: WaitRunView | None = None
     while True:
         remaining = deadline - loop.time()
@@ -127,6 +136,9 @@ async def wait_run(
         remote = await client.get_run(agent_id, run_id, deadline=min(client.deadline_seconds, remaining))
         view = run_view(remote, offset=0, limit=RESULT_DEFAULT_LIMIT)
         last = WaitRunView(**view.model_dump(), timed_out=False)
+        reads += 1
+        if progress is not None:
+            await progress(reads, f"Statut relu : {view.status}")
         if view.terminal is True:
             return last
         remaining = deadline - loop.time()
@@ -140,22 +152,26 @@ async def _collect(
     *,
     agent_id: str,
     run_id: str,
-    max_wait_seconds: float,
+    deadline_at: float,
+    after_event_id: str | None,
     max_events: int,
     include_thinking: bool,
     retention_seconds: int | None,
 ) -> RunEventsView:
     parser = SseParser()
+    # Un caractère UTF-8 peut être coupé entre deux blocs réseau : décodage incrémental.
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     events: list[RunEventView] = []
-    last_event_id: str | None = None
+    # Sans nouvel événement, le curseur fourni reste le bon point de reprise.
+    last_event_id: str | None = after_event_id
     run_status: str | None = None
     finished = False
+    stream_error = False
+    interrupted = False
     truncated = False
     total = 0
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + max_wait_seconds
     try:
-        async with asyncio.timeout_at(deadline):
+        async with asyncio.timeout_at(deadline_at):
             async for chunk in response.aiter_bytes():
                 if not chunk:
                     continue
@@ -163,8 +179,7 @@ async def _collect(
                 if total > STREAM_MAX_BYTES:
                     truncated = True
                     break
-                decoded = chunk.decode("utf-8", errors="replace")
-                for raw_event in parser.feed(decoded):
+                for raw_event in parser.feed(decoder.decode(chunk)):
                     if raw_event.event_id:
                         last_event_id = raw_event.event_id
                     if raw_event.event in _IGNORE:
@@ -174,18 +189,26 @@ async def _collect(
                     if raw_event.event not in _KEEP:
                         continue
                     view = _simplify(raw_event)
-                    if view.status is not None and view.kind in {"status", "result", "error"}:
+                    if view.status is not None and view.kind in {"status", "result"}:
                         run_status = view.status
                     events.append(view)
-                    if view.kind in {"result", "error", "done"}:
+                    if view.kind == "error":
+                        # Erreur du flux : elle ne prouve pas, seule, la fin du run.
+                        stream_error = True
+                        break
+                    if view.kind in {"result", "done"}:
                         finished = True
                         break
                     if len(events) >= max_events:
                         truncated = True
                         break
-                if finished or truncated:
+                if finished or truncated or stream_error:
                     break
     except (TimeoutError, httpx.TimeoutException):
+        truncated = not finished
+    except httpx.RequestError:
+        # Coupure : on rend ce qui a été reçu et le curseur de reprise.
+        interrupted = True
         truncated = not finished
     return RunEventsView(
         agent_id=agent_id,
@@ -193,6 +216,8 @@ async def _collect(
         events=events,
         last_event_id=last_event_id,
         finished=finished,
+        stream_error=stream_error,
+        interrupted=interrupted,
         run_status=run_status,
         retention_seconds=retention_seconds,
         truncated=truncated,
@@ -201,29 +226,23 @@ async def _collect(
 
 def _simplify(event: SseEvent) -> RunEventView:
     payload = _payload(event.data)
-    text = _text_of(payload, event.data)
     status = _string_field(payload, "status")
     if event.event == "tool_call":
+        args, args_clipped = _clip(payload.get("args") if isinstance(payload, dict) else None)
+        result, result_clipped = _clip(payload.get("result") if isinstance(payload, dict) else None)
         return RunEventView(
             event_id=event.event_id,
             kind="tool_call",
             status=status,
             tool_name=_string_field(payload, "name"),
             tool_status=status,
-            tool_args=_clip(payload.get("args") if isinstance(payload, dict) else None),
-            tool_result=_clip(payload.get("result") if isinstance(payload, dict) else None),
+            tool_args=args,
+            tool_result=result,
+            clipped=args_clipped or result_clipped,
         )
-    if event.event == "status":
-        return RunEventView(event_id=event.event_id, kind="status", text=text, status=status)
-    if event.event == "thinking":
-        return RunEventView(event_id=event.event_id, kind="thinking", text=text, status=status)
-    if event.event == "result":
-        return RunEventView(event_id=event.event_id, kind="result", text=text, status=status)
-    if event.event == "error":
-        return RunEventView(event_id=event.event_id, kind="error", text=text, status=status)
-    if event.event == "done":
-        return RunEventView(event_id=event.event_id, kind="done", text=text, status=status)
-    return RunEventView(event_id=event.event_id, kind="assistant", text=text, status=status)
+    text, clipped = _text_of(payload, event.data)
+    kind = event.event if event.event in {"status", "thinking", "result", "error", "done"} else "assistant"
+    return RunEventView(event_id=event.event_id, kind=kind, text=text, status=status, clipped=clipped)
 
 
 def _payload(data: str) -> object:
@@ -235,7 +254,7 @@ def _payload(data: str) -> object:
         return data
 
 
-def _text_of(payload: object, raw: str) -> str | None:
+def _text_of(payload: object, raw: str) -> tuple[str | None, bool]:
     if isinstance(payload, str):
         return _clip(payload)
     if isinstance(payload, dict):
@@ -247,7 +266,7 @@ def _text_of(payload: object, raw: str) -> str | None:
             return _clip(payload)
     if raw:
         return _clip(raw)
-    return None
+    return None, False
 
 
 def _string_field(payload: object, key: str) -> str | None:
@@ -258,16 +277,17 @@ def _string_field(payload: object, key: str) -> str | None:
     return None
 
 
-def _clip(value: object) -> str | None:
+def _clip(value: object) -> tuple[str | None, bool]:
+    """Texte borné et indicateur de coupure."""
     if value is None:
-        return None
+        return None, False
     if isinstance(value, str):
         text = value
     else:
         text = json.dumps(value, ensure_ascii=False)
     if len(text) > EVENT_TEXT_MAX_CHARS:
-        return text[:EVENT_TEXT_MAX_CHARS] + "…"
-    return text
+        return text[:EVENT_TEXT_MAX_CHARS] + "…", True
+    return text, False
 
 
 def _retention(response: httpx.Response) -> int | None:

@@ -33,18 +33,23 @@ def require_prompt(prompt: str) -> str:
 
 
 def require_starting_ref(value: str) -> str:
-    """Nom de branche envoyé dans ``startingRef``. Un SHA complet est refusé par l'API."""
+    """Nom de branche envoyé dans ``startingRef``.
+
+    Le refus d'un SHA complet est un contournement daté : l'API a répondu ``400`` le
+    1er octobre 2026, alors que la documentation REST annonce qu'une référence peut être un
+    SHA. À requalifier par un test réel autorisé avant de le retirer.
+    """
     if _SHA.fullmatch(value) is not None:
         raise failure(
             ErrorCode.VALIDATION,
-            "L'API Cursor refuse un SHA complet dans startingRef. "
+            "Un SHA complet dans startingRef a été refusé par l'API Cursor (observé le 1er octobre 2026). "
             "Pousse ce commit sur une branche, vérifie que sa tête est ce SHA, "
-            "puis passe le nom de la branche dans starting_sha.",
+            "puis passe le nom de la branche dans starting_ref.",
         )
     if not _valid_branch_name(value):
         raise failure(
             ErrorCode.VALIDATION,
-            "starting_sha doit être un nom de branche Git. "
+            "starting_ref doit être un nom de branche Git. "
             "Ce contrôle ne prouve pas que la branche existe sur GitHub.",
         )
     return value

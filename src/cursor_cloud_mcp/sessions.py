@@ -4,6 +4,7 @@ import os
 import uuid
 from typing import Literal, Never
 
+from cursor_cloud_mcp import redaction
 from cursor_cloud_mcp.catalog import resolve_model_selection
 from cursor_cloud_mcp.client import CursorCloudClient
 from cursor_cloud_mcp.config import ENV_MAX_COUNT, REPO_MAX_COUNT, Settings
@@ -15,6 +16,7 @@ from cursor_cloud_mcp.models import (
     DeleteView,
     ModelParam,
     RepositoryInput,
+    agent_status_known,
 )
 from cursor_cloud_mcp.present import (
     create_agent_view,
@@ -37,7 +39,7 @@ async def perform_create(
     settings: Settings,
     *,
     repository: str | None,
-    starting_sha: str | None,
+    starting_ref: str | None,
     repositories: list[RepositoryInput] | None,
     prompt: str,
     name: str | None,
@@ -57,9 +59,12 @@ async def perform_create(
     checked_mode = require_mode(mode)
     if name is not None and name.strip() == "":
         raise failure(ErrorCode.VALIDATION, "name est vide.")
-    repos = _repositories(repository, starting_sha, repositories)
+    repos = _repositories(repository, starting_ref, repositories)
     _check_environment(env_type, env_name, len(repos))
     merged = _environment_variables(settings, env_vars, forward_env)
+    if merged is not None:
+        # Valeurs fournies par appel : masquées dans les logs et les erreurs dès maintenant.
+        redaction.register(*merged.values())
     chosen_id, lookup_name = _identity(agent_id, name, merged is not None)
     model_body = await _model_body(
         client,
@@ -136,7 +141,11 @@ async def perform_archive(
             outcome_confirmed=False,
             reread_error=exc.body.message,
         )
-    confirmed = agent.status == "ARCHIVED" if action == "archive" else agent.status != "ARCHIVED"
+    # Un statut inconnu ne confirme rien : seul un état connu et attendu compte.
+    if action == "archive":
+        confirmed = agent.status == "ARCHIVED"
+    else:
+        confirmed = agent_status_known(agent.status) and agent.status != "ARCHIVED"
     return ArchiveView(
         agent_id=agent_id,
         action=action,
@@ -182,22 +191,22 @@ async def _model_body(
 
 def _repositories(
     repository: str | None,
-    starting_sha: str | None,
+    starting_ref: str | None,
     repositories: list[RepositoryInput] | None,
 ) -> list[dict[str, str]]:
-    single = repository is not None or starting_sha is not None
+    single = repository is not None or starting_ref is not None
     if single and repositories:
         raise failure(
             ErrorCode.VALIDATION,
-            "Fournir soit repository et starting_sha, soit repositories, pas les deux.",
+            "Fournir soit repository et starting_ref, soit repositories, pas les deux.",
         )
     if single:
-        if repository is None or starting_sha is None:
-            raise failure(ErrorCode.VALIDATION, "repository et starting_sha vont ensemble.")
+        if repository is None or starting_ref is None:
+            raise failure(ErrorCode.VALIDATION, "repository et starting_ref vont ensemble.")
         return [
             {
                 "url": normalize_repository(repository),
-                "startingRef": require_starting_ref(starting_sha),
+                "startingRef": require_starting_ref(starting_ref),
             }
         ]
     if not repositories:
@@ -207,7 +216,7 @@ def _repositories(
     return [
         {
             "url": normalize_repository(item.url),
-            "startingRef": require_starting_ref(item.starting_sha),
+            "startingRef": require_starting_ref(item.ref),
         }
         for item in repositories
     ]

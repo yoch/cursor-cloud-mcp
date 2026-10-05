@@ -69,6 +69,22 @@ async def test_stdio_auto_and_legacy_negotiate_and_call_tools(tmp_path: Path) ->
         run_id = str(created_data["run_id"])
         detail = await client.call_tool("cursor_get_run", {"agent_id": agent_id, "run_id": run_id})
         assert detail.is_error is False
+        canonical = await client.call_tool(
+            "cursor_create_agent",
+            {
+                "repository": "https://github.com/example/demo",
+                "starting_ref": _BRANCH,
+                "prompt": "Nom canonique",
+            },
+        )
+        assert canonical.is_error is False
+        unknown = await client.call_tool("cursor_get_agent", {"agent_id": agent_id, "surprise": True})
+        assert unknown.is_error is True
+        artifact = await client.call_tool(
+            "cursor_read_artifact",
+            {"agent_id": SEEDED_AGENT_ID, "path": "artifacts/result.txt"},
+        )
+        assert _payload(artifact)["text"] == "fixture artefact\n"
         follow = await client.call_tool(
             "cursor_create_run",
             {"agent_id": agent_id, "prompt": "Ajoute une phrase"},
@@ -163,3 +179,23 @@ def test_stdout_has_no_banner_and_eof_stops_the_process(tmp_path: Path) -> None:
     stderr = proc.stderr.read().decode() if proc.stderr is not None else ""
     assert "Traceback" not in stderr
     assert "MODE SIMULÉ" in stderr
+
+
+async def test_stdio_per_call_secret_never_reaches_stderr(tmp_path: Path) -> None:
+    value = "k7"  # court : l'ancien filtre ignorait les secrets de moins de 8 caractères
+    params = _params(
+        tmp_path,
+        CURSOR_MCP_FIXTURE="1",
+        CURSOR_MCP_ALLOW_WRITES="1",
+        CURSOR_MCP_LOG_LEVEL="DEBUG",
+    )
+    errlog_path = tmp_path / "stderr.txt"
+    with errlog_path.open("w", encoding="utf-8") as errlog:
+        async with Client(stdio_client(params, errlog=errlog)) as client:
+            created = await client.call_tool(
+                "cursor_create_agent",
+                {"prompt": "secret par appel", "name": "avec-env", "env_vars": {"WORK_TOKEN": f"zz{value}zz"}},
+            )
+    assert created.is_error is False
+    stderr = errlog_path.read_text(encoding="utf-8")
+    assert f"zz{value}zz" not in stderr
