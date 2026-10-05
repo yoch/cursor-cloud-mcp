@@ -12,7 +12,7 @@ from mcp import Client
 from cursor_cloud_mcp import redaction
 from cursor_cloud_mcp.client import CursorCloudClient
 from cursor_cloud_mcp.config import Settings, load_settings
-from cursor_cloud_mcp.errors import CursorFailure, ErrorCode
+from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure
 from cursor_cloud_mcp.server import _configure_logging, build_server
 from cursor_cloud_mcp.stream import SseParser
 from tests.test_tools import (
@@ -127,10 +127,36 @@ def test_formatter_redacts_child_sdk_loggers_and_tracebacks() -> None:
         _release_root(handler, previous)
 
 
-def test_short_and_per_call_secrets_are_redacted() -> None:
+def test_short_and_per_call_secrets_are_redacted(isolated_secrets: None) -> None:
     redaction.register("k9z")
     redaction.register("per-call-value-1234")
     assert redaction.redact("a k9z b per-call-value-1234") == "a [redacted] b [redacted]"
+
+
+def test_short_secret_is_masked_as_a_whole_word_only(isolated_secrets: None) -> None:
+    redaction.register("en", "1")
+    assert redaction.redact("agent_id=bc-1 token en") == "agent_id=bc-[redacted] token [redacted]"
+    assert redaction.redact("status=401 tenant") == "status=401 tenant"
+
+
+def test_error_payload_stays_valid_json_with_short_secrets(isolated_secrets: None) -> None:
+    redaction.register("1", "en")
+    body = failure(ErrorCode.AUTHENTICATION, "refusé : 1", http_status=401, agent_id="bc-x").as_dict()
+    redacted = redaction.redact_value(body)
+    assert json.loads(json.dumps(redacted)) == redacted
+    assert set(redacted) == set(body)  # type: ignore[arg-type]
+    assert redacted["http_status"] == 401  # type: ignore[index]
+    assert redacted["message"] == "refusé : [redacted]"  # type: ignore[index]
+
+
+def test_permanent_secrets_survive_eviction_of_per_call_values(
+    isolated_secrets: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(redaction, "_MAX_RECENT", 2)
+    redaction.register("permanent-api-key", permanent=True)
+    redaction.register("value-number-one", "value-number-two", "value-number-three")
+    text = redaction.redact("permanent-api-key value-number-one value-number-three")
+    assert text == "[redacted] value-number-one [redacted]"
 
 
 async def test_reasoning_level_is_resolved_before_post() -> None:

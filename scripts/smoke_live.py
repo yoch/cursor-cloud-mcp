@@ -24,7 +24,6 @@ BRANCH = os.environ.get("SMOKE_BRANCH", "main")
 FWD_VALUE = "smoke-forwarded-value-12345678"
 PUB_VALUE = "smoke-public-value-87654321"
 SHA = "a" * 40
-TERMINAL = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}
 
 Result = tuple[bool, dict[str, object]]
 

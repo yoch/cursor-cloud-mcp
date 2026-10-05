@@ -219,9 +219,8 @@ async def test_cancel_racing_with_finish_is_not_a_cancellation() -> None:
     assert view["outcome_confirmed"] is False
 
 
-async def test_secret_reflected_by_cursor_is_redacted_in_the_tool_error() -> None:
-    value = "per-call-secret-value-42"
-
+@pytest.mark.parametrize("value", ["per-call-secret-value-42", "4"])
+async def test_secret_reflected_by_cursor_is_redacted_in_the_tool_error(isolated_secrets: None, value: str) -> None:
     def responder(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(400, json={"error": {"code": "validation_error", "message": f"refusé: {value}"}})
 
@@ -233,10 +232,11 @@ async def test_secret_reflected_by_cursor_is_redacted_in_the_tool_error() -> Non
         )
     finally:
         await client.__aexit__(None, None, None)
+    # Un secret court (« 4 ») ne doit ni fuir ni casser le JSON, ni toucher http_status 400.
     payload = _error_payload(result)
     assert payload["code"] == "VALIDATION"
-    assert value not in json.dumps(payload)
-    assert redaction.REDACTED in str(payload["message"])
+    assert payload["http_status"] == 400
+    assert str(payload["message"]).endswith(f"refusé: {redaction.REDACTED}")
 
 
 async def test_unknown_arguments_are_refused_without_patching_the_sdk() -> None:

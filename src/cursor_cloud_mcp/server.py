@@ -472,7 +472,7 @@ def run_stdio() -> None:
 
 def _configure_logging(settings: Settings) -> None:
     logging.basicConfig(level=settings.log_level, stream=sys.stderr)
-    redaction.register(*_secrets(settings))
+    redaction.register(*_secrets(settings), permanent=True)
     formatter = redaction.RedactingFormatter("%(asctime)s %(levelname)s %(name)s %(message)s")
     for handler in logging.getLogger().handlers:
         handler.setFormatter(formatter)
@@ -516,7 +516,8 @@ async def _run[V](
         return result
     except CursorFailure as exc:
         outcome = exc.body.code.value
-        raise ToolError(redaction.redact(json.dumps(exc.as_dict(), ensure_ascii=False))) from None
+        # Masquer les valeurs, pas le JSON sérialisé : sa forme et ses clés restent intactes.
+        raise ToolError(json.dumps(redaction.redact_value(exc.as_dict()), ensure_ascii=False)) from None
     except asyncio.CancelledError:
         # L'appelant a abandonné : aucune réponse fabriquée, le run Cursor n'est pas annulé.
         outcome = "cancelled"

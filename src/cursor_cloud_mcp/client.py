@@ -107,7 +107,7 @@ class CursorCloudClient:
         download_transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._api_key = api_key
-        redaction.register(api_key)
+        redaction.register(api_key, permanent=True)
         self._transport = transport
         self.download_transport = download_transport
         self._deadline = deadline_seconds

@@ -38,7 +38,7 @@ uv pip install --python /tmp/cursor-cloud-mcp-wheel/bin/python dist/*.whl
 
 Le serveur ne charge pas de fichier `.env`. Une valeur vide, `${...}` ou `{env:...}` est refusée, sans être journalisée. Aucun outil ne change `CURSOR_MCP_ALLOW_WRITES` : il faut modifier l'environnement et redémarrer le client.
 
-Les logs peuvent contenir le nom de l'outil, son issue (`ok`, code d'erreur métier, `unexpected:<type>` ou `cancelled`), la durée, les identifiants, le statut HTTP et un request id. Ils ne contiennent ni le prompt, ni le corps, ni la clé, ni l'en-tête Authorization. En seconde barrière, le formateur masque, quelle que soit leur longueur, la clé, les valeurs de `CURSOR_MCP_FORWARD_ENV` et les valeurs `env_vars` transmises pendant la vie du processus, y compris dans les tracebacks. Le même masquage s'applique aux erreurs renvoyées à l'appelant.
+Les logs peuvent contenir le nom de l'outil, son issue (`ok`, code d'erreur métier, `unexpected:<type>` ou `cancelled`), la durée, les identifiants, le statut HTTP et un request id. Ils ne contiennent ni le prompt, ni le corps, ni la clé, ni l'en-tête Authorization. En seconde barrière, le formateur masque la clé, les valeurs de `CURSOR_MCP_FORWARD_ENV` et les valeurs `env_vars` transmises pendant la vie du processus, y compris dans les tracebacks. Une valeur de moins de 8 caractères n'est masquée que comme mot entier, pour ne pas mutiler le reste du texte (`en` ne touche pas `agent`). La clé et `CURSOR_MCP_FORWARD_ENV` restent masquées en permanence ; les 4096 valeurs `env_vars` les plus récentes le sont aussi. Le même masquage s'applique aux valeurs des erreurs renvoyées à l'appelant, sans toucher à la forme du JSON.
 
 ## Outils
 
