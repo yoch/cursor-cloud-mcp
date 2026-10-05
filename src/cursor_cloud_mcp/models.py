@@ -267,7 +267,7 @@ class AccountView(BaseModel):
 
 
 class ModelView(BaseModel):
-    """Forme compacte : une valeur par paramètre, sans le produit cartésien des variantes."""
+    """Forme compacte : les valeurs de chaque paramètre ; les variantes du modèle seulement sur demande."""
 
     model_config = ConfigDict(extra="forbid")
 

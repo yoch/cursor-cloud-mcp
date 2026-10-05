@@ -67,7 +67,7 @@ Authentification retenue : `Authorization: Bearer`. L'OpenAPI accepte aussi Basi
 ## Champs lus
 
 - Compte : `apiKeyName`, `createdAt`, et s'ils sont présents `userId`, `userEmail`, `userFirstName`, `userLastName`. Pas de secret de clé.
-- Modèles : `items[]` avec `id`, `displayName`, et s'ils sont présents `description`, `aliases`, `parameters`, `variants`. Les variantes sont le produit des paramètres, parfois incomplet ; elles portent aussi un paramètre non publié (`cyber`), ignoré. Elles servent au contrôle des combinaisons et à `defaults`, et ne sont rendues qu'avec `model_id`.
+- Modèles : `items[]` avec `id`, `displayName`, et s'ils sont présents `description`, `aliases`, `parameters`, `variants`. Les variantes sont propres à chaque modèle : ce sont les combinaisons qu'il accepte. Le 5 octobre 2026, elles couvraient toutes les combinaisons pour 38 modèles sur 43 ; `gpt-5.5`, `gpt-5.4` et `claude-opus-5` en excluaient, et certaines portaient un paramètre non publié (`cyber`), ignoré ici. Elles servent au contrôle des combinaisons, modèle par modèle, et à `defaults`, et ne sont rendues qu'avec `model_id`.
 - Dépôts : `items[].url`. Pas de curseur dans ce schéma.
 - Agents, page : `items[]` (`id`, `status`, `env`, `url`, `createdAt`, `updatedAt`, `name` et `latestRunId` optionnels) et `nextCursor` s'il est présent. Son absence signifie fin de liste, pas une valeur `null`.
 - Agent : les champs de la page, plus `repos`, `workOnCurrentBranch`, `autoCreatePR` lorsqu'ils sont présents. Une absence reste une absence.
