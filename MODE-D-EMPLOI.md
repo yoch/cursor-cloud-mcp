@@ -168,7 +168,7 @@ Paramètres utiles de `cursor_create_agent` :
 - `env_type` : `cloud`, `pool` ou `machine`. Un environnement cloud nommé ne se combine pas à des dépôts.
 - `name` : obligatoire si tu passes `env_vars` ou `forward_env`, parce que l'API interdit alors `agentId`.
 
-`cursor_create_run` envoie la commande suivante au même agent. Le modèle et le niveau de réflexion restent ceux de la création. Refusé si l'agent est archivé, si son statut est inconnu, ou si `workOnCurrentBranch` n'est pas explicitement `false`. Un agent occupé se relit, il ne se contourne pas.
+`cursor_create_run` envoie la commande suivante au même agent. Sans `model_id`, le modèle courant est gardé. Avec `model_id` (et `model_params`, `reasoning_level`), le modèle change pour ce run et les suivants ; l'API ne permet pas de relire le modèle actif, donc note celui que tu as choisi. Refusé si l'agent est archivé, si son statut est inconnu, ou si `workOnCurrentBranch` n'est pas explicitement `false`. Un agent occupé se relit, il ne se contourne pas.
 
 `cursor_get_run` avec `wait_seconds` (jusqu'à 60) relit l'état toutes les cinq secondes jusqu'à un état terminal. `timed_out` signifie que le run continue : rappelle-le. `cursor_read_run_events` lit un extrait du flux (20 secondes par défaut, 50 au plus), texte de l'assistant regroupé ; reprends avec `after_event_id` égal au `last_event_id` renvoyé.
 

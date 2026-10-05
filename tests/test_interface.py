@@ -203,3 +203,56 @@ async def test_tool_call_keeps_only_its_last_state() -> None:
     }
     assert second["call_id"] == "c2" and second["tool_name"] == "read"
     assert view["last_event_id"] == "3"
+
+
+async def test_continuation_can_switch_model_after_catalog_check() -> None:
+    catalog = {
+        "items": [
+            {
+                "id": "claude-haiku-4-5",
+                "displayName": "Claude Haiku 4.5",
+                "aliases": ["haiku"],
+                "parameters": [{"id": "thinking", "values": [{"value": "false"}, {"value": "true"}]}],
+            }
+        ]
+    }
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json=catalog)
+        if request.method == "GET":
+            return httpx.Response(200, json=_agent(_AGENT, status="IDLE"))
+        run = _run(status="CREATING", result=None)
+        run["id"] = "run-00000000-0000-0000-0000-000000000002"
+        return httpx.Response(201, json={"run": run})
+
+    client, router = await _session(Router(responder))
+    try:
+        switched = _data(
+            await client.call_tool(
+                "cursor_create_run",
+                {
+                    "agent_id": _AGENT,
+                    "prompt": "suite",
+                    "model_id": "haiku",
+                    "model_params": [{"id": "thinking", "value": "false"}],
+                },
+            )
+        )
+        kept = _data(await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"}))
+        refused = await client.call_tool(
+            "cursor_create_run",
+            {"agent_id": _AGENT, "prompt": "suite", "model_id": "haiku", "reasoning_level": "high"},
+        )
+    finally:
+        await client.__aexit__(None, None, None)
+    posts = [call[2] for call in router.calls if call[0] == "POST"]
+    assert posts[0] == {
+        "prompt": {"text": "suite"},
+        "model": {"id": "claude-haiku-4-5", "params": [{"id": "thinking", "value": "false"}]},
+    }
+    assert posts[1] == {"prompt": {"text": "suite"}}
+    assert len(posts) == 2
+    assert switched["model_id"] == "claude-haiku-4-5"
+    assert "model_id" not in kept
+    assert _error_payload(refused)["code"] == "VALIDATION"

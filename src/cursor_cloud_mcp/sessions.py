@@ -103,16 +103,31 @@ async def perform_followup(
     agent_id: str,
     prompt: str,
     mode: str | None,
+    model_id: str | None = None,
+    model_params: list[ModelParam] | None = None,
+    reasoning_level: str | None = None,
 ) -> CreateRunView:
     checked_prompt = require_prompt(prompt)
     checked_mode = require_mode(mode)
     agent = await client.get_agent(agent_id)
     ensure_continuation_allowed(agent)
+    # Vérifié en réel le 5 octobre 2026 : model sur POST /runs change le modèle, et le choix persiste.
+    model_body = await _model_body(
+        client,
+        model_id=model_id,
+        model_params=model_params,
+        reasoning_level=reasoning_level,
+    )
     body: dict[str, object] = {"prompt": {"text": checked_prompt}}
     if checked_mode is not None:
         body["mode"] = checked_mode
+    if model_body is not None:
+        body["model"] = model_body
     remote = await client.create_run(agent.id, body, previous_latest_run_id=agent.latestRunId)
-    return create_run_view(remote, previous_latest_run_id=agent.latestRunId, url=agent.url)
+    view = create_run_view(remote, previous_latest_run_id=agent.latestRunId, url=agent.url)
+    if model_body is None:
+        return view
+    return view.model_copy(update={"model_id": model_body["id"]})
 
 
 async def perform_archive(

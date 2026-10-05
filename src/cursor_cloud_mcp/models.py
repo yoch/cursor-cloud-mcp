@@ -412,6 +412,7 @@ class CreateRunView(BaseModel):
     status: str
     previous_latest_run_id: str | None = None
     url: str | None = None
+    model_id: str | None = None
     next_step: str
 
 

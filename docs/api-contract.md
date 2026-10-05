@@ -54,7 +54,7 @@ Authentification retenue : `Authorization: Bearer`. L'OpenAPI accepte aussi Basi
 
 `model.id` est un id du catalogue ; un alias n'est accepté que s'il ne désigne qu'un modèle, et il est envoyé sous la forme de cet id. `model.params` est vérifié contre `GET /v1/models` avant l'envoi : chaque valeur, puis la combinaison, qui doit tenir dans au moins une variante publiée (le catalogue réel du 5 octobre 2026 omet 5 combinaisons sur 20 pour `gpt-5.5`). `reasoning_level` est placé dans le premier paramètre présent parmi `effort`, `reasoning_effort` et `reasoning`.
 
-`POST /v1/agents/{id}/runs` : `prompt.text`, et `mode` seulement s'il est fourni.
+`POST /v1/agents/{id}/runs` : `prompt.text`, et `mode` et `model` (même forme et même contrôle que pour la création) seulement s'ils sont fournis.
 
 `GET /v1/agents` et `GET /v1/agents/{id}/runs` : `limit` (1 à 100) et `cursor` seulement s'ils sont fournis. `GET /v1/agents` ajoute `includeArchived` et `prUrl` seulement s'ils sont fournis. L'API refuse tout autre filtre (`400`, « Unrecognized key(s) », vérifié le 5 octobre 2026 pour `name`, `q`, `search`, `status`, `sort`) : la recherche par nom de `cursor_list_agents` parcourt donc au plus cinq pages de cent et filtre localement.
 
@@ -109,7 +109,7 @@ Statuts utilisés pour classer : 400 validation, 401 authentification, 403 permi
 - Une continuation exige `workOnCurrentBranch` explicitement `false` et un statut d'agent connu. Le schéma autorise l'absence de ce champ ; ce MCP la traite comme un refus, pas comme une autorisation. Une lecture conserve au contraire un état inconnu tel quel.
 - Une coupure après l'envoi d'une mutation — en-têtes reçus ou non, pendant la lecture, le décodage ou la fermeture du corps — donne `MUTATION_OUTCOME_UNKNOWN` avec les identifiants, le statut HTTP et le request id connus. Aucune mutation n'est rejouée. Une erreur de fermeture après un corps complet (selon `Content-Length`) n'écrase pas le résultat.
 - Aucun champ du schéma ne choisit la taille CPU, RAM ou GPU d'une VM Cursor. `env.type` `pool` ou `machine` vise un worker auto-hébergé.
-- `CreateRunRequest` n'a pas de champ `model` dans l'OpenAPI consulté. Le modèle d'une session est celui de la création pour ce MCP.
+- `CreateRunRequest` n'a pas de champ `model` dans l'OpenAPI consulté, mais l'API réelle l'accepte et le valide (test du 5 octobre 2026 ci-dessous). Ce MCP le transmet quand `model_id` est fourni.
 
 ## Matrice de support
 
@@ -128,7 +128,7 @@ Relue le 5 octobre 2026 contre le code du SDK Python officiel `cursor-sdk` 1.0.3
 | Serveurs MCP distants (`mcpServers`) | non | oui | oui | non |
 | Sous-agents personnalisés | non | oui | oui | non |
 | Clé d'idempotence (`Idempotency-Key`, création et envoi) | non (`agentId` fixé avant l'envoi à la place) | non | oui (uuid4 par création) | **ignorée** (5 octobre 2026, voir ci-dessous) |
-| Modèle par envoi (`model` sur `POST .../runs`) | non | non | oui | non |
+| Modèle par envoi (`model` sur `POST .../runs`) | oui (`model_id` de `cursor_create_run`) | non | oui | **oui, et persistant** (5 octobre 2026, voir ci-dessous) |
 | Variables d'environnement limitées à un run | non | non | oui | non |
 | Métadonnées d'agent (`metadata`) | non | non | oui | non |
 | Conversation d'un run | non (flux SSE et `cursor_get_run`) | non | oui, reconstruite côté client depuis `interaction_update` | non |
@@ -145,4 +145,15 @@ Test payant autorisé, `composer-2.5`, en-tête exactement tel que le SDK l'envo
 
 Conclusion : l'API REST ignore cet en-tête. Ce MCP ne l'envoie pas. Le seul garde-fou contre une création en double reste `agentId`, fixé avant l'envoi ; avec `envVars`, que l'API refuse avec `agentId`, une issue inconnue se résout par `cursor_list_agents(name=...)`. Un rejeu de création reste donc interdit après `MUTATION_OUTCOME_UNKNOWN`.
 
-`model` sur la continuation n'a pas été testé.
+### Changement de modèle en cours de session : test réel du 5 octobre 2026
+
+Test payant autorisé, REST v1 direct. Un agent sans dépôt, créé avec `composer-2.5`, reçoit trois fois la même question : nommer le modèle qu'il est.
+
+| Run | Envoi | Réponse | Indices |
+|---|---|---|---|
+| 1 | création, `composer-2.5` | « Composer 2.5 » | 48 s ; 13 662 jetons d'entrée ; 0,81 centime |
+| — | continuation, `model.id` inexistant | `400 validation_error` « Model '…' is not available or invalid » | le champ est lu et validé ; aucun run créé |
+| 2 | continuation, `model: {"id": "claude-haiku-4-5"}` | « Claude Haiku 4.5 » | 7 s ; 18 618 jetons écrits en cache ; 2,45 centimes |
+| 3 | continuation **sans** `model` | « Claude Haiku 4.5 » | relit exactement les 18 618 jetons mis en cache au run 2 ; 0,28 centime |
+
+Conclusion : `model` sur une continuation change le modèle, et le choix persiste pour les runs suivants. Ni l'agent, ni le run, ni le flux ne mentionnent le modèle actif : l'appelant doit retenir celui qu'il a choisi. Coût total : 3,54 centimes, agent supprimé.

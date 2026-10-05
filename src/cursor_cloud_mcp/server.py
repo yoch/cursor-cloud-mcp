@@ -275,12 +275,23 @@ workOnCurrentBranch est toujours false."""
         agent_id: str,
         prompt: Annotated[str, Field(min_length=1, max_length=PROMPT_MAX_CHARS)],
         mode: Literal["agent", "plan"] | None = None,
+        model_id: str | None = None,
+        model_params: list[ModelParam] | None = None,
+        reasoning_level: str | None = None,
     ) -> CreateRunView:
-        """Envoie une suite au même agent (nouveau run). PAYANT. Garde le modèle de la création. Refusé si l'agent est archivé, si son statut est inconnu ou si workOnCurrentBranch n'est pas false. AGENT_BUSY : attendre la fin du run en cours, ne pas contourner."""
+        """Envoie une suite au même agent (nouveau run). PAYANT. Sans model_id, l'agent garde son modèle courant. Avec model_id (et model_params, reasoning_level, vérifiés contre le catalogue), le modèle change pour ce run et les suivants ; l'API ne permet pas de relire le modèle actif. Refusé si l'agent est archivé, si son statut est inconnu ou si workOnCurrentBranch n'est pas false. AGENT_BUSY : attendre la fin du run en cours, ne pas contourner."""
         return await _run(
             "cursor_create_run",
             ctx,
-            lambda app: perform_followup(_client(app), agent_id=agent_id, prompt=prompt, mode=mode),
+            lambda app: perform_followup(
+                _client(app),
+                agent_id=agent_id,
+                prompt=prompt,
+                mode=mode,
+                model_id=model_id,
+                model_params=model_params,
+                reasoning_level=reasoning_level,
+            ),
             mutation=True,
             budget_seconds=CREATE_TOOL_BUDGET_SECONDS,
         )
