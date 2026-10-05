@@ -127,11 +127,22 @@ Relue le 5 octobre 2026 contre le code du SDK Python officiel `cursor-sdk` 1.0.3
 | Images dans le prompt | non | oui | oui | non |
 | Serveurs MCP distants (`mcpServers`) | non | oui | oui | non |
 | Sous-agents personnalisés | non | oui | oui | non |
-| Clé d'idempotence (`Idempotency-Key`, création et envoi) | non (`agentId` fixé avant l'envoi à la place) | non | oui (uuid4 par création) | non |
+| Clé d'idempotence (`Idempotency-Key`, création et envoi) | non (`agentId` fixé avant l'envoi à la place) | non | oui (uuid4 par création) | **ignorée** (5 octobre 2026, voir ci-dessous) |
 | Modèle par envoi (`model` sur `POST .../runs`) | non | non | oui | non |
 | Variables d'environnement limitées à un run | non | non | oui | non |
 | Métadonnées d'agent (`metadata`) | non | non | oui | non |
 | Conversation d'un run | non (flux SSE et `cursor_get_run`) | non | oui, reconstruite côté client depuis `interaction_update` | non |
 | Observation avec reprise par ordinal (`observe`) | non | non | bridge seul | non |
 
-Prochaine étape possible : un test réel, payant et explicitement autorisé, de `Idempotency-Key` et de `model` sur la continuation. Si l'API les accepte, l'idempotence rendrait une création relançable après `MUTATION_OUTCOME_UNKNOWN`, et lèverait l'incompatibilité entre `agentId` et `envVars`.
+### `Idempotency-Key` : test réel du 5 octobre 2026
+
+Test payant autorisé, `composer-2.5`, en-tête exactement tel que le SDK l'envoie (`Idempotency-Key: <uuid4>`), REST v1 direct :
+
+- Création avec `envVars` et sans `agentId`, trois POST avec la même clé : trois `201`, **trois agents distincts**. Le troisième POST avait un corps différent : ni refus ni rejeu.
+- Création sans `envVars`, deux POST avec la même clé : deux `201`, **deux agents distincts**.
+- Continuation, deux POST avec la même clé, coup sur coup : le premier crée un run, le second reçoit `409 agent_busy`, pas le même run.
+- Aucun en-tête de réponse ne mentionne l'idempotence. Cinq agents créés, tous supprimés ; coût total relu : 4,26 centimes.
+
+Conclusion : l'API REST ignore cet en-tête. Ce MCP ne l'envoie pas. Le seul garde-fou contre une création en double reste `agentId`, fixé avant l'envoi ; avec `envVars`, que l'API refuse avec `agentId`, une issue inconnue se résout par `cursor_list_agents(name=...)`. Un rejeu de création reste donc interdit après `MUTATION_OUTCOME_UNKNOWN`.
+
+`model` sur la continuation n'a pas été testé.

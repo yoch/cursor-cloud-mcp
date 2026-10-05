@@ -20,6 +20,7 @@ Mesures sur le serveur stdio réel, en lecture seule, puis smoke complet.
 - Recherche : l'API refuse tout filtre de `GET /v1/agents` hors `limit`, `cursor`, `includeArchived` et `prUrl` (400 vérifié pour `name`, `q`, `search`, `status`, `sort`). `name` est donc filtré localement sur cinq pages au plus ; `pr_url` est transmis. `cursor_list_repositories` accepte `query`.
 - Repris de la lecture du SDK Python officiel `cursor-sdk` 1.0.36, qui appelle le même REST v1 : `cost` de `GET /v1/agents/{id}/usage` (présent en réel, ignoré jusqu'ici), `Run.error`, `helpUrl` et `provider` des erreurs, consigne de reprise sur `invalid_last_event_id`. Matrice de `docs/api-contract.md` corrigée en conséquence.
 - `uv run pytest` : **82 passed** sous Python 3.13 et 3.12 (nouveau `tests/test_interface.py`). Ruff propre.
+- `Idempotency-Key`, test réel autorisé (`composer-2.5`) : **ignoré** par l'API, à la création (avec et sans `envVars`) comme à la continuation. Détail et conclusion dans `docs/api-contract.md`. Cinq agents créés et supprimés, 4,26 centimes.
 - `scripts/smoke_live.py` sur cette livraison : **34 sur 34 PASS**, un `WARN` (artefacts). Coût relu : 0,74 centime pour l'agent avec dépôt ; agent retrouvé par `name` parmi 163 ; annulation `CANCELLED` confirmée ; stderr sans secret. Les quatre agents créés par les deux smokes du jour ont été supprimés ; les deux agents `smoke-*` du 1er octobre, gardés volontairement, n'ont pas été touchés.
 
 ## Livraison fiabilité du 5 octobre 2026
