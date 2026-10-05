@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "httpx==0.28.1",
-  "mcp==2.2.0",
+  "mcp==2.3.0",
 ]
 
 [project.scripts]
@@ -27,3 +27,7 @@ packages = ["src/cursor_cloud_mcp"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"

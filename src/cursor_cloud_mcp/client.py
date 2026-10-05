@@ -4,23 +4,24 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import TypeVar
 from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from cursor_cloud_mcp import budget, redaction
 from cursor_cloud_mcp.config import (
     API_BASE,
     CREATE_DEADLINE_SECONDS,
     DEFAULT_DEADLINE_SECONDS,
     MAX_RESPONSE_BYTES,
     MODEL_CACHE_TTL_SECONDS,
+    MUTATION_MIN_SECONDS,
     REPOSITORIES_DEADLINE_SECONDS,
     REPOSITORY_CACHE_TTL_SECONDS,
 )
@@ -44,7 +45,6 @@ from cursor_cloud_mcp.validation import require_segment
 
 logger = logging.getLogger(__name__)
 
-_JSON = TypeVar("_JSON", bound=BaseModel)
 _REDIRECTS = {301, 302, 303, 307, 308}
 _REQUEST_ID_HEADERS = ("x-request-id", "request-id", "x-cursor-request-id")
 _RECOVERY = "Relire l'état distant avant toute nouvelle mutation."
@@ -60,6 +60,34 @@ class MutationContext:
 
 class ResponseTooLarge(Exception):
     """Le corps dépasse la limite lue en flux."""
+
+
+class _Retry(Exception):
+    """Un GET peut être relancé une fois dans le même budget."""
+
+
+@dataclass
+class _TtlCache[T]:
+    """Cache TTL sous verrou. Annuler un appelant n'annule que sa propre lecture."""
+
+    ttl: float
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    entry: tuple[float, T] | None = None
+
+    async def get(self, fetch: Callable[[], Awaitable[T]], *, wait_cap: float) -> tuple[T, bool]:
+        try:
+            async with asyncio.timeout_at(budget.deadline_at(wait_cap)):
+                await self.lock.acquire()
+        except TimeoutError:
+            raise failure(ErrorCode.TIMEOUT, "Délai dépassé en attendant une lecture déjà en cours.") from None
+        try:
+            if self.entry is not None and time.monotonic() - self.entry[0] < self.ttl:
+                return self.entry[1], True
+            value = await fetch()
+            self.entry = (time.monotonic(), value)
+            return value, False
+        finally:
+            self.lock.release()
 
 
 class CursorCloudClient:
@@ -79,21 +107,16 @@ class CursorCloudClient:
         download_transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._api_key = api_key
+        redaction.register(api_key)
         self._transport = transport
         self.download_transport = download_transport
         self._deadline = deadline_seconds
         self._repositories_deadline = repositories_deadline_seconds
         self._create_deadline = create_deadline_seconds
-        self._repository_ttl = repository_cache_ttl_seconds
-        self._model_ttl = model_cache_ttl_seconds
         self._max_body = max_response_bytes
         self._http: httpx.AsyncClient | None = None
-        self._repo_lock = asyncio.Lock()
-        self._repo_cache: tuple[float, RemoteRepositoryList] | None = None
-        self._repo_task: asyncio.Task[RemoteRepositoryList] | None = None
-        self._model_lock = asyncio.Lock()
-        self._model_cache: tuple[float, RemoteModelList] | None = None
-        self._model_task: asyncio.Task[RemoteModelList] | None = None
+        self._repo_cache: _TtlCache[RemoteRepositoryList] = _TtlCache(ttl=repository_cache_ttl_seconds)
+        self._model_cache: _TtlCache[RemoteModelList] = _TtlCache(ttl=model_cache_ttl_seconds)
 
     async def open(self) -> None:
         headers = {"Accept": "application/json"}
@@ -123,48 +146,10 @@ class CursorCloudClient:
         return await self._get_model("/v1/models", RemoteModelList, deadline=self._deadline)
 
     async def cached_models(self) -> tuple[RemoteModelList, bool]:
-        async with self._model_lock:
-            cached = self._model_cache
-            now = time.monotonic()
-            if cached is not None and now - cached[0] < self._model_ttl:
-                return cached[1], True
-            if self._model_task is None or self._model_task.done():
-                self._model_task = asyncio.create_task(self.list_models())
-            task = self._model_task
-        try:
-            payload = await task
-        except Exception:
-            async with self._model_lock:
-                if self._model_task is task:
-                    self._model_task = None
-            raise
-        async with self._model_lock:
-            if self._model_task is task:
-                self._model_cache = (time.monotonic(), payload)
-                self._model_task = None
-        return payload, False
+        return await self._model_cache.get(self.list_models, wait_cap=self._deadline)
 
     async def list_repositories(self) -> tuple[RemoteRepositoryList, bool]:
-        async with self._repo_lock:
-            cached = self._repo_cache
-            now = time.monotonic()
-            if cached is not None and now - cached[0] < self._repository_ttl:
-                return cached[1], True
-            if self._repo_task is None or self._repo_task.done():
-                self._repo_task = asyncio.create_task(self._fetch_repositories())
-            task = self._repo_task
-        try:
-            payload = await task
-        except Exception:
-            async with self._repo_lock:
-                if self._repo_task is task:
-                    self._repo_task = None
-            raise
-        async with self._repo_lock:
-            if self._repo_task is task:
-                self._repo_cache = (time.monotonic(), payload)
-                self._repo_task = None
-        return payload, False
+        return await self._repo_cache.get(self._fetch_repositories, wait_cap=self._repositories_deadline)
 
     async def list_agents(
         self,
@@ -259,14 +244,14 @@ class CursorCloudClient:
             response = await self._http.send(request, stream=True)
         except httpx.TimeoutException:
             raise failure(ErrorCode.TIMEOUT, explain(ErrorCode.TIMEOUT)) from None
-        except httpx.TransportError:
+        except httpx.RequestError:
             raise failure(ErrorCode.TIMEOUT, "Connexion interrompue pendant la lecture.") from None
         request_id = _request_id(response.headers)
         _log("GET", path, str(response.status_code), started, request_id)
         try:
             yield response
         finally:
-            await response.aclose()
+            await close_quietly(response)
 
     def error_from_response(self, response: httpx.Response, raw: bytes) -> CursorFailure:
         return _status_from(
@@ -277,7 +262,6 @@ class CursorCloudClient:
             request_id=_request_id(response.headers),
             retry_after=None,
             blocked_by_deadline=False,
-            secret=self._api_key,
         )
 
     async def create_run(
@@ -376,14 +360,14 @@ class CursorCloudClient:
             deadline=self._repositories_deadline,
         )
 
-    async def _get_model(
+    async def _get_model[M: BaseModel](
         self,
         path: str,
-        model: type[_JSON],
+        model: type[M],
         *,
         query: Mapping[str, str] | None = None,
         deadline: float,
-    ) -> _JSON:
+    ) -> M:
         payload = await self._send("GET", path, query=query, deadline=deadline, mutation=None)
         return _parse(model, payload, mutation=None)
 
@@ -397,14 +381,32 @@ class CursorCloudClient:
         deadline: float,
         mutation: MutationContext | None,
     ) -> object | None:
+        """Un appel HTTP borné par ``deadline`` et par le budget de l'outil.
+
+        Tout ce qui suit l'envoi d'une mutation — en-têtes, corps, décodage, fermeture —
+        produit au pire ``MUTATION_OUTCOME_UNKNOWN`` avec le contexte connu. Une mutation
+        n'est jamais rejouée ; un GET l'est au plus une fois.
+        """
         if self._http is None:
             raise failure(ErrorCode.CONFIGURATION_MISSING, "Le client HTTP n'est pas ouvert.")
         loop = asyncio.get_running_loop()
-        deadline_at = loop.time() + deadline
+        deadline_at = budget.deadline_at(deadline)
+        floor = min(MUTATION_MIN_SECONDS, deadline / 2) if mutation is not None else 0.0
+        if deadline_at - loop.time() <= floor:
+            # Rien n'est envoyé : mieux vaut un refus net qu'une mutation à l'issue inconnue.
+            raise failure(
+                ErrorCode.TIMEOUT,
+                "Budget de l'outil épuisé avant l'envoi. Aucune requête n'a été envoyée.",
+                agent_id=mutation.agent_id if mutation is not None else None,
+                run_id=mutation.run_id if mutation is not None else None,
+            )
         attempt = 0
+        status: int | None = None
+        request_id: str | None = None
         try:
             async with asyncio.timeout_at(deadline_at):
                 while True:
+                    status, request_id = None, None
                     remaining = deadline_at - loop.time()
                     if remaining <= 0:
                         raise TimeoutError
@@ -420,62 +422,105 @@ class CursorCloudClient:
                         response = await self._http.send(request, stream=True)
                     except httpx.TimeoutException:
                         raise TimeoutError from None
-                    except httpx.TransportError:
+                    except httpx.RequestError:
                         _log(method, path, "transport", started, None)
                         if method == "GET" and attempt == 0 and deadline_at - loop.time() > 0:
                             attempt = 1
                             continue
-                        raise _transport_failure(mutation) from None
+                        raise _interrupted(mutation, "La connexion a été coupée.") from None
+                    status = response.status_code
+                    request_id = _request_id(response.headers)
+                    _log(method, path, str(status), started, request_id)
                     try:
-                        try:
-                            request_id = _request_id(response.headers)
-                            _log(method, path, str(response.status_code), started, request_id)
-                            if response.status_code in _REDIRECTS:
-                                raise _redirect_failure(response, request_id, mutation, self._api_key)
-                            if method == "GET" and attempt == 0 and _retryable(response.status_code):
-                                header_wait = _retry_after_seconds(response)
-                                wait = 1.0 if header_wait is None and response.status_code == 429 else header_wait
-                                if wait is None:
-                                    wait = 0.0
-                                remaining_now = deadline_at - loop.time()
-                                if wait > remaining_now:
-                                    raw = await read_bounded(response, self._max_body)
-                                    raise _status_from(
-                                        response.status_code,
-                                        response.headers,
-                                        raw,
-                                        mutation=None,
-                                        request_id=request_id,
-                                        retry_after=header_wait,
-                                        blocked_by_deadline=True,
-                                        secret=self._api_key,
-                                    )
-                                attempt = 1
-                                if wait:
-                                    await asyncio.sleep(wait)
-                                continue
-                            raw = await read_bounded(response, self._max_body)
-                            return _interpret_bytes(
-                                response.status_code,
-                                response.headers,
-                                raw,
-                                mutation=mutation,
-                                request_id=request_id,
-                                secret=self._api_key,
-                            )
-                        except ResponseTooLarge:
-                            raise _body_failure(
-                                mutation,
-                                _request_id(response.headers),
-                                response.status_code,
-                                "La réponse dépasse la limite locale.",
-                            ) from None
-                    except httpx.TimeoutException:
-                        raise TimeoutError from None
+                        return await self._handle(
+                            method,
+                            response,
+                            request_id=request_id,
+                            mutation=mutation,
+                            retry_allowed=attempt == 0,
+                            deadline_at=deadline_at,
+                        )
+                    except _Retry:
+                        attempt = 1
+                        continue
                     finally:
-                        await response.aclose()
-        except TimeoutError:
-            raise _timeout_failure(mutation) from None
+                        await close_quietly(response)
+        except (TimeoutError, httpx.TimeoutException):
+            detail = "Le délai a expiré après l'envoi possible de la requête."
+            if status is not None:
+                detail = "Le délai a expiré pendant la lecture de la réponse."
+            raise _interrupted(mutation, detail, status=status, request_id=request_id, timeout=True) from None
+        except httpx.RequestError:
+            raise _interrupted(
+                mutation,
+                "La connexion a été coupée pendant la lecture de la réponse.",
+                status=status,
+                request_id=request_id,
+            ) from None
+
+    async def _handle(
+        self,
+        method: str,
+        response: httpx.Response,
+        *,
+        request_id: str | None,
+        mutation: MutationContext | None,
+        retry_allowed: bool,
+        deadline_at: float,
+    ) -> object | None:
+        if response.status_code in _REDIRECTS:
+            raise _redirect_failure(response, request_id, mutation)
+        if method == "GET" and retry_allowed and _retryable(response.status_code):
+            header_wait = _retry_after_seconds(response)
+            wait = 1.0 if header_wait is None and response.status_code == 429 else header_wait
+            if wait is None:
+                wait = 0.0
+            if wait > deadline_at - asyncio.get_running_loop().time():
+                raw = await self._read(response, mutation, request_id)
+                raise _status_from(
+                    response.status_code,
+                    response.headers,
+                    raw,
+                    mutation=None,
+                    request_id=request_id,
+                    retry_after=header_wait,
+                    blocked_by_deadline=True,
+                )
+            if wait:
+                await asyncio.sleep(wait)
+            raise _Retry
+        raw = await self._read(response, mutation, request_id)
+        return _interpret_bytes(
+            response.status_code,
+            response.headers,
+            raw,
+            mutation=mutation,
+            request_id=request_id,
+        )
+
+    async def _read(
+        self,
+        response: httpx.Response,
+        mutation: MutationContext | None,
+        request_id: str | None,
+    ) -> bytes:
+        try:
+            return await read_bounded(response, self._max_body)
+        except ResponseTooLarge:
+            raise _body_failure(
+                mutation,
+                request_id,
+                response.status_code,
+                "La réponse dépasse la limite locale.",
+            ) from None
+
+
+async def close_quietly(response: httpx.Response) -> None:
+    """Une erreur de fermeture n'écrase ni un résultat établi ni l'erreur d'origine."""
+    try:
+        await response.aclose()
+    except (httpx.HTTPError, OSError) as exc:
+        logger.debug("http close_error=%s", type(exc).__name__)
 
 
 def _page_query(limit: int | None, cursor: str | None) -> dict[str, str]:
@@ -534,14 +579,29 @@ async def read_bounded(response: httpx.Response, limit: int) -> bytes:
     """Lit le corps en flux et s'arrête au-delà de ``limit``."""
     chunks: list[bytes] = []
     total = 0
-    async for chunk in response.aiter_bytes():
-        if not chunk:
-            continue
-        total += len(chunk)
-        if total > limit:
-            raise ResponseTooLarge
-        chunks.append(chunk)
+    try:
+        async for chunk in response.aiter_bytes():
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > limit:
+                raise ResponseTooLarge
+            chunks.append(chunk)
+    except httpx.RequestError:
+        # httpx ferme le flux en fin d'itération : une erreur de fermeture n'écrase pas
+        # un corps reçu en entier, ce que seul Content-Length (sans encodage) établit.
+        if _complete(response, total):
+            logger.debug("http close_error_after_full_body")
+            return b"".join(chunks)
+        raise
     return b"".join(chunks)
+
+
+def _complete(response: httpx.Response, received: int) -> bool:
+    if response.headers.get("content-encoding", "identity").lower() != "identity":
+        return False
+    declared = response.headers.get("content-length", "")
+    return declared.isdigit() and int(declared) == received
 
 
 def _interpret_bytes(
@@ -551,7 +611,6 @@ def _interpret_bytes(
     *,
     mutation: MutationContext | None,
     request_id: str | None,
-    secret: str | None,
 ) -> object | None:
     if status not in {200, 201}:
         raise _status_from(
@@ -562,7 +621,6 @@ def _interpret_bytes(
             request_id=request_id,
             retry_after=None,
             blocked_by_deadline=False,
-            secret=secret,
         )
     if not raw:
         return None
@@ -575,49 +633,52 @@ def _interpret_bytes(
         raise _body_failure(mutation, request_id, status, "La réponse n'est pas du JSON.") from None
 
 
-def _parse(model: type[_JSON], payload: object | None, *, mutation: MutationContext | None) -> _JSON:
+def _parse[M: BaseModel](model: type[M], payload: object | None, *, mutation: MutationContext | None) -> M:
     try:
         return model.model_validate(payload)
     except ValidationError:
         if mutation is not None:
-            raise failure(
-                ErrorCode.MUTATION_OUTCOME_UNKNOWN,
-                f"{explain(ErrorCode.MUTATION_OUTCOME_UNKNOWN)} Le corps de succès ne respecte pas le schéma.",
-                agent_id=mutation.agent_id,
-                run_id=mutation.run_id,
-                previous_latest_run_id=mutation.previous_latest_run_id,
-                recovery=_recovery_for(mutation),
-            ) from None
+            raise _uncertain(mutation, "Le corps de succès ne respecte pas le schéma.") from None
         raise failure(
             ErrorCode.INCOMPATIBLE_RESPONSE,
             f"{explain(ErrorCode.INCOMPATIBLE_RESPONSE)} Un champ essentiel est absent ou d'un type inattendu.",
         ) from None
 
 
-def _timeout_failure(mutation: MutationContext | None) -> CursorFailure:
-    if mutation is not None:
-        return failure(
-            ErrorCode.MUTATION_OUTCOME_UNKNOWN,
-            f"{explain(ErrorCode.MUTATION_OUTCOME_UNKNOWN)} Le délai a expiré après l'envoi possible de la requête.",
-            agent_id=mutation.agent_id,
-            run_id=mutation.run_id,
-            previous_latest_run_id=mutation.previous_latest_run_id,
-            recovery=_recovery_for(mutation),
-        )
-    return failure(ErrorCode.TIMEOUT, explain(ErrorCode.TIMEOUT))
+def _uncertain(
+    mutation: MutationContext,
+    detail: str,
+    *,
+    status: int | None = None,
+    request_id: str | None = None,
+    remote_code: str | None = None,
+) -> CursorFailure:
+    """Issue de mutation inconnue, avec tout le contexte utile à une reprise sans doublon."""
+    return failure(
+        ErrorCode.MUTATION_OUTCOME_UNKNOWN,
+        f"{explain(ErrorCode.MUTATION_OUTCOME_UNKNOWN)} {detail}".strip(),
+        agent_id=mutation.agent_id,
+        run_id=mutation.run_id,
+        previous_latest_run_id=mutation.previous_latest_run_id,
+        recovery=_recovery_for(mutation),
+        http_status=status,
+        remote_code=remote_code,
+        request_id=request_id,
+    )
 
 
-def _transport_failure(mutation: MutationContext | None) -> CursorFailure:
+def _interrupted(
+    mutation: MutationContext | None,
+    detail: str,
+    *,
+    status: int | None = None,
+    request_id: str | None = None,
+    timeout: bool = False,
+) -> CursorFailure:
     if mutation is not None:
-        return failure(
-            ErrorCode.MUTATION_OUTCOME_UNKNOWN,
-            f"{explain(ErrorCode.MUTATION_OUTCOME_UNKNOWN)} La connexion a été coupée.",
-            agent_id=mutation.agent_id,
-            run_id=mutation.run_id,
-            previous_latest_run_id=mutation.previous_latest_run_id,
-            recovery=_recovery_for(mutation),
-        )
-    return failure(ErrorCode.TIMEOUT, "Connexion interrompue pendant la lecture.")
+        return _uncertain(mutation, detail, status=status, request_id=request_id)
+    message = explain(ErrorCode.TIMEOUT) if timeout else "Connexion interrompue pendant la lecture."
+    return failure(ErrorCode.TIMEOUT, message, http_status=status, request_id=request_id)
 
 
 def _body_failure(
@@ -627,16 +688,7 @@ def _body_failure(
     detail: str,
 ) -> CursorFailure:
     if mutation is not None:
-        return failure(
-            ErrorCode.MUTATION_OUTCOME_UNKNOWN,
-            f"{explain(ErrorCode.MUTATION_OUTCOME_UNKNOWN)} {detail}",
-            agent_id=mutation.agent_id,
-            run_id=mutation.run_id,
-            previous_latest_run_id=mutation.previous_latest_run_id,
-            recovery=_recovery_for(mutation),
-            http_status=status,
-            request_id=request_id,
-        )
+        return _uncertain(mutation, detail, status=status, request_id=request_id)
     return failure(
         ErrorCode.INCOMPATIBLE_RESPONSE,
         f"{explain(ErrorCode.INCOMPATIBLE_RESPONSE)} {detail}",
@@ -649,9 +701,7 @@ def _redirect_failure(
     response: httpx.Response,
     request_id: str | None,
     mutation: MutationContext | None,
-    secret: str | None,
 ) -> CursorFailure:
-    del secret
     location = response.headers.get("location", "")
     host = ""
     if location:
@@ -664,16 +714,7 @@ def _redirect_failure(
     else:
         message = "Redirection HTTP refusée."
     if mutation is not None:
-        return failure(
-            ErrorCode.MUTATION_OUTCOME_UNKNOWN,
-            f"{explain(ErrorCode.MUTATION_OUTCOME_UNKNOWN)} {message}",
-            agent_id=mutation.agent_id,
-            run_id=mutation.run_id,
-            previous_latest_run_id=mutation.previous_latest_run_id,
-            recovery=_recovery_for(mutation),
-            http_status=response.status_code,
-            request_id=request_id,
-        )
+        return _uncertain(mutation, message, status=response.status_code, request_id=request_id)
     return failure(
         ErrorCode.INCOMPATIBLE_RESPONSE,
         message,
@@ -700,23 +741,12 @@ def _status_from(
     request_id: str | None,
     retry_after: float | None,
     blocked_by_deadline: bool,
-    secret: str | None,
 ) -> CursorFailure:
     remote_code, remote_message = _remote_error_bytes(headers, raw)
-    remote_message = _clean(remote_message, secret)
+    remote_message = _clean(remote_message)
     code = _classify(status, remote_code, mutation=mutation is not None)
     if code is ErrorCode.MUTATION_OUTCOME_UNKNOWN and mutation is not None:
-        return failure(
-            code,
-            f"{explain(code)} {remote_message}".strip(),
-            agent_id=mutation.agent_id,
-            run_id=mutation.run_id,
-            previous_latest_run_id=mutation.previous_latest_run_id,
-            recovery=_recovery_for(mutation),
-            http_status=status,
-            remote_code=remote_code,
-            request_id=request_id,
-        )
+        return _uncertain(mutation, remote_message, status=status, request_id=request_id, remote_code=remote_code)
     message = explain(code)
     if blocked_by_deadline:
         message = f"{message} L'attente Retry-After dépasse la deadline."
@@ -800,10 +830,9 @@ def _remote_error_bytes(headers: httpx.Headers, raw: bytes) -> tuple[str | None,
     return None, ""
 
 
-def _clean(message: str, secret: str | None) -> str:
-    compact = " ".join(message.split())
-    if secret:
-        compact = compact.replace(secret, "[redacted]")
+def _clean(message: str) -> str:
+    """Message distant compacté, borné et débarrassé de tout secret connu du processus."""
+    compact = redaction.redact(" ".join(message.split()))
     if len(compact) > 300:
         return compact[:300] + "…"
     return compact

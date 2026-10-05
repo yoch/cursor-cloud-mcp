@@ -13,6 +13,7 @@ SEEDED_RUN_ID = "run-00000000-0000-0000-0000-000000000001"
 ERROR_PROMPT = "ERREUR_ATTENDUE"
 _NOW = "2026-09-30T12:00:00.000Z"
 _SHA = "a" * 40
+_ARTIFACT_HOST = "cloud-agent-artifacts.s3.us-east-1.amazonaws.com"
 
 
 class FixtureTransport(httpx.AsyncBaseTransport):
@@ -44,6 +45,8 @@ class FixtureTransport(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
         self.calls.append((request.method, path))
+        if request.url.host != "api.cursor.com":
+            return self._download(request)
         if request.method == "GET" and path == "/v1/me":
             return _json(200, {"apiKeyName": "fixture", "createdAt": _NOW})
         if request.method == "GET" and path == "/v1/models":
@@ -208,10 +211,16 @@ class FixtureTransport(httpx.AsyncBaseTransport):
             200,
             {
                 "items": [
-                    {"path": "artifacts/result.txt", "sizeBytes": 5, "updatedAt": _NOW},
+                    {"path": "artifacts/result.txt", "sizeBytes": 17, "updatedAt": _NOW},
                 ]
             },
         )
+
+    def _download(self, request: httpx.Request) -> httpx.Response:
+        """Stockage simulé : le mode fixture n'ouvre jamais de connexion externe."""
+        if request.method == "GET" and request.url.host == _ARTIFACT_HOST and request.url.path == "/fixture/result.txt":
+            return httpx.Response(200, content=b"fixture artefact\n")
+        return httpx.Response(404, text="Hôte ou chemin inconnu du fixture.")
 
     def _artifact_url(self, agent_id: str, path: str | None) -> httpx.Response:
         if agent_id not in self.agents:
@@ -221,7 +230,7 @@ class FixtureTransport(httpx.AsyncBaseTransport):
         return _json(
             200,
             {
-                "url": "https://cloud-agent-artifacts.s3.us-east-1.amazonaws.com/fixture/result.txt",
+                "url": f"https://{_ARTIFACT_HOST}/fixture/result.txt",
                 "expiresAt": "2026-09-30T12:15:00.000Z",
             },
         )

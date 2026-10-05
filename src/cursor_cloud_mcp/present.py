@@ -1,5 +1,7 @@
 """Projection des payloads Cursor vers les vues MCP. Les champs inconnus sont ignorés."""
 
+from typing import Literal
+
 from cursor_cloud_mcp.catalog import reasoning_view
 from cursor_cloud_mcp.config import RESULT_MAX_LIMIT
 from cursor_cloud_mcp.errors import ErrorCode, failure
@@ -35,6 +37,7 @@ from cursor_cloud_mcp.models import (
     RunUsageView,
     RunView,
     UsageView,
+    agent_status_known,
     cursor_of,
     run_terminal,
     summary_from,
@@ -233,16 +236,26 @@ def cancel_view(
     *,
     agent_id: str,
     run_id: str,
-    outcome_confirmed: bool,
     observed_status: str | None,
     reread_error: str | None,
 ) -> CancelView:
+    """Distingue demande acceptée, run terminal et run réellement annulé."""
     observed_terminal = None if observed_status is None else run_terminal(observed_status)
+    outcome: Literal["cancelled", "ended_without_cancel", "still_running", "unknown"]
+    if observed_status == "CANCELLED":
+        outcome = "cancelled"
+    elif observed_terminal is True:
+        outcome = "ended_without_cancel"
+    elif observed_terminal is False:
+        outcome = "still_running"
+    else:
+        outcome = "unknown"
     return CancelView(
         agent_id=agent_id,
         run_id=run_id,
         cancel_request_accepted=True,
-        outcome_confirmed=outcome_confirmed,
+        outcome=outcome,
+        outcome_confirmed=outcome == "cancelled",
         observed_status=observed_status,
         observed_terminal=observed_terminal,
         reread_error=reread_error,
@@ -260,15 +273,30 @@ def usage_view(remote: RemoteUsage) -> UsageView:
 
 
 def ensure_continuation_allowed(agent: RemoteAgent) -> None:
+    """Une écriture exige de savoir qu'elle est permise : une information absente refuse."""
     if agent.status == "ARCHIVED":
         raise failure(
             ErrorCode.CONTINUATION_REFUSED,
             "L'agent est archivé. Le désarchiver avec cursor_unarchive_agent avant une continuation.",
         )
+    if not agent_status_known(agent.status):
+        raise failure(
+            ErrorCode.CONTINUATION_REFUSED,
+            f"Statut d'agent inconnu ({agent.status}). Ce MCP ne continue que des agents IDLE ou ACTIVE.",
+            agent_id=agent.id,
+        )
     if agent.workOnCurrentBranch is True:
         raise failure(
             ErrorCode.CONTINUATION_REFUSED,
             "workOnCurrentBranch est true. Ce MCP ne continue pas un agent qui pousse sur la branche de départ.",
+            agent_id=agent.id,
+        )
+    if agent.workOnCurrentBranch is None:
+        raise failure(
+            ErrorCode.CONTINUATION_REFUSED,
+            "workOnCurrentBranch est absent de la réponse Cursor : impossible d'établir que l'agent "
+            "ne pousse pas sur la branche de départ. Continuer depuis l'interface Cursor si c'est voulu.",
+            agent_id=agent.id,
         )
 
 

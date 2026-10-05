@@ -244,9 +244,32 @@ async def test_repository_cache_shares_one_request() -> None:
     finally:
         await client.aclose()
     assert calls["n"] == 1
-    assert first[1] is False and second[1] is False
+    assert sorted([first[1], second[1]]) == [False, True]
     assert hit is True
     assert third.items[0].url == "https://github.com/acme/demo"
+
+
+async def test_cancelling_one_cache_reader_does_not_cancel_the_other() -> None:
+    calls = {"n": 0}
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        await asyncio.sleep(0.2)
+        return httpx.Response(200, json={"items": [{"url": "https://github.com/acme/demo"}]})
+
+    client = await _open(httpx.MockTransport(handler), repository_cache_ttl_seconds=300)
+    try:
+        first = asyncio.create_task(client.list_repositories())
+        await asyncio.sleep(0.05)
+        second = asyncio.create_task(client.list_repositories())
+        await asyncio.sleep(0.01)
+        first.cancel()
+        payload, _hit = await second
+    finally:
+        await client.aclose()
+    assert first.cancelled()
+    assert payload.items[0].url == "https://github.com/acme/demo"
+    assert calls["n"] == 2
 
 
 async def test_agent_busy_conflict_is_not_retried() -> None:

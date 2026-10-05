@@ -1,6 +1,7 @@
 """Catalogue, sessions de calcul, flux, artefacts et garde-fous de suppression."""
 
 import asyncio
+import io
 import json
 import logging
 
@@ -8,10 +9,11 @@ import httpx
 import pytest
 from mcp import Client
 
+from cursor_cloud_mcp import redaction
 from cursor_cloud_mcp.client import CursorCloudClient
 from cursor_cloud_mcp.config import Settings, load_settings
 from cursor_cloud_mcp.errors import CursorFailure, ErrorCode
-from cursor_cloud_mcp.server import _configure_logging, _RedactFilter, build_server
+from cursor_cloud_mcp.server import _configure_logging, build_server
 from cursor_cloud_mcp.stream import SseParser
 from tests.test_tools import (
     Router,
@@ -83,11 +85,24 @@ def test_fixture_and_real_key_are_refused(monkeypatch: pytest.MonkeyPatch) -> No
     assert allowed.forward_env == frozenset({"WORK_TOKEN", "OTHER"})
 
 
-def test_handler_filter_redacts_child_and_sdk_loggers(caplog: pytest.LogCaptureFixture) -> None:
-    secret = "redact-sentinel-xyz"
+def _capture_root() -> tuple[io.StringIO, logging.Handler, list[tuple[logging.Handler, logging.Formatter | None]]]:
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
     root = logging.getLogger()
-    previous = [(handler, list(handler.filters)) for handler in root.handlers]
-    caplog.set_level(logging.INFO)
+    root.addHandler(handler)
+    previous = [(item, item.formatter) for item in root.handlers]
+    return stream, handler, previous
+
+
+def _release_root(handler: logging.Handler, previous: list[tuple[logging.Handler, logging.Formatter | None]]) -> None:
+    for item, formatter in previous:
+        item.setFormatter(formatter)  # type: ignore[arg-type]
+    logging.getLogger().removeHandler(handler)
+
+
+def test_formatter_redacts_child_sdk_loggers_and_tracebacks() -> None:
+    secret = "redact-sentinel-xyz"
+    stream, handler, previous = _capture_root()
     _configure_logging(
         Settings(
             api_key=secret,
@@ -98,15 +113,24 @@ def test_handler_filter_redacts_child_and_sdk_loggers(caplog: pytest.LogCaptureF
         )
     )
     try:
-        logging.getLogger("cursor_cloud_mcp.client").info("child %s", secret)
+        logging.getLogger("cursor_cloud_mcp.client").warning("child %s", secret)
         logging.getLogger("mcp").warning("sdk %s", secret)
-        assert secret not in caplog.text
-        assert caplog.text.count("[redacted]") >= 2
+        try:
+            raise RuntimeError(f"échec avec {secret}")
+        except RuntimeError:
+            logging.getLogger("mcp").exception("crash")
+        text = stream.getvalue()
+        assert secret not in text
+        assert text.count("[redacted]") >= 3
+        assert "RuntimeError" in text
     finally:
-        for handler, filters in previous:
-            handler.filters[:] = filters
-        for handler in root.handlers:
-            handler.filters = [item for item in handler.filters if not isinstance(item, _RedactFilter)]
+        _release_root(handler, previous)
+
+
+def test_short_and_per_call_secrets_are_redacted() -> None:
+    redaction.register("k9z")
+    redaction.register("per-call-value-1234")
+    assert redaction.redact("a k9z b per-call-value-1234") == "a [redacted] b [redacted]"
 
 
 async def test_reasoning_level_is_resolved_before_post() -> None:

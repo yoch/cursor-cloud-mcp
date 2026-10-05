@@ -1,8 +1,8 @@
-"""Schémas d'entrée, vues MCP et payloads distants utilisés par les onze outils."""
+"""Schémas d'entrée, vues MCP et payloads distants utilisés par les outils."""
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from cursor_cloud_mcp.config import (
     NAME_MAX_CHARS,
@@ -233,12 +233,25 @@ class RemoteArtifactDownload(BaseModel):
 
 
 class RepositoryInput(BaseModel):
-    """Dépôt demandé à la création. ``starting_sha`` est un nom de branche, pas un SHA."""
+    """Dépôt demandé à la création. ``starting_ref`` est un nom de branche ; ``starting_sha`` en est l'ancien nom."""
 
     model_config = ConfigDict(extra="forbid")
 
     url: str
-    starting_sha: str
+    starting_ref: str | None = None
+    starting_sha: str | None = None
+
+    @model_validator(mode="after")
+    def _one_ref(self) -> "RepositoryInput":
+        if self.starting_ref is None and self.starting_sha is None:
+            raise ValueError("starting_ref est requis (starting_sha est accepté comme ancien nom)")
+        if self.starting_ref is not None and self.starting_sha is not None and self.starting_ref != self.starting_sha:
+            raise ValueError("starting_ref et starting_sha se contredisent")
+        return self
+
+    @property
+    def ref(self) -> str:
+        return self.starting_ref if self.starting_ref is not None else str(self.starting_sha)
 
 
 class AccountView(BaseModel):
@@ -437,6 +450,7 @@ class CancelView(BaseModel):
     agent_id: str
     run_id: str
     cancel_request_accepted: bool
+    outcome: Literal["cancelled", "ended_without_cancel", "still_running", "unknown"]
     outcome_confirmed: bool
     observed_status: str | None = None
     observed_terminal: bool | None = None
@@ -482,6 +496,7 @@ class RunEventView(BaseModel):
     tool_status: str | None = None
     tool_args: str | None = None
     tool_result: str | None = None
+    clipped: bool = False
 
 
 class RunEventsView(BaseModel):
@@ -492,6 +507,8 @@ class RunEventsView(BaseModel):
     events: list[RunEventView]
     last_event_id: str | None = None
     finished: bool
+    stream_error: bool = False
+    interrupted: bool = False
     run_status: str | None = None
     retention_seconds: int | None = None
     truncated: bool
