@@ -157,10 +157,13 @@ class CursorCloudClient:
         limit: int | None,
         cursor: str | None,
         include_archived: bool | None = None,
+        pr_url: str | None = None,
     ) -> RemoteAgentPage:
         query = _page_query(limit, cursor)
         if include_archived is not None:
             query["includeArchived"] = "true" if include_archived else "false"
+        if pr_url is not None:
+            query["prUrl"] = pr_url
         return await self._get_model(
             "/v1/agents",
             RemoteAgentPage,
@@ -762,6 +765,9 @@ def _status_from(
         recovery = "Attendre la fin du run ou l'annuler. Ne pas créer un autre agent."
     if code is ErrorCode.STREAM_EXPIRED:
         recovery = "Le flux n'est plus rejouable. Lire le résultat avec cursor_get_run."
+    if remote_code == "invalid_last_event_id":
+        recovery = "Curseur refusé par le flux : relancer cursor_read_run_events sans after_event_id."
+    help_url, provider = _remote_help(raw)
     return failure(
         code,
         message,
@@ -773,6 +779,8 @@ def _status_from(
         remote_code=remote_code,
         request_id=request_id,
         retry_after_seconds=retry_after,
+        help_url=help_url,
+        provider=provider,
     )
 
 
@@ -828,6 +836,24 @@ def _remote_error_bytes(headers: httpx.Headers, raw: bytes) -> tuple[str | None,
     if isinstance(message, str):
         return None, message
     return None, ""
+
+
+def _remote_help(raw: bytes) -> tuple[str | None, str | None]:
+    """``helpUrl`` et ``provider`` du corps d'erreur, par exemple pour ``integration_not_connected``."""
+    try:
+        payload = json.loads(raw.decode()) if raw else None
+    except (ValueError, UnicodeError):
+        return None, None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return None, None
+    help_url = error.get("helpUrl")
+    provider = error.get("provider")
+    valid_url = isinstance(help_url, str) and help_url.startswith("https://") and len(help_url) <= 500
+    return (
+        help_url if valid_url else None,
+        provider[:100] if isinstance(provider, str) else None,
+    )
 
 
 def _clean(message: str) -> str:

@@ -196,9 +196,10 @@ async def test_unarchive_with_unknown_status_is_not_confirmed() -> None:
 
     client, _router = await _session(Router(responder))
     try:
-        view = _data(await client.call_tool("cursor_unarchive_agent", {"agent_id": _AGENT}))
+        view = _data(await client.call_tool("cursor_archive_agent", {"agent_id": _AGENT, "unarchive": True}))
     finally:
         await client.__aexit__(None, None, None)
+    assert view["action"] == "unarchive"
     assert view["request_accepted"] is True
     assert view["outcome_confirmed"] is False
 
@@ -254,7 +255,7 @@ async def test_unknown_arguments_are_refused_without_patching_the_sdk() -> None:
     assert ArgModelBase.model_config.get("extra") != "forbid"
 
 
-async def test_starting_ref_and_its_legacy_alias() -> None:
+async def test_starting_ref_is_the_only_branch_name() -> None:
     def responder(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode())
         return httpx.Response(
@@ -267,29 +268,26 @@ async def test_starting_ref_and_its_legacy_alias() -> None:
 
     client, router = await _session(Router(responder))
     try:
-        new = await client.call_tool(
+        single = await client.call_tool(
             "cursor_create_agent",
             {"prompt": "x", "repository": "https://github.com/acme/demo", "starting_ref": "main"},
         )
+        listed = await client.call_tool(
+            "cursor_create_agent",
+            {"prompt": "x", "repositories": [{"url": "https://github.com/acme/demo", "starting_ref": "dev"}]},
+        )
         legacy = await client.call_tool(
             "cursor_create_agent",
-            {"prompt": "x", "repositories": [{"url": "https://github.com/acme/demo", "starting_sha": "dev"}]},
-        )
-        clash = await client.call_tool(
-            "cursor_create_agent",
-            {
-                "prompt": "x",
-                "repository": "https://github.com/acme/demo",
-                "starting_ref": "main",
-                "starting_sha": "dev",
-            },
+            {"prompt": "x", "repository": "https://github.com/acme/demo", "starting_sha": "main"},
         )
     finally:
         await client.__aexit__(None, None, None)
-    assert new.is_error is False and legacy.is_error is False
+    assert single.is_error is False and listed.is_error is False
     refs = [call[2]["repos"][0]["startingRef"] for call in router.calls]  # type: ignore[index]
     assert refs == ["main", "dev"]
-    assert _error_payload(clash)["code"] == "VALIDATION"
+    # L'ancien nom n'est plus accepté : argument inconnu, rien n'est envoyé.
+    assert legacy.is_error is True
+    assert len(router.calls) == 2
 
 
 def _sse(handler_chunks: list[bytes], *, error: Exception | None = None) -> httpx.MockTransport:
@@ -373,7 +371,7 @@ async def test_abandoned_wait_does_not_cancel_the_run(caplog: pytest.LogCaptureF
     client, router = await _session(Router(responder))
     try:
         waiting = asyncio.create_task(
-            client.call_tool("cursor_wait_run", {"agent_id": _AGENT, "run_id": _RUN, "max_wait_seconds": 30})
+            client.call_tool("cursor_get_run", {"agent_id": _AGENT, "run_id": _RUN, "wait_seconds": 30})
         )
         await asyncio.sleep(0.3)
         waiting.cancel()

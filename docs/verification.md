@@ -1,5 +1,29 @@
 # Vérification
 
+## Smoke réel de la PR #2 et livraison interface du 5 octobre 2026
+
+### Smoke réel de la PR #2 (`9db67c7`), avant toute modification
+
+- `uv run pytest` : 70 passed ; ruff propre ; CI verte (3.12 et 3.13).
+- `workOnCurrentBranch` dans `GET /v1/agents/{id}` : **présent**. Relu par GET seuls sur les 162 agents du compte, archivés compris, avec 0, 1 ou 2 dépôts : 160 à `false`, 2 à `true`, aucun absent. La règle de continuation ne bloque donc pas les agents légitimes.
+- Règle de continuation sur ces agents réels, avec un transport qui bloque tout POST : `false` + `IDLE` ou `ACTIVE` atteint le POST (intercepté) ; `true` est refusé (`CONTINUATION_REFUSED`) avant tout envoi ; un agent archivé aussi.
+- `scripts/smoke_live.py` : **34 sur 34 PASS**, un `WARN` (liste d'artefacts vide, limite connue). Un premier essai a échoué partout en `TIMEOUT` : le script ne transmettait au serveur que `PATH`, `HOME` et `LANG`, donc pas le proxy du bac à sable ; aucune requête n'avait atteint Cursor. Le script transmet désormais les variables proxy et CA si elles existent.
+
+### Livraison interface (évaluation à l'usage et SDK officiel)
+
+Mesures sur le serveur stdio réel, en lecture seule, puis smoke complet.
+
+- 19 outils deviennent 16 : `cursor_wait_run` → `cursor_get_run(wait_seconds)`, `cursor_get_artifact_url` → `cursor_read_artifact(url_only)` (et URL rendue d'office pour un binaire ou un fichier de plus de 5 Mo), `cursor_unarchive_agent` → `cursor_archive_agent(unarchive=true)`. Retrait de `thinking` (couvert par `model_params`) et de l'alias `starting_sha`.
+- Réponses en JSON compact, sans champ nul, identiques en texte et en `structuredContent`. Le SDK MCP écrivait un JSON indenté, `null` compris.
+- `cursor_list_models` : **242 629 → 9 280 caractères** pour les 43 modèles du compte. `model_id` (id ou alias non ambigu) rend un modèle et ses variantes. Combinaisons absentes des variantes du modèle refusées avant POST.
+- Flux : sur un run réel, le texte de l'assistant arrivait mot par mot, un événement par fragment ; les fragments consécutifs sont fusionnés, chaque appel d'outil n'apparaît plus qu'une fois (dernier état), `status` et `result` ne répètent plus leur JSON brut.
+- Recherche : l'API refuse tout filtre de `GET /v1/agents` hors `limit`, `cursor`, `includeArchived` et `prUrl` (400 vérifié pour `name`, `q`, `search`, `status`, `sort`). `name` est donc filtré localement sur cinq pages au plus ; `pr_url` est transmis. `cursor_list_repositories` accepte `query`.
+- Repris de la lecture du SDK Python officiel `cursor-sdk` 1.0.36, qui appelle le même REST v1 : `cost` de `GET /v1/agents/{id}/usage` (présent en réel, ignoré jusqu'ici), `Run.error`, `helpUrl` et `provider` des erreurs, consigne de reprise sur `invalid_last_event_id`. Matrice de `docs/api-contract.md` corrigée en conséquence.
+- `uv run pytest` : **83 passed** sous Python 3.13 et 3.12 (nouveau `tests/test_interface.py`). Ruff propre.
+- `Idempotency-Key`, test réel autorisé (`composer-2.5`) : **ignoré** par l'API, à la création (avec et sans `envVars`) comme à la continuation. Détail et conclusion dans `docs/api-contract.md`. Cinq agents créés et supprimés, 4,26 centimes.
+- Changement de modèle sur une continuation, test réel autorisé : **accepté, validé et persistant** (`composer-2.5` → `claude-haiku-4-5`, puis run sans `model` resté sur Haiku). Détail dans `docs/api-contract.md`. `cursor_create_run` accepte désormais `model_id`, `model_params` et `reasoning_level`. 3,54 centimes, agent supprimé.
+- `scripts/smoke_live.py` sur cette livraison : **34 sur 34 PASS**, un `WARN` (artefacts). Coût relu : 0,74 centime pour l'agent avec dépôt ; agent retrouvé par `name` parmi 163 ; annulation `CANCELLED` confirmée ; stderr sans secret. Les quatre agents créés par les deux smokes du jour ont été supprimés ; les deux agents `smoke-*` du 1er octobre, gardés volontairement, n'ont pas été touchés.
+
 ## Livraison fiabilité du 5 octobre 2026
 
 Suite à l'audit externe du commit `f9a582d`. Aucun appel Cursor réel, aucune écriture payante.
@@ -8,7 +32,7 @@ Suite à l'audit externe du commit `f9a582d`. Aucun appel Cursor réel, aucune �
 - `uv run pytest` : **70 passed** sous Python 3.13 et 3.12. Nouveaux tests dans `tests/test_reliability.py` : POST `201` coupé après quelques octets (une seule requête, `MUTATION_OUTCOME_UNKNOWN` avec `agent_id`, statut et request id), continuation coupée (`previous_latest_run_id` conservé), GET coupé, erreur de fermeture après corps complet, budget épuisé sans envoi, catalogue lent qui consomme le budget de création, continuation refusée si `workOnCurrentBranch` est absent ou le statut inconnu, désarchivage non confirmé sur statut inconnu, annulation en course avec `FINISHED`, secret reflété par Cursor masqué dans l'erreur, argument inconnu refusé sans modifier `ArgModelBase`, alias `starting_sha`, SSE UTF-8 coupé, `error` distinct de `finished`, coupure SSE avec événements partiels, curseur conservé, `clipped`, artefact en mode simulé sans réseau, abandon d'un appel MCP sans annulation distante (`outcome=cancelled` journalisé), lecteur de cache annulé sans effet sur l'autre, traceback masquée, secret court masqué comme mot entier sans casser le JSON d'erreur ni les clés, secrets permanents conservés quand les valeurs par appel sont évincées. Les tests stdio en sous-processus couvrent aussi `starting_ref`, l'argument inconnu, l'artefact simulé et un secret court passé par `env_vars`, absent de stderr en DEBUG.
 - `uvx ruff@0.16.10 check src tests scripts` : propre. Une CI GitHub Actions rejoue installation verrouillée, ruff, tests (3.12 et 3.13) et installation du wheel construit.
 
-À requalifier en réel (`scripts/smoke_live.py`, autorisation explicite requise) : la présence de `workOnCurrentBranch` dans `GET /v1/agents/{id}`. Le smoke le vérifie désormais : si l'API ne renvoie pas ce champ, toute continuation est refusée par ce MCP et la politique devra être revue.
+Requalifié en réel le 5 octobre 2026 (section ci-dessus) : `workOnCurrentBranch` est présent dans `GET /v1/agents/{id}`.
 
 ## Rapport du 1er octobre 2026
 
