@@ -33,7 +33,20 @@ This server is local, over stdio. It exposes seventeen tools for the Cursor Clou
 
 ## Install
 
-You need Python 3.12 or newer, and `uv`. The root is the folder that contains this file.
+You need Python 3.12 or newer, and `uv`. The package is published on PyPI as `cursor-cloud-mcp`.
+
+Recommended: register `uvx cursor-cloud-mcp` as the client's command (command `uvx`, argument `cursor-cloud-mcp`). Nothing to clone, no absolute path. The first start downloads the package, then `uvx` reuses its cache.
+
+To pin the installed version, or if the client's startup timeout is short, install it once and register the command `cursor-cloud-mcp` without arguments:
+
+```bash
+uv tool install cursor-cloud-mcp
+command -v cursor-cloud-mcp
+```
+
+If the client does not find `uvx` or `cursor-cloud-mcp`, it did not inherit the shell's `PATH`: register the absolute path printed by `command -v`.
+
+From a copy of the repository instead (development), the root is the folder that contains this file:
 
 ```bash
 cd /path/to/cursor-cloud-mcp
@@ -42,7 +55,7 @@ uv run pytest
 test -x .venv/bin/cursor-cloud-mcp
 ```
 
-The binary to register in the client is the absolute path of `.venv/bin/cursor-cloud-mcp`. Equivalent: `uv run python -m cursor_cloud_mcp`, always from this root.
+The binary to register is then the absolute path of `.venv/bin/cursor-cloud-mcp`. Equivalent: `uv run python -m cursor_cloud_mcp`, always from this root.
 
 A virtual environment cannot be moved: its scripts start with an absolute path to its Python (shebang). After moving or copying the folder, run `uv sync` again in the new place. To avoid absolute paths altogether, register `uv run --directory /path/to/cursor-cloud-mcp cursor-cloud-mcp` as the command.
 
@@ -62,7 +75,7 @@ The MCP process must inherit this variable, or receive it through the environmen
 
 ## Connect a client
 
-Replace the path with this machine's absolute binary. The versioned templates are in `examples/`. The already-resolved copies, if they exist, are in `examples/resolved/` and modify no personal profile.
+The examples start the server with `uvx cursor-cloud-mcp`. After `uv tool install`, use the command `cursor-cloud-mcp` without arguments; for a development copy, the absolute path of `.venv/bin/cursor-cloud-mcp`. The versioned templates are in `examples/` of the repository.
 
 The client timeout must exceed 95 seconds, the full budget of a creation or a follow-up run. A real creation exceeded 40 seconds. The examples set Codex to 100 seconds and OpenCode to 100000 milliseconds.
 
@@ -77,8 +90,8 @@ Project file `.mcp.json`, based on `examples/claude.mcp.json`:
   "mcpServers": {
     "cursor_cloud": {
       "type": "stdio",
-      "command": "/ABSOLUTE/PATH/cursor-cloud-mcp/.venv/bin/cursor-cloud-mcp",
-      "args": [],
+      "command": "uvx",
+      "args": ["cursor-cloud-mcp"],
       "env": {
         "CURSOR_API_KEY": "${CURSOR_API_KEY}",
         "CURSOR_MCP_ALLOW_WRITES": "0"
@@ -93,7 +106,7 @@ Check with `claude mcp list`, `claude mcp get cursor_cloud` and `/mcp`. The proj
 User configuration, without putting the key on the command line:
 
 ```bash
-claude mcp add --transport stdio --scope user cursor_cloud -- /ABSOLUTE/PATH/.venv/bin/cursor-cloud-mcp
+claude mcp add --transport stdio --scope user cursor_cloud -- uvx cursor-cloud-mcp
 ```
 
 `CURSOR_MCP_ALLOW_WRITES` goes in the JSON's `env` entry, not next to the key on the command line.
@@ -104,10 +117,10 @@ Based on `examples/codex.config.toml`. The key goes through `env_vars`, not thro
 
 ```toml
 [mcp_servers.cursor_cloud]
-command = "/ABSOLUTE/PATH/cursor-cloud-mcp/.venv/bin/cursor-cloud-mcp"
-args = []
+command = "uvx"
+args = ["cursor-cloud-mcp"]
 env_vars = ["CURSOR_API_KEY"]
-startup_timeout_sec = 10
+startup_timeout_sec = 30
 tool_timeout_sec = 100
 
 [mcp_servers.cursor_cloud.env]
@@ -126,7 +139,7 @@ Based on `examples/opencode.json`. The key uses `{env:CURSOR_API_KEY}`.
   "mcp": {
     "cursor_cloud": {
       "type": "local",
-      "command": ["/ABSOLUTE/PATH/cursor-cloud-mcp/.venv/bin/cursor-cloud-mcp"],
+      "command": ["uvx", "cursor-cloud-mcp"],
       "environment": {
         "CURSOR_API_KEY": "{env:CURSOR_API_KEY}",
         "CURSOR_MCP_ALLOW_WRITES": "0"

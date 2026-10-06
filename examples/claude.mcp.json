@@ -2,8 +2,8 @@
   "mcpServers": {
     "cursor_cloud": {
       "type": "stdio",
-      "command": "/ABSOLUTE/PATH/cursor-cloud-mcp/.venv/bin/cursor-cloud-mcp",
-      "args": [],
+      "command": "uvx",
+      "args": ["cursor-cloud-mcp"],
       "env": {
         "CURSOR_API_KEY": "${CURSOR_API_KEY}",
         "CURSOR_MCP_ALLOW_WRITES": "0"

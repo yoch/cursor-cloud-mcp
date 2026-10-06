@@ -3,7 +3,7 @@
   "mcp": {
     "cursor_cloud": {
       "type": "local",
-      "command": ["/ABSOLUTE/PATH/cursor-cloud-mcp/.venv/bin/cursor-cloud-mcp"],
+      "command": ["uvx", "cursor-cloud-mcp"],
       "environment": {
         "CURSOR_API_KEY": "{env:CURSOR_API_KEY}",
         "CURSOR_MCP_ALLOW_WRITES": "0"
