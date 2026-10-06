@@ -1,12 +1,12 @@
 # cursor-cloud-mcp
 
-Pour faire installer ou utiliser ce MCP par un agent, donne-lui [`MODE-D-EMPLOI.md`](MODE-D-EMPLOI.md).
+To have an agent install or use this MCP server, give it [`AGENT_GUIDE.md`](AGENT_GUIDE.md).
 
-Serveur MCP local, sur stdio, qui expose seize outils pour l'API REST Cursor Cloud Agents v1. Une seule implémentation sert Claude Code, Codex CLI et OpenCode. Il permet à un agent appelant de créer une session Cloud, choisir le modèle et le niveau de réflexion, envoyer des commandes, lire la progression et les fichiers produits, puis archiver ou supprimer la session. Ce n'est pas une plateforme d'orchestration, et le paquet n'est pas publié sur PyPI.
+Local MCP server, over stdio, that exposes sixteen tools for the Cursor Cloud Agents v1 REST API. A single implementation serves Claude Code, Codex CLI and OpenCode. It lets a calling agent create a Cloud session, choose the model and the reasoning level, send commands, read progress and produced files, then archive or delete the session. It is not an orchestration platform, and the package is not published on PyPI.
 
-## Installation locale
+## Local installation
 
-Python 3.12 ou plus récent, et `uv`.
+Python 3.12 or newer, and `uv`.
 
 ```bash
 uv sync
@@ -14,9 +14,9 @@ uv run pytest
 uv run cursor-cloud-mcp
 ```
 
-Le binaire de l'environnement du dépôt est `.venv/bin/cursor-cloud-mcp`. On peut aussi lancer `uv run python -m cursor_cloud_mcp`. Ces commandes supposent une copie de ce dépôt, pas un paquet public.
+The repository environment's binary is `.venv/bin/cursor-cloud-mcp`. You can also run `uv run python -m cursor_cloud_mcp`. These commands assume a copy of this repository, not a public package.
 
-Pour vérifier le wheel dans un environnement vierge :
+To check the wheel in a clean environment:
 
 ```bash
 uv build
@@ -27,123 +27,123 @@ uv pip install --python /tmp/cursor-cloud-mcp-wheel/bin/python dist/*.whl
 
 ## Variables
 
-| Variable | Rôle |
+| Variable | Role |
 |---|---|
-| `CURSOR_API_KEY` | Clé lue uniquement dans l'environnement du processus. Absente : le serveur démarre et liste ses outils ; le premier appel Cursor échoue clairement. |
-| `CURSOR_MCP_ALLOW_WRITES` | `0` par défaut. `1` autorise création, continuation, annulation et archivage. |
-| `CURSOR_MCP_ALLOW_DELETE` | `0` par défaut. `1` autorise `cursor_delete_agent`, en plus de `CURSOR_MCP_ALLOW_WRITES=1` et de `confirm_agent_id`. |
-| `CURSOR_MCP_FORWARD_ENV` | Liste de noms, séparés par des virgules, dont `forward_env` a le droit de lire la valeur dans ce processus. La valeur ne passe pas par l'argument de l'outil. |
-| `CURSOR_MCP_LOG_LEVEL` | `INFO` par défaut. Les logs vont sur stderr. |
-| `CURSOR_MCP_FIXTURE` | `1` remplace l'API par des réponses locales. Refusé s'il est combiné à `CURSOR_API_KEY`. Le démarrage l'annonce sur stderr. |
+| `CURSOR_API_KEY` | Key read only from the process environment. If absent, the server starts and lists its tools; the first Cursor call fails with a clear error. |
+| `CURSOR_MCP_ALLOW_WRITES` | `0` by default. `1` allows creation, follow-up runs, cancellation and archiving. |
+| `CURSOR_MCP_ALLOW_DELETE` | `0` by default. `1` allows `cursor_delete_agent`, in addition to `CURSOR_MCP_ALLOW_WRITES=1` and `confirm_agent_id`. |
+| `CURSOR_MCP_FORWARD_ENV` | Comma-separated list of names whose values `forward_env` may read from this process. The value does not pass through the tool argument. |
+| `CURSOR_MCP_LOG_LEVEL` | `INFO` by default. Logs go to stderr. |
+| `CURSOR_MCP_FIXTURE` | `1` replaces the API with local responses. Refused if combined with `CURSOR_API_KEY`. Startup announces it on stderr. |
 
-Le serveur ne charge pas de fichier `.env`. Une valeur vide, `${...}` ou `{env:...}` est refusée, sans être journalisée. Aucun outil ne change `CURSOR_MCP_ALLOW_WRITES` : il faut modifier l'environnement et redémarrer le client.
+The server does not load a `.env` file. An empty value, `${...}` or `{env:...}` is refused, without being logged. No tool changes `CURSOR_MCP_ALLOW_WRITES`: you must edit the environment and restart the client.
 
-Les logs peuvent contenir le nom de l'outil, son issue (`ok`, code d'erreur métier, `unexpected:<type>` ou `cancelled`), la durée, les identifiants, le statut HTTP et un request id. Ils ne contiennent ni le prompt, ni le corps, ni la clé, ni l'en-tête Authorization. En seconde barrière, le formateur masque la clé, les valeurs de `CURSOR_MCP_FORWARD_ENV` et les valeurs `env_vars` transmises pendant la vie du processus, y compris dans les tracebacks. Une valeur de moins de 8 caractères n'est masquée que comme mot entier, pour ne pas mutiler le reste du texte (`en` ne touche pas `agent`). La clé et `CURSOR_MCP_FORWARD_ENV` restent masquées en permanence ; les 4096 valeurs `env_vars` les plus récentes le sont aussi. Le même masquage s'applique aux valeurs des erreurs renvoyées à l'appelant, sans toucher à la forme du JSON.
+Logs may contain the tool name, its outcome (`ok`, a business error code, `unexpected:<type>` or `cancelled`), the duration, identifiers, the HTTP status and a request id. They contain neither the prompt, nor the body, nor the key, nor the Authorization header. As a second barrier, the formatter masks the key, the values of `CURSOR_MCP_FORWARD_ENV` and the `env_vars` values passed during the life of the process, including in tracebacks. A value shorter than 8 characters is masked only as a whole word, so as not to mangle the rest of the text (`en` does not touch `agent`). The key and `CURSOR_MCP_FORWARD_ENV` stay masked permanently; the 4096 most recent `env_vars` values are masked too. The same masking applies to the values of errors returned to the caller, without changing the shape of the JSON.
 
-## Outils
+## Tools
 
-Lectures : `cursor_get_account`, `cursor_list_models`, `cursor_list_repositories`, `cursor_list_agents`, `cursor_get_agent`, `cursor_list_runs`, `cursor_get_run`, `cursor_read_run_events`, `cursor_get_usage`, `cursor_list_artifacts`, `cursor_read_artifact`.
+Reads: `cursor_get_account`, `cursor_list_models`, `cursor_list_repositories`, `cursor_list_agents`, `cursor_get_agent`, `cursor_list_runs`, `cursor_get_run`, `cursor_read_run_events`, `cursor_get_usage`, `cursor_list_artifacts`, `cursor_read_artifact`.
 
-Mutations : `cursor_create_agent`, `cursor_create_run`, `cursor_cancel_run`, `cursor_archive_agent`, `cursor_delete_agent`.
+Mutations: `cursor_create_agent`, `cursor_create_run`, `cursor_cancel_run`, `cursor_archive_agent`, `cursor_delete_agent`.
 
-Les réponses sont du JSON compact, identique dans le texte et dans `structuredContent`. Un champ sans valeur est omis plutôt que rendu `null`.
+Responses are compact JSON, identical in the text and in `structuredContent`. A field with no value is omitted rather than rendered as `null`.
 
-`cursor_list_models` rend un catalogue compact, mis en cache dix minutes : pour chaque modèle, `params` (valeurs possibles de chaque paramètre), `defaults` (valeurs de la variante par défaut), `reasoning_param` (nom réel du niveau de réflexion : `effort`, `reasoning_effort` ou `reasoning`) et `aliases`. `restricted_combinations` signale qu'une partie des combinaisons n'existe pas. Avec `model_id`, l'outil ne rend que ce modèle, avec ses variantes valides. Chaque modèle publie sa propre liste de variantes, c'est-à-dire les combinaisons qu'il accepte. Rendues pour les 43 modèles, elles portaient le catalogue au-delà de 240 Ko par appel ; la forme compacte en fait environ 9, et les variantes restent la référence du contrôle avant envoi.
+`cursor_list_models` returns a compact catalog, cached for ten minutes: for each model, `params` (possible values of each parameter), `defaults` (values of the default variant), `reasoning_param` (actual name of the reasoning level: `effort`, `reasoning_effort` or `reasoning`) and `aliases`. `restricted_combinations` signals that some of the combinations do not exist. With `model_id`, the tool returns only that model, with its valid variants. Each model publishes its own list of variants, that is, the combinations it accepts. Returned for all the models, they pushed the catalog beyond 240 KB per call; the compact form brings it to about 9, and the variants remain the reference for the pre-send check.
 
-`cursor_create_agent` peut démarrer sans dépôt, avec un dépôt (`repository` et `starting_ref`) ou avec jusqu'à vingt dépôts (`repositories`, éléments `{url, starting_ref}`). `starting_ref` est un nom de branche, envoyé tel quel dans `startingRef`. Un SHA complet de 40 ou 64 caractères est refusé localement : l'API a répondu `400 validation_error` à un SHA le 1er octobre 2026, alors que la documentation REST annonce qu'une référence peut être un SHA. Ce refus est un contournement daté, à requalifier par un test réel. `env_type` vaut `cloud`, `pool` ou `machine`. Un pool nommé est exigé pour plusieurs dépôts. Un environnement cloud nommé ne se combine pas à des dépôts. `model_id` accepte un id ou un alias qui ne désigne qu'un modèle (`opus` en désigne plusieurs et est refusé). `reasoning_level` et `model_params` sont vérifiés contre le catalogue avant l'envoi, combinaison comprise : une combinaison absente des variantes publiées est refusée sans POST. `workOnCurrentBranch` est imposé à `false`. `autoCreatePR` suit l'appelant (`false` par défaut). L'identifiant `bc-<uuid>` est celui de l'appelant ou généré une fois avant l'envoi, et il est renvoyé même dans `MUTATION_OUTCOME_UNKNOWN` : il faut le réutiliser si l'appel est coupé. Avec `env_vars` ou `forward_env`, l'API interdit `agentId` : `name` devient obligatoire et une issue inconnue se résout avec `cursor_list_agents(name=...)`. La réponse contient `agent_id`, `run_id` et l'URL, sans attendre la fin du run.
+`cursor_create_agent` can start with no repository, with one repository (`repository` and `starting_ref`) or with up to twenty repositories (`repositories`, elements `{url, starting_ref}`). `starting_ref` is a branch name, sent as is in `startingRef`. A full 40- or 64-character SHA is refused locally: the API answered `400 validation_error` to a SHA on October 1, 2026, although the REST documentation says a reference can be a SHA. This refusal is a dated workaround, to be requalified by a real test. `env_type` is `cloud`, `pool` or `machine`. A named pool is required for several repositories. A named cloud environment cannot be combined with repositories. `model_id` accepts an id or an alias that designates only one model (`opus` designates several and is refused). `reasoning_level` and `model_params` are checked against the catalog before sending, combination included: a combination absent from the published variants is refused without a POST. `workOnCurrentBranch` is forced to `false`. `autoCreatePR` follows the caller (`false` by default). The `bc-<uuid>` identifier is the caller's or generated once before sending, and it is returned even in `MUTATION_OUTCOME_UNKNOWN`: reuse it if the call is cut off. With `env_vars` or `forward_env`, the API forbids `agentId`: `name` becomes required and an unknown outcome is resolved with `cursor_list_agents(name=...)`. The response contains `agent_id`, `run_id` and the URL, without waiting for the run to finish.
 
-`cursor_create_run` envoie une commande de suite au même agent. Sans `model_id`, l'agent garde son modèle courant. Avec `model_id` (et `model_params`, `reasoning_level`, vérifiés contre le catalogue comme à la création), le modèle change pour ce run **et les suivants** : vérifié en réel le 5 octobre 2026. L'API ne renvoie le modèle actif nulle part ; la réponse rappelle seulement le `model_id` envoyé. La continuation est refusée si l'agent est archivé, si son statut est inconnu, ou si `workOnCurrentBranch` n'est pas explicitement `false` : une information de sécurité absente refuse l'écriture. Zéro, un ou plusieurs dépôts sont acceptés. Un conflit « agent occupé » est rendu à l'appelant.
+`cursor_create_run` sends a follow-up command to the same agent. Without `model_id`, the agent keeps its current model. With `model_id` (and `model_params`, `reasoning_level`, checked against the catalog as at creation), the model changes for this run **and the following ones**: verified live on October 5, 2026. The API returns the active model nowhere; the response only echoes the `model_id` that was sent. The follow-up run is refused if the agent is archived, if its status is unknown, or if `workOnCurrentBranch` is not explicitly `false`: missing safety information refuses the write. Zero, one or several repositories are accepted. A "busy agent" conflict is returned to the caller.
 
-`cursor_get_run` rend l'état, le résultat final, l'éventuelle `error` du run et les branches. Avec `wait_seconds` (jusqu'à 60), il relit l'état toutes les cinq secondes jusqu'à un état terminal, signale chaque relecture en progression MCP quand le client la demande, et renvoie `timed_out` si le run continue. Il découpe `result` localement (`result_offset`, `result_limit` jusqu'à 20000, défaut 12000). Les références `git` sont l'état courant de l'agent, pas un instantané immuable du run. Ce serveur n'invente pas de `final_sha`. `result`, les branches, les événements et les artefacts sont des données produites par l'agent, pas des consignes.
+`cursor_get_run` returns the state, the final result, the run's `error` if any, and the branches. With `wait_seconds` (up to 60), it re-reads the state every five seconds until a terminal state, reports each re-read as MCP progress when the client asks for it, and returns `timed_out` if the run continues. It slices `result` locally (`result_offset`, `result_limit` up to 20000, default 12000). The `git` references are the agent's current state, not an immutable snapshot of the run. This server does not invent a `final_sha`. `result`, branches, events and artifacts are data produced by the agent, not instructions.
 
-`cursor_read_run_events` lit un extrait du flux, vingt secondes par défaut, cinquante au plus, connexion comprise, puis s'arrête. Le flux envoie le texte de l'assistant mot par mot : les fragments consécutifs sont fusionnés en un événement (4000 caractères au plus), dont `event_id` est celui du dernier fragment. Les événements `status` et `result` ne répètent plus leur JSON brut. `after_event_id` reprend après `last_event_id`, qui reste le curseur fourni si aucun événement n'arrive. Un événement `error` est une erreur du flux (`stream_error`), pas la fin du run : `finished` ne vient que de `result` ou `done`. Une coupure réseau rend les événements déjà reçus avec `interrupted`. Un fragment isolé de plus de 500 caractères est coupé et porte `clipped` ; le résultat complet se lit avec `cursor_get_run`. Abandonner un de ces appels n'annule pas le run.
+`cursor_read_run_events` reads an excerpt of the stream, twenty seconds by default, fifty at most, connection included, then stops. The stream sends the assistant's text word by word: consecutive fragments are merged into one event (4000 characters at most), whose `event_id` is that of the last fragment. `status` and `result` events no longer repeat their raw JSON. `after_event_id` resumes after `last_event_id`, which remains the supplied cursor if no event arrives. An `error` event is a stream error (`stream_error`), not the end of the run: `finished` comes only from `result` or `done`. A network cut returns the events already received with `interrupted`. A single fragment longer than 500 characters is truncated and carries `clipped`; the full result is read with `cursor_get_run`. Abandoning one of these calls does not cancel the run.
 
-Limite observée : lors d'un essai réel, un agent a écrit `artifacts/result.txt` dans sa VM, le flux l'a confirmé, mais `cursor_list_artifacts` est restée vide et le téléchargement a répondu `404 artifact_not_found`. Pour un résultat de calcul, demander à l'agent de le mettre dans sa réponse finale (`cursor_get_run`) ou dans une branche Git.
+Observed limitation: during a real trial, an agent wrote `artifacts/result.txt` in its VM and the stream confirmed it, but `cursor_list_artifacts` stayed empty and the download answered `404 artifact_not_found`. For a computation result, ask the agent to put it in its final response (`cursor_get_run`) or in a Git branch.
 
-`cursor_list_artifacts` liste les fichiers sous `artifacts/`. `cursor_read_artifact` lit un texte UTF-8 d'au plus 5 Mo, sans envoyer la clé Cursor au stockage, et seulement si l'hôte se termine par `.amazonaws.com`. Pour un binaire ou un fichier trop gros, il rend l'URL présignée (environ quinze minutes) avec `text_unavailable` ; `url_only=true` rend l'URL sans télécharger.
+`cursor_list_artifacts` lists the files under `artifacts/`. `cursor_read_artifact` reads a UTF-8 text of at most 5 MB, without sending the Cursor key to the storage, and only if the host ends with `.amazonaws.com`. For a binary or a file that is too large, it returns the presigned URL (about fifteen minutes) with `text_unavailable`; `url_only=true` returns the URL without downloading.
 
-`cursor_get_usage` recopie les jetons et le coût renvoyés par l'API, en centimes de dollar (`raw_cents`, `charged_cents`), au total et par run. Un coût absent reste absent.
+`cursor_get_usage` copies the tokens and the cost returned by the API, in cents of a dollar (`raw_cents`, `charged_cents`), in total and per run. A missing cost stays missing.
 
-`cursor_archive_agent` archive un agent, ou le désarchive avec `unarchive=true` : c'est réversible. `cursor_delete_agent` est définitif.
+`cursor_archive_agent` archives an agent, or unarchives it with `unarchive=true`: this is reversible. `cursor_delete_agent` is permanent.
 
-Les listes d'agents et de runs renvoient une page. `has_more` est faux quand `nextCursor` est absent. `include_archived` filtre la liste des agents quand il est fourni : `true` ajoute les agents archivés, qui sont sinon absents. L'ordre des agents n'est pas garanti par date de création (constaté en réel), et l'API ne filtre pas par nom : `name` parcourt jusqu'à cinq pages de cent agents, filtre localement (sous-chaîne, sans casse) et indique `scanned` ; `next_cursor` permet de poursuivre. `pr_url` est un filtre de l'API : il rend l'agent lié à cette pull request. `cursor_list_repositories` accepte `query`, un filtre local sur les URL, et indique `total_count`. Chaque agent porte son `url` (`https://cursor.com/agents/bc-...`), le lien direct vers l'interface web.
+Agent and run lists return one page. `has_more` is false when `nextCursor` is absent. `include_archived` filters the agent list when provided: `true` adds the archived agents, which are otherwise absent. The order of agents is not guaranteed by creation date (observed live), and the API does not filter by name: `name` walks up to five pages of one hundred agents, filters locally (substring, case-insensitive) and reports `scanned`; `next_cursor` lets you continue. `pr_url` is an API filter: it returns the agent linked to that pull request. `cursor_list_repositories` accepts `query`, a local filter on URLs, and reports `total_count`. Each agent carries its `url` (`https://cursor.com/agents/bc-...`), the direct link to the web interface.
 
-Chaque appel d'outil a un budget absolu, partagé par toutes ses sous-opérations (catalogue, POST, relectures, pauses) : 45 secondes par défaut, 95 pour la liste des dépôts, la création d'un agent et l'envoi d'une continuation, 45 pour l'annulation, `max_wait_seconds` pour le flux, et `wait_seconds` (au moins 45) pour l'attente d'un run. Chaque requête HTTP reste aussi bornée (40 secondes, 90 pour un POST de création) : une création réelle a dépassé 40 secondes. Une mutation n'est pas envoyée s'il reste moins de 5 secondes de budget : l'outil renvoie alors `TIMEOUT` sans rien avoir envoyé. Le délai d'un client MCP doit dépasser ces budgets. Les exemples règlent Codex à 100 secondes et OpenCode à 100000 millisecondes. Un client qui coupe plus tôt peut abandonner une création déjà envoyée et, s'il relance sans le même `agent_id`, en payer une seconde.
+Each tool call has an absolute budget, shared by all its sub-operations (catalog, POST, re-reads, pauses): 45 seconds by default, 95 for the repository list, agent creation and sending a follow-up run, 45 for cancellation, `max_wait_seconds` for the stream, and `wait_seconds` (at least 45) for waiting on a run. Each HTTP request is also bounded (40 seconds, 90 for a creation POST): a real creation exceeded 40 seconds. A mutation is not sent if less than 5 seconds of budget remain: the tool then returns `TIMEOUT` without having sent anything. An MCP client's timeout must exceed these budgets. The examples set Codex to 100 seconds and OpenCode to 100000 milliseconds. A client that cuts earlier may abandon a creation that was already sent and, if it retries without the same `agent_id`, pay for a second one.
 
-## Calcul intensif
+## Heavy computation
 
-L'API ne choisit pas la taille CPU, RAM ou GPU d'une VM Cursor. Pour un calcul lourd, créer l'agent avec `env_type` `pool` ou `machine` : ce sont des workers auto-hébergés, sur les machines de l'utilisateur. Une VM Cursor hébergée reste `env_type` `cloud`, avec ou sans dépôt.
+The API does not choose the CPU, RAM or GPU size of a Cursor VM. For a heavy computation, create the agent with `env_type` `pool` or `machine`: these are self-hosted workers, on the user's machines. A hosted Cursor VM remains `env_type` `cloud`, with or without a repository.
 
 ```text
 cursor_list_models
 → cursor_create_agent(prompt, model_id, reasoning_level, env_type, env_name, name)
-→ conserver agent_id et run_id
-→ cursor_get_run(wait_seconds=60), à répéter tant que timed_out ; cursor_read_run_events pour suivre la progression
-→ cursor_get_run pour le texte final, cursor_get_usage pour le coût
-→ cursor_list_artifacts puis cursor_read_artifact
-→ cursor_create_run sur le même agent si une suite est nécessaire
-→ cursor_archive_agent, puis cursor_delete_agent seulement avec les deux garde-fous
+→ keep agent_id and run_id
+→ cursor_get_run(wait_seconds=60), repeat while timed_out; cursor_read_run_events to follow progress
+→ cursor_get_run for the final text, cursor_get_usage for the cost
+→ cursor_list_artifacts then cursor_read_artifact
+→ cursor_create_run on the same agent if a follow-up run is needed
+→ cursor_archive_agent, then cursor_delete_agent only with both guards
 ```
 
-Les valeurs secrètes passent par `forward_env`, dont les noms sont listés dans `CURSOR_MCP_FORWARD_ENV`. `env_vars` ne convient qu'aux valeurs déjà visibles par l'agent appelant. Ni les unes ni les autres ne sont journalisées. Les deux sont incompatibles avec un `agent_id` fourni par l'appelant.
+Secret values go through `forward_env`, whose names are listed in `CURSOR_MCP_FORWARD_ENV`. `env_vars` is suitable only for values the calling agent can already see. Neither is logged. Both are incompatible with a caller-supplied `agent_id`.
 
-## Boucle GitHub
+## GitHub loop
 
-Ce MCP ne remplace pas GitHub. L'appelant pousse le commit voulu sur une branche, vérifie que la tête de cette branche est ce SHA, puis enchaîne :
+This MCP server does not replace GitHub. The caller pushes the desired commit to a branch, checks that the branch head is that SHA, then chains:
 
 ```text
-Pousser le commit sur une branche et vérifier sa tête
-→ cursor_create_agent(..., starting_ref=nom-de-branche)
-→ conserver agent_id et run_id
-→ cursor_get_run(..., wait_seconds=60) jusqu'à un état terminal
-→ relire GitHub : HEAD, diff, checks, reviews
-→ cursor_create_run(...) sur le même agent si des corrections sont nécessaires, avec `model_id` pour changer de modèle.
-→ relire GitHub après le nouveau run
+Push the commit to a branch and check its head
+→ cursor_create_agent(..., starting_ref=branch-name)
+→ keep agent_id and run_id
+→ cursor_get_run(..., wait_seconds=60) until a terminal state
+→ re-read GitHub: HEAD, diff, checks, reviews
+→ cursor_create_run(...) on the same agent if fixes are needed, with `model_id` to change model.
+→ re-read GitHub after the new run
 ```
 
-`FINISHED` ne prouve ni que les tests ont tourné, ni que la pull request est correcte. Un état inconnu n'est pas un succès. Après un timeout ou une coupure de mutation, le code `MUTATION_OUTCOME_UNKNOWN` interdit un rejeu automatique : il faut relire l'agent dont l'identifiant est renvoyé. Changer cet identifiant peut créer un doublon. Une coupure du client n'annule pas le run Cloud.
+`FINISHED` proves neither that the tests ran nor that the pull request is correct. An unknown state is not a success. After a mutation timeout or cut, the `MUTATION_OUTCOME_UNKNOWN` code forbids an automatic replay: re-read the agent whose identifier is returned. Changing that identifier may create a duplicate. A client cut does not cancel the Cloud run.
 
-L'annulation ne supprime pas les commits déjà poussés. Elle est asynchrone : le serveur relit le run jusqu'à quatre fois, à deux secondes d'intervalle, dans son budget. `outcome` distingue `cancelled` (état `CANCELLED` relu, seul cas où `outcome_confirmed` est vrai), `ended_without_cancel` (le run s'est terminé autrement, par exemple `FINISHED` pendant la course), `still_running` et `unknown` (relecture impossible). Une coupure après l'envoi d'une mutation, y compris pendant la lecture du corps de réponse, donne `MUTATION_OUTCOME_UNKNOWN` avec `agent_id`, `run_id`, `previous_latest_run_id`, le statut HTTP et le request id connus.
+Cancellation does not delete commits that were already pushed. It is asynchronous: the server re-reads the run up to four times, two seconds apart, within its budget. `outcome` distinguishes `cancelled` (state `CANCELLED` re-read, the only case where `outcome_confirmed` is true), `ended_without_cancel` (the run ended otherwise, for example `FINISHED` during the race), `still_running` and `unknown` (re-read impossible). A cut after a mutation is sent, including while reading the response body, yields `MUTATION_OUTCOME_UNKNOWN` with the known `agent_id`, `run_id`, `previous_latest_run_id`, HTTP status and request id.
 
 ## Configurations
 
-Les fragments dans `examples/` utilisent un chemin absolu de remplacement. Les copies résolues vers le binaire de cette machine sont dans `examples/resolved/` après installation, et ne modifient aucun profil personnel.
+The fragments in `examples/` use a placeholder absolute path. The copies resolved to this machine's binary are in `examples/resolved/` after installation, and modify no personal profile.
 
-Pour autoriser une mutation réelle, passer `CURSOR_MCP_ALLOW_WRITES` à `1` dans la configuration du client concerné, puis redémarrer ce client. La clé se transmet par l'environnement, jamais en argument de ligne de commande.
+To allow a real mutation, set `CURSOR_MCP_ALLOW_WRITES` to `1` in the relevant client's configuration, then restart that client. The key is passed through the environment, never as a command-line argument.
 
-Saisie sans laisser la clé dans l'historique :
+Entering the key without leaving it in the history:
 
 ```bash
-read -r -s -p 'Clé Cursor : ' CURSOR_API_KEY
+read -r -s -p 'Cursor key: ' CURSOR_API_KEY
 printf '\n'
 export CURSOR_API_KEY
 ```
 
-Claude Code, configuration projet `.mcp.json` : voir `examples/claude.mcp.json`. Vérifier avec `claude mcp list`, `claude mcp get cursor_cloud` et `/mcp`. Le fichier projet peut demander une approbation. Pour une configuration utilisateur, la forme conforme à l'aide installée est :
+Claude Code, project configuration `.mcp.json`: see `examples/claude.mcp.json`. Check with `claude mcp list`, `claude mcp get cursor_cloud` and `/mcp`. The project file may ask for approval. For a user configuration, the form consistent with the installed help is:
 
 ```bash
-claude mcp add --transport stdio --scope user cursor_cloud -- /CHEMIN/ABSOLU/.venv/bin/cursor-cloud-mcp
+claude mcp add --transport stdio --scope user cursor_cloud -- /ABSOLUTE/PATH/.venv/bin/cursor-cloud-mcp
 ```
 
-Puis renseigner `CURSOR_API_KEY` dans l'environnement du processus, pas dans la commande. `CURSOR_MCP_ALLOW_WRITES` se pose dans l'entrée `env` du JSON, pas sur la ligne de commande avec la clé.
+Then provide `CURSOR_API_KEY` in the process environment, not in the command. `CURSOR_MCP_ALLOW_WRITES` goes in the JSON's `env` entry, not on the command line with the key.
 
-Codex : `examples/codex.config.toml`. La clé passe par `env_vars`, pas par une interpolation `${...}` dans le TOML. Vérifier avec `codex mcp list` et `/mcp`.
+Codex: `examples/codex.config.toml`. The key goes through `env_vars`, not through a `${...}` interpolation in the TOML. Check with `codex mcp list` and `/mcp`.
 
-OpenCode : `examples/opencode.json`. La clé utilise `{env:CURSOR_API_KEY}`. La documentation publique décrit `timeout` comme le délai de découverte des outils. Sur OpenCode 2.0.20, `opencode debug config` charge un nombre unique `timeout` à la fois comme délai de catalogue et comme délai d'exécution. L'exemple le place à 100000 ms, au-dessus du délai de 90 secondes de la liste des dépôts. Vérifier avec `opencode debug config`, puis un appel d'outil dans une session. `opencode mcp list` peut ne pas afficher un serveur pourtant chargé par la configuration du projet.
+OpenCode: `examples/opencode.json`. The key uses `{env:CURSOR_API_KEY}`. The public documentation describes `timeout` as the tool discovery timeout. On OpenCode 2.0.20, `opencode debug config` loads a single numeric `timeout` both as the catalog timeout and as the execution timeout. The example sets it to 100000 ms, above the 90-second timeout of the repository list. Check with `opencode debug config`, then a tool call in a session. `opencode mcp list` may not display a server that the project configuration does load.
 
-## Dépannage
+## Troubleshooting
 
-- Le serveur liste ses outils mais chaque appel dit que la clé est absente : l'environnement du processus MCP ne contient pas `CURSOR_API_KEY`. Un `.env` du dépôt n'est pas lu.
-- La clé est affichée comme non interpolée : la valeur est encore `${CURSOR_API_KEY}` ou `{env:CURSOR_API_KEY}`.
-- Une mutation répond `READ_ONLY` : `CURSOR_MCP_ALLOW_WRITES` n'est pas exactement `1`, ou le client n'a pas été redémarré.
-- `CONTINUATION_REFUSED` : l'agent est archivé, son statut est inconnu, ou `workOnCurrentBranch` n'est pas explicitement `false` (vrai ou absent).
-- `DELETE_DISABLED` : `CURSOR_MCP_ALLOW_DELETE` n'est pas exactement `1`.
-- `STREAM_EXPIRED` : le flux n'est plus rejouable. Lire `cursor_get_run`.
-- `MUTATION_OUTCOME_UNKNOWN` : ne pas renvoyer la même création avec un nouvel identifiant. Appeler `cursor_get_agent` avec l'identifiant renvoyé. Sans `agent_id`, chercher l'agent avec `cursor_list_agents(name=...)`.
-- `GET /v1/repositories` peut être lent et est fortement limité (1 requête par minute, 30 par heure). Le cache de cinq minutes ne couvre que le processus courant.
-- Le stderr annonce `MODE SIMULÉ` quand `CURSOR_MCP_FIXTURE=1`. Cette variable avec une vraie clé empêche tout appel.
-- stdout doit rester le canal MCP. Si un client annonce un JSON invalide, chercher un `print` ou un journal qui n'est pas sur stderr.
+- The server lists its tools but every call says the key is missing: the MCP process environment does not contain `CURSOR_API_KEY`. A repository `.env` is not read.
+- The key is displayed as not interpolated: the value is still `${CURSOR_API_KEY}` or `{env:CURSOR_API_KEY}`.
+- A mutation answers `READ_ONLY`: `CURSOR_MCP_ALLOW_WRITES` is not exactly `1`, or the client was not restarted.
+- `CONTINUATION_REFUSED`: the agent is archived, its status is unknown, or `workOnCurrentBranch` is not explicitly `false` (true or absent).
+- `DELETE_DISABLED`: `CURSOR_MCP_ALLOW_DELETE` is not exactly `1`.
+- `STREAM_EXPIRED`: the stream can no longer be replayed. Read `cursor_get_run`.
+- `MUTATION_OUTCOME_UNKNOWN`: do not resend the same creation with a new identifier. Call `cursor_get_agent` with the returned identifier. Without an `agent_id`, look for the agent with `cursor_list_agents(name=...)`.
+- `GET /v1/repositories` can be slow and is heavily rate-limited (1 request per minute, 30 per hour). The five-minute cache covers only the current process.
+- stderr announces `SIMULATED MODE` when `CURSOR_MCP_FIXTURE=1`. This variable with a real key prevents any call.
+- stdout must remain the MCP channel. If a client reports invalid JSON, look for a `print` or a log that is not on stderr.
 
-## Hors périmètre
+## Out of scope
 
-Pas de serveur HTTP MCP, pas de base, pas de shell local, pas de lecture du checkout local, pas de fusion de pull request, pas d'images, pas de serveurs MCP distants dans la VM, pas de sous-agents personnalisés déclarés dans la requête, pas de plafond budgétaire imposé par ce processus. L'API ne permet pas non plus de fixer la taille CPU, RAM ou GPU d'une VM Cursor.
+No MCP HTTP server, no database, no local shell, no reading of the local checkout, no pull request merging, no images, no remote MCP servers in the VM, no custom subagents declared in the request, no budget cap enforced by this process. The API also does not allow setting the CPU, RAM or GPU size of a Cursor VM.

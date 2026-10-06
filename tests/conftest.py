@@ -8,7 +8,7 @@ def anyio_backend() -> str:
 
 @pytest.fixture
 def isolated_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Registre de secrets vide pour un test, restauré ensuite."""
+    """Empty secrets registry for a test, restored afterwards."""
     from collections import OrderedDict
 
     from cursor_cloud_mcp import redaction

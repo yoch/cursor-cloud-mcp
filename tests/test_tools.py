@@ -1,4 +1,4 @@
-"""Les outils, leurs corps REST et leurs erreurs, sur un transport simulé."""
+"""The tools, their REST bodies and their errors, over a simulated transport."""
 
 import json
 from collections.abc import Callable
@@ -34,7 +34,7 @@ def _settings(**overrides: object) -> Settings:
 def _agent(agent_id: str = _AGENT, **overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "id": agent_id,
-        "name": "Démo",
+        "name": "Demo",
         "status": "IDLE",
         "env": {"type": "cloud"},
         "url": f"https://cursor.com/agents/{agent_id}",
@@ -49,7 +49,7 @@ def _agent(agent_id: str = _AGENT, **overrides: object) -> dict[str, object]:
     return payload
 
 
-def _run(status: str = "FINISHED", result: str | None = "fait", **overrides: object) -> dict[str, object]:
+def _run(status: str = "FINISHED", result: str | None = "done", **overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "id": _RUN,
         "agentId": _AGENT,
@@ -162,7 +162,7 @@ async def test_listing_tools_does_not_call_cursor() -> None:
 
 async def test_missing_and_invalid_key_fail_without_network(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("CURSOR_API_KEY", raising=False)
-    router = Router(lambda _request: (_ for _ in ()).throw(AssertionError("réseau")))
+    router = Router(lambda _request: (_ for _ in ()).throw(AssertionError("network")))
     client, _router = await _session(router, api_key=None)
     try:
         missing = await client.call_tool("cursor_get_account", {})
@@ -174,7 +174,7 @@ async def test_missing_and_invalid_key_fail_without_network(monkeypatch: pytest.
     client, _router = await _session(
         router,
         api_key=None,
-        config_error="CURSOR_API_KEY n'est pas interpolée. Le serveur ne charge pas de fichier .env.",
+        config_error="CURSOR_API_KEY is not interpolated. The server does not load a .env file.",
     )
     try:
         invalid = await client.call_tool("cursor_list_models", {})
@@ -362,7 +362,7 @@ async def test_create_agent_sends_exact_rest_fields() -> None:
                 {
                     "repository": "https://github.com/acme/demo.git",
                     "starting_ref": _BRANCH,
-                    "prompt": "Ajouter une note",
+                    "prompt": "Add a note",
                     "name": "Note",
                     "model_id": "composer-2",
                     "model_params": [{"id": "fast", "value": "true"}],
@@ -381,7 +381,7 @@ async def test_create_agent_sends_exact_rest_fields() -> None:
 
 
 async def test_validation_rejects_sha_url_and_extra_fields_before_http() -> None:
-    router = Router(lambda _request: (_ for _ in ()).throw(AssertionError("réseau")))
+    router = Router(lambda _request: (_ for _ in ()).throw(AssertionError("network")))
     client, _router = await _session(router)
     try:
         short = await client.call_tool(
@@ -408,7 +408,7 @@ async def test_validation_rejects_sha_url_and_extra_fields_before_http() -> None
     finally:
         await client.__aexit__(None, None, None)
     assert _error_payload(short)["code"] == "VALIDATION"
-    assert "branche" in str(_error_payload(short)["message"])
+    assert "branch" in str(_error_payload(short)["message"])
     assert _error_payload(nested)["code"] == "VALIDATION"
     assert _error_payload(secret_url)["code"] == "VALIDATION"
     assert "token" not in json.dumps(_error_payload(secret_url))
@@ -418,7 +418,7 @@ async def test_validation_rejects_sha_url_and_extra_fields_before_http() -> None
 
 
 async def test_read_only_blocks_mutations() -> None:
-    router = Router(lambda _request: (_ for _ in ()).throw(AssertionError("réseau")))
+    router = Router(lambda _request: (_ for _ in ()).throw(AssertionError("network")))
     client, _router = await _session(router, allow_writes=False)
     try:
         blocked = await client.call_tool(
@@ -433,7 +433,7 @@ async def test_read_only_blocks_mutations() -> None:
 
 async def test_create_conflict_returns_the_same_agent_id() -> None:
     def responder(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(409, json={"error": {"code": "agent_id_conflict", "message": "existe"}})
+        return httpx.Response(409, json={"error": {"code": "agent_id_conflict", "message": "exists"}})
 
     router = Router(responder)
     client, _router = await _session(router)
@@ -456,7 +456,7 @@ async def test_create_conflict_returns_the_same_agent_id() -> None:
     assert len(router.calls) == 1
 
 
-async def test_continuation_refuses_archived_or_current_branch_and_returns_busy() -> None:
+async def test_follow_up_run_refuses_archived_or_current_branch_and_returns_busy() -> None:
     state = {"mode": "archived"}
 
     def responder(request: httpx.Request) -> httpx.Response:
@@ -479,22 +479,22 @@ async def test_continuation_refuses_archived_or_current_branch_and_returns_busy(
                 )
             return httpx.Response(200, json=_agent(latestRunId="run-previous"))
         if state["mode"] == "busy":
-            return httpx.Response(409, json={"error": {"code": "agent_busy", "message": "occupé"}})
+            return httpx.Response(409, json={"error": {"code": "agent_busy", "message": "busy"}})
         run = _run(status="CREATING", result=None)
         return httpx.Response(201, json={"run": run})
 
     router = Router(responder)
     client, _router = await _session(router)
     try:
-        archived = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
+        archived = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "follow-up"})
         state["mode"] = "branch"
-        branch = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
+        branch = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "follow-up"})
         state["mode"] = "empty"
-        empty = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
+        empty = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "follow-up"})
         state["mode"] = "multi"
-        multi = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
+        multi = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "follow-up"})
         state["mode"] = "busy"
-        busy = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
+        busy = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "follow-up"})
     finally:
         await client.__aexit__(None, None, None)
     assert _error_payload(archived)["code"] == "CONTINUATION_REFUSED"
@@ -557,8 +557,8 @@ async def test_cancel_distinguishes_accepted_and_confirmed() -> None:
             return httpx.Response(200, json={"id": _RUN})
         if failures_left["n"] > 0:
             failures_left["n"] -= 1
-            return httpx.Response(500, json={"error": {"code": "upstream_error", "message": "relecture"}})
-        return httpx.Response(200, json=_run(status="CANCELLED", result="arrêté"))
+            return httpx.Response(500, json={"error": {"code": "upstream_error", "message": "re-read"}})
+        return httpx.Response(200, json=_run(status="CANCELLED", result="stopped"))
 
     client, _router = await _session(Router(responder))
     try:
@@ -574,7 +574,7 @@ async def test_cancel_distinguishes_accepted_and_confirmed() -> None:
 
     def already_done(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/cancel"):
-            return httpx.Response(409, json={"error": {"code": "run_not_cancellable", "message": "fini"}})
+            return httpx.Response(409, json={"error": {"code": "run_not_cancellable", "message": "finished"}})
         raise AssertionError(request.url.path)
 
     client, _router = await _session(Router(already_done))

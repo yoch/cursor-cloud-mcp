@@ -1,4 +1,4 @@
-"""Résolution du modèle et du niveau de réflexion à partir du catalogue Cursor."""
+"""Resolution of the model and reasoning level from the Cursor catalog."""
 
 from cursor_cloud_mcp.errors import ErrorCode, failure
 from cursor_cloud_mcp.models import (
@@ -12,7 +12,7 @@ _REASONING_IDS = ("effort", "reasoning_effort", "reasoning")
 
 
 def reasoning_parameter(model: RemoteModel) -> RemoteModelParameter | None:
-    """Premier paramètre de réflexion exposé, dans l'ordre effort, reasoning_effort, reasoning."""
+    """First exposed reasoning parameter, in the order effort, reasoning_effort, reasoning."""
     by_id = {parameter.id: parameter for parameter in model.parameters or []}
     for name in _REASONING_IDS:
         found = by_id.get(name)
@@ -22,7 +22,7 @@ def reasoning_parameter(model: RemoteModel) -> RemoteModelParameter | None:
 
 
 def find_model(catalog: RemoteModelList, model_id: str) -> RemoteModel:
-    """Un id du catalogue, ou un alias qui ne désigne qu'un seul modèle."""
+    """A catalog id, or an alias that designates only one model."""
     exact = next((item for item in catalog.items if item.id == model_id), None)
     if exact is not None:
         return exact
@@ -32,17 +32,17 @@ def find_model(catalog: RemoteModelList, model_id: str) -> RemoteModel:
     if matches:
         raise failure(
             ErrorCode.VALIDATION,
-            f"L'alias {model_id} désigne plusieurs modèles : {', '.join(item.id for item in matches)}. "
-            "Choisir un id.",
+            f"The alias {model_id} designates several models: {', '.join(item.id for item in matches)}. "
+            "Choose an id.",
         )
     raise failure(
         ErrorCode.VALIDATION,
-        f"{model_id} n'est ni un id ni un alias du catalogue Cursor. Appeler cursor_list_models.",
+        f"{model_id} is neither an id nor an alias in the Cursor catalog. Call cursor_list_models.",
     )
 
 
 def default_selection(model: RemoteModel) -> dict[str, str] | None:
-    """Valeurs de la variante par défaut, limitées aux paramètres publiés."""
+    """Values of the default variant, limited to the published parameters."""
     published = {parameter.id for parameter in model.parameters or []}
     for variant in model.variants or []:
         if variant.isDefault:
@@ -52,7 +52,7 @@ def default_selection(model: RemoteModel) -> dict[str, str] | None:
 
 
 def restricted(model: RemoteModel) -> bool:
-    """Vrai si le catalogue n'offre pas toutes les combinaisons de valeurs publiées."""
+    """True if the catalog does not offer every combination of published values."""
     if not model.variants or not model.parameters:
         return False
     return len(_published_combinations(model)) < _product(model)
@@ -65,14 +65,14 @@ def resolve_model_selection(
     model_params: list[ModelParam] | None,
     reasoning_level: str | None,
 ) -> dict[str, object]:
-    """Construit ``model`` pour POST /v1/agents. Refuse un id, une valeur ou une combinaison hors catalogue."""
+    """Build ``model`` for POST /v1/agents. Refuses an id, a value or a combination outside the catalog."""
     model = find_model(catalog, model_id)
     ordered: list[tuple[str, str]] = []
     seen: set[str] = set()
     for item in model_params or []:
         _require_param(model, item.id, item.value)
         if item.id in seen:
-            raise failure(ErrorCode.VALIDATION, f"Le paramètre {item.id} est répété.")
+            raise failure(ErrorCode.VALIDATION, f"The parameter {item.id} is repeated.")
         seen.add(item.id)
         ordered.append((item.id, item.value))
     if reasoning_level is not None:
@@ -80,19 +80,19 @@ def resolve_model_selection(
         if parameter is None:
             raise failure(
                 ErrorCode.VALIDATION,
-                f"{model.id} n'expose pas de niveau de réflexion (effort, reasoning_effort ou reasoning).",
+                f"{model.id} does not expose a reasoning level (effort, reasoning_effort or reasoning).",
             )
         allowed = _values(parameter)
         if reasoning_level not in allowed:
             raise failure(
                 ErrorCode.VALIDATION,
-                f"{parameter.id} pour {model.id} accepte : {', '.join(allowed)}. "
-                "Aucune traduction n'est faite : xhigh et extra-high restent distincts.",
+                f"{parameter.id} for {model.id} accepts: {', '.join(allowed)}. "
+                "No translation is done: xhigh and extra-high stay distinct.",
             )
         if parameter.id in seen:
             current = next(value for key, value in ordered if key == parameter.id)
             if current != reasoning_level:
-                raise failure(ErrorCode.VALIDATION, "reasoning_level contredit model_params.")
+                raise failure(ErrorCode.VALIDATION, "reasoning_level contradicts model_params.")
         else:
             ordered.append((parameter.id, reasoning_level))
             seen.add(parameter.id)
@@ -104,7 +104,7 @@ def resolve_model_selection(
 
 
 def _require_combination(model: RemoteModel, chosen: list[tuple[str, str]]) -> None:
-    """Une sélection partielle doit tenir dans au moins une variante publiée."""
+    """A partial selection must fit within at least one published variant."""
     if not chosen or not model.variants:
         return
     wanted = set(chosen)
@@ -113,8 +113,8 @@ def _require_combination(model: RemoteModel, chosen: list[tuple[str, str]]) -> N
     text = ", ".join(f"{key}={value}" for key, value in chosen)
     raise failure(
         ErrorCode.VALIDATION,
-        f"Combinaison refusée par le catalogue de {model.id} : {text}. "
-        f"cursor_list_models avec model_id={model.id} liste les variantes valides.",
+        f"Combination refused by the catalog of {model.id}: {text}. "
+        f"cursor_list_models with model_id={model.id} lists the valid variants.",
     )
 
 
@@ -142,14 +142,14 @@ def _values(parameter: RemoteModelParameter) -> list[str]:
 def _require_param(model: RemoteModel, param_id: str, value: str) -> None:
     found = next((parameter for parameter in model.parameters or [] if parameter.id == param_id), None)
     if found is None:
-        names = ", ".join(parameter.id for parameter in model.parameters or []) or "aucun"
+        names = ", ".join(parameter.id for parameter in model.parameters or []) or "none"
         raise failure(
             ErrorCode.VALIDATION,
-            f"Paramètre {param_id} inconnu pour {model.id}. Paramètres : {names}.",
+            f"Unknown parameter {param_id} for {model.id}. Parameters: {names}.",
         )
     allowed = _values(found)
     if value not in allowed:
         raise failure(
             ErrorCode.VALIDATION,
-            f"{param_id} pour {model.id} accepte : {', '.join(allowed)}.",
+            f"{param_id} for {model.id} accepts: {', '.join(allowed)}.",
         )

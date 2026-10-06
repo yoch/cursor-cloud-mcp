@@ -1,4 +1,4 @@
-"""Erreurs opérationnelles exposées aux clients MCP."""
+"""Operational errors exposed to MCP clients."""
 
 from enum import StrEnum
 from typing import Never
@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class ErrorCode(StrEnum):
-    """Codes stables de ce MCP. Les codes distants restent dans ``remote_code``."""
+    """Stable codes of this MCP. Remote codes stay in ``remote_code``."""
 
     CONFIGURATION_MISSING = "CONFIGURATION_MISSING"
     READ_ONLY = "READ_ONLY"
@@ -30,7 +30,7 @@ class ErrorCode(StrEnum):
 
 
 class ErrorBody(BaseModel):
-    """Schéma d'erreur opérationnelle. ``safe_to_retry_automatically`` est toujours faux."""
+    """Operational error schema. ``safe_to_retry_automatically`` is always false."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -50,7 +50,7 @@ class ErrorBody(BaseModel):
 
 
 class CursorFailure(Exception):
-    """Échec prévu, converti en résultat MCP ``isError`` par les outils."""
+    """Expected failure, converted into an MCP ``isError`` result by the tools."""
 
     def __init__(self, body: ErrorBody) -> None:
         if body.safe_to_retry_automatically:
@@ -97,44 +97,44 @@ def failure(
 
 
 def explain(code: ErrorCode) -> str:
-    """Phrase stable par code. Le ``Never`` rend un nouveau code incompilable."""
+    """Stable sentence per code. The ``Never`` makes a new code fail type checking."""
     match code:
         case ErrorCode.CONFIGURATION_MISSING:
-            return "Configuration Cursor incomplète."
+            return "Cursor configuration incomplete."
         case ErrorCode.READ_ONLY:
-            return "Mutation refusée : le serveur est en lecture seule."
+            return "Mutation refused: the server is read-only."
         case ErrorCode.VALIDATION:
-            return "Paramètres refusés."
+            return "Parameters rejected."
         case ErrorCode.AUTHENTICATION:
-            return "Authentification Cursor refusée."
+            return "Cursor authentication refused."
         case ErrorCode.PERMISSION:
-            return "Permissions Cursor insuffisantes."
+            return "Insufficient Cursor permissions."
         case ErrorCode.NOT_FOUND:
-            return "Ressource Cursor introuvable."
+            return "Cursor resource not found."
         case ErrorCode.QUOTA:
-            return "Quota ou limite de débit Cursor atteinte."
+            return "Cursor quota or rate limit reached."
         case ErrorCode.AGENT_BUSY:
-            return "L'agent a déjà un run actif."
+            return "The agent already has an active run."
         case ErrorCode.CANCEL_NOT_POSSIBLE:
-            return "Ce run ne peut pas être annulé."
+            return "This run cannot be cancelled."
         case ErrorCode.INCOMPATIBLE_RESPONSE:
-            return "Réponse Cursor incompatible avec le contrat."
+            return "Cursor response incompatible with the contract."
         case ErrorCode.TIMEOUT:
-            return "Délai dépassé avant la fin de l'appel HTTP."
+            return "Timeout exceeded before the HTTP call finished."
         case ErrorCode.MUTATION_OUTCOME_UNKNOWN:
-            return "Le résultat de la mutation est inconnu."
+            return "The outcome of the mutation is unknown."
         case ErrorCode.AGENT_ID_CONFLICT:
-            return "Cet identifiant d'agent existe déjà."
+            return "This agent identifier already exists."
         case ErrorCode.CONFLICT:
-            return "Conflit d'état côté Cursor."
+            return "State conflict on the Cursor side."
         case ErrorCode.CONTINUATION_REFUSED:
-            return "Continuation hors du périmètre de ce MCP."
+            return "Follow-up run outside the scope of this MCP."
         case ErrorCode.UPSTREAM:
-            return "Cursor a renvoyé une erreur."
+            return "Cursor returned an error."
         case ErrorCode.STREAM_EXPIRED:
-            return "Le flux de ce run n'est plus disponible."
+            return "The stream of this run is no longer available."
         case ErrorCode.DELETE_DISABLED:
-            return "Suppression refusée."
+            return "Deletion refused."
         case _:
             unexpected: Never = code
             raise AssertionError(unexpected)

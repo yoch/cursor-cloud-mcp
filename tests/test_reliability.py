@@ -1,4 +1,4 @@
-"""Mutations interrompues, budgets, garde-fous fermés, flux SSE et isolation du mode simulé."""
+"""Interrupted mutations, budgets, closed guards, SSE streams and simulated-mode isolation."""
 
 import asyncio
 import json
@@ -23,7 +23,7 @@ _RUN = "run-00000000-0000-0000-0000-000000000001"
 
 
 class _BrokenStream(httpx.AsyncByteStream):
-    """Quelques octets, puis une coupure réseau après les en-têtes."""
+    """A few bytes, then a network cut after the headers."""
 
     def __init__(self, *chunks: bytes, error: Exception | None = None, close_error: bool = False) -> None:
         self._chunks = chunks
@@ -38,7 +38,7 @@ class _BrokenStream(httpx.AsyncByteStream):
 
     async def aclose(self) -> None:
         if self._close_error:
-            raise httpx.ReadError("fermeture ratée")
+            raise httpx.ReadError("close failed")
 
 
 async def _client(handler: object, **kwargs: object) -> CursorCloudClient:
@@ -59,7 +59,7 @@ async def test_post_cut_after_headers_is_an_uncertain_mutation_with_context() ->
         return httpx.Response(
             201,
             headers={"x-request-id": "req-cut"},
-            stream=_BrokenStream(b'{"agent": {"id"', error=httpx.ReadError("coupé")),
+            stream=_BrokenStream(b'{"agent": {"id"', error=httpx.ReadError("cut off")),
         )
 
     client = await _client(handler)
@@ -79,7 +79,7 @@ async def test_post_cut_after_headers_is_an_uncertain_mutation_with_context() ->
 
 async def test_followup_cut_after_headers_keeps_previous_run() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(201, stream=_BrokenStream(b"{", error=httpx.RemoteProtocolError("fin")))
+        return httpx.Response(201, stream=_BrokenStream(b"{", error=httpx.RemoteProtocolError("end")))
 
     client = await _client(handler)
     try:
@@ -93,7 +93,7 @@ async def test_followup_cut_after_headers_keeps_previous_run() -> None:
 
 async def test_get_cut_after_headers_is_a_read_failure() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, stream=_BrokenStream(b"{", error=httpx.ReadError("coupé")))
+        return httpx.Response(200, stream=_BrokenStream(b"{", error=httpx.ReadError("cut off")))
 
     client = await _client(handler)
     try:
@@ -163,7 +163,7 @@ async def test_slow_catalog_consumes_the_create_budget() -> None:
     assert "POST" not in calls
 
 
-async def test_continuation_is_refused_when_safety_fields_are_unknown() -> None:
+async def test_follow_up_run_is_refused_when_safety_fields_are_unknown() -> None:
     state = {"agent": _agent(_AGENT)}
 
     def responder(request: httpx.Request) -> httpx.Response:
@@ -176,9 +176,9 @@ async def test_continuation_is_refused_when_safety_fields_are_unknown() -> None:
         missing = dict(_agent(_AGENT))
         del missing["workOnCurrentBranch"]
         state["agent"] = missing
-        absent = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
+        absent = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "follow-up"})
         state["agent"] = _agent(_AGENT, status="MIGRATING")
-        unknown = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
+        unknown = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "follow-up"})
     finally:
         await client.__aexit__(None, None, None)
     assert _error_payload(absent)["code"] == "CONTINUATION_REFUSED"
@@ -221,25 +221,25 @@ async def test_cancel_racing_with_finish_is_not_a_cancellation() -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["per-call-secret-value-42", "4", "ligne-un-synthetique\nligne-deux-synthetique", "tab\tsynthetique   espaces"],
+    ["per-call-secret-value-42", "4", "line-one-synthetic\nline-two-synthetic", "tab\tsynthetic   spaces"],
 )
 async def test_secret_reflected_by_cursor_is_redacted_in_the_tool_error(isolated_secrets: None, value: str) -> None:
     def responder(_request: httpx.Request) -> httpx.Response:
-        return httpx.Response(400, json={"error": {"code": "validation_error", "message": f"refusé: {value}"}})
+        return httpx.Response(400, json={"error": {"code": "validation_error", "message": f"refused: {value}"}})
 
     client, _router = await _session(Router(responder))
     try:
         result = await client.call_tool(
             "cursor_create_agent",
-            {"prompt": "x", "name": "avec secret", "env_vars": {"WORK_TOKEN": value}},
+            {"prompt": "x", "name": "with secret", "env_vars": {"WORK_TOKEN": value}},
         )
     finally:
         await client.__aexit__(None, None, None)
-    # Un secret court (« 4 ») ne doit ni fuir ni casser le JSON, ni toucher http_status 400.
+    # A short secret ("4") must neither leak nor break the JSON, nor touch http_status 400.
     payload = _error_payload(result)
     assert payload["code"] == "VALIDATION"
     assert payload["http_status"] == 400
-    assert str(payload["message"]).endswith(f"refusé: {redaction.REDACTED}")
+    assert str(payload["message"]).endswith(f"refused: {redaction.REDACTED}")
     for part in value.split():
         assert part not in json.dumps(payload) or len(part) < 2
 
@@ -255,7 +255,7 @@ async def test_unknown_arguments_are_refused_without_patching_the_sdk() -> None:
     assert router.calls == []
     schema = next(tool.input_schema for tool in listed.tools if tool.name == "cursor_get_agent")
     assert schema.get("additionalProperties") is False
-    # La classe du SDK n'est pas modifiée : un autre serveur du processus garde son comportement.
+    # The SDK class is not modified: another server in the process keeps its behavior.
     assert ArgModelBase.model_config.get("extra") != "forbid"
 
 
@@ -289,7 +289,7 @@ async def test_starting_ref_is_the_only_branch_name() -> None:
     assert single.is_error is False and listed.is_error is False
     refs = [call[2]["repos"][0]["startingRef"] for call in router.calls]  # type: ignore[index]
     assert refs == ["main", "dev"]
-    # L'ancien nom n'est plus accepté : argument inconnu, rien n'est envoyé.
+    # The old name is no longer accepted: unknown argument, nothing is sent.
     assert legacy.is_error is True
     assert len(router.calls) == 2
 
@@ -332,7 +332,7 @@ async def test_sse_utf8_split_across_chunks_is_decoded() -> None:
 
 
 async def test_sse_error_event_is_not_a_finished_run() -> None:
-    raw = b'id: 7\nevent: error\ndata: {"message": "flux perdu"}\n\n'
+    raw = b'id: 7\nevent: error\ndata: {"message": "stream lost"}\n\n'
     view = await _events(_sse([raw]))
     assert view["stream_error"] is True
     assert view["finished"] is False
@@ -340,10 +340,10 @@ async def test_sse_error_event_is_not_a_finished_run() -> None:
 
 
 async def test_sse_disconnect_keeps_partial_events_and_cursor() -> None:
-    raw = b'id: 3\nevent: assistant\ndata: {"text": "un"}\n\nid: 4\nevent: assi'
-    view = await _events(_sse([raw], error=httpx.ReadError("coupé")))
+    raw = b'id: 3\nevent: assistant\ndata: {"text": "one"}\n\nid: 4\nevent: assi'
+    view = await _events(_sse([raw], error=httpx.ReadError("cut off")))
     assert view["interrupted"] is True
-    assert [event["text"] for event in view["events"]] == ["un"]  # type: ignore[index]
+    assert [event["text"] for event in view["events"]] == ["one"]  # type: ignore[index]
     assert view["last_event_id"] == "3"
 
 
@@ -363,7 +363,7 @@ async def test_fixture_mode_never_opens_a_network_connection_for_artifacts() -> 
             "cursor_read_artifact",
             {"agent_id": SEEDED_AGENT_ID, "path": "artifacts/result.txt"},
         )
-    assert _data(result)["text"] == "fixture artefact\n"
+    assert _data(result)["text"] == "fixture artifact\n"
 
 
 async def test_abandoned_wait_does_not_cancel_the_run(caplog: pytest.LogCaptureFixture) -> None:
@@ -392,11 +392,11 @@ async def test_followup_refuses_a_response_describing_another_agent() -> None:
     other = "bc-99999999-9999-9999-9999-999999999999"
 
     def responder(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=_agent(other))  # on a demandé _AGENT, Cursor décrit un autre agent
+        return httpx.Response(200, json=_agent(other))  # we asked for _AGENT, Cursor describes another agent
 
     client, router = await _session(Router(responder))
     try:
-        result = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"})
+        result = await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "follow-up"})
     finally:
         await client.__aexit__(None, None, None)
     assert _error_payload(result)["code"] == "INCOMPATIBLE_RESPONSE"
@@ -417,7 +417,7 @@ async def test_run_read_refuses_another_run_or_agent() -> None:
 
 
 async def test_identity_check_ignores_hex_case() -> None:
-    """L'API accepte un UUID en majuscules et répond en minuscules : ce n'est pas une autre ressource."""
+    """The API accepts an uppercase UUID and answers in lowercase: this is not another resource."""
     agent = "bc-abcdef12-abcd-abcd-abcd-abcdef123456"
     run = "run-abcdef12-abcd-abcd-abcd-abcdef123456"
 
@@ -439,7 +439,7 @@ async def test_identity_check_ignores_hex_case() -> None:
 
 
 async def test_stream_error_body_respects_the_budget() -> None:
-    """Scénario de l'audit : 503 aux en-têtes lents et au corps lent, budget d'une seconde."""
+    """Audit scenario: 503 with slow headers and a slow body, one-second budget."""
 
     class SlowBody(httpx.AsyncByteStream):
         async def __aiter__(self) -> AsyncIterator[bytes]:
@@ -502,7 +502,7 @@ async def test_wait_does_not_absorb_an_authentication_error(monkeypatch: pytest.
         reads["n"] += 1
         if reads["n"] == 1:
             return httpx.Response(200, json=_run(status="RUNNING", result=None))
-        return httpx.Response(401, json={"error": {"code": "unauthorized", "message": "clé révoquée"}})
+        return httpx.Response(401, json={"error": {"code": "unauthorized", "message": "key revoked"}})
 
     client, _router = await _session(Router(responder))
     try:
@@ -520,7 +520,7 @@ async def test_wait_returns_the_previous_observation_on_a_transient_error(monkey
         reads["n"] += 1
         if reads["n"] == 1:
             return httpx.Response(200, json=_run(status="RUNNING", result=None))
-        return httpx.Response(503, json={"error": {"code": "internal_error", "message": "panne"}})
+        return httpx.Response(503, json={"error": {"code": "internal_error", "message": "outage"}})
 
     client, _router = await _session(Router(responder))
     try:

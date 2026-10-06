@@ -1,7 +1,7 @@
-"""Registre des secrets du processus et masquage des textes sortants.
+"""Registry of the process secrets and masking of outgoing texts.
 
-Les logs restent des métadonnées. Ce masquage est une seconde barrière : il couvre le
-message, la traceback et la pile, ainsi que les valeurs transmises pendant une opération.
+Logs stay metadata. This masking is a second barrier: it covers the
+message, the traceback and the stack, as well as values passed during an operation.
 """
 
 import logging
@@ -10,11 +10,11 @@ import threading
 from collections import OrderedDict
 
 REDACTED = "[redacted]"
-# Sous cette longueur, une valeur n'est masquée que comme mot entier : « en » ne doit pas
-# mutiler « agent », ni « 1 » transformer 401 en autre chose.
+# Below this length, a value is masked only as a whole word: "en" must not
+# mangle "agent", nor "1" turn 401 into something else.
 _WHOLE_WORD_BELOW = 8
-# Valeurs par appel retenues ; au-delà, la plus ancienne sort. La clé et les valeurs
-# de CURSOR_MCP_FORWARD_ENV, enregistrées comme permanentes, ne sortent jamais.
+# Per-call values kept; beyond that, the oldest drops out. The key and the values
+# of CURSOR_MCP_FORWARD_ENV, registered as permanent, never drop out.
 _MAX_RECENT = 4096
 
 _lock = threading.Lock()
@@ -24,7 +24,7 @@ _pattern: re.Pattern[str] | None = None
 
 
 def register(*values: str | None, permanent: bool = False) -> None:
-    """Ajoute des valeurs à masquer. ``permanent`` les garde toute la vie du processus."""
+    """Add values to mask. ``permanent`` keeps them for the whole life of the process."""
     global _pattern
     with _lock:
         for value in values:
@@ -49,7 +49,7 @@ def redact(text: str) -> str:
 
 
 def redact_value(value: object) -> object:
-    """Masque les chaînes d'une structure JSON sans toucher à sa forme ni à ses clés."""
+    """Mask the strings of a JSON structure without touching its shape or its keys."""
     if isinstance(value, str):
         return redact(value)
     if isinstance(value, dict):
@@ -64,7 +64,7 @@ def _compiled() -> re.Pattern[str] | None:
     with _lock:
         if _pattern is not None or not (_permanent or _recent):
             return _pattern
-        # Le plus long d'abord : un secret contenu dans un autre ne laisse pas de reste.
+        # Longest first: a secret contained in another leaves no remainder.
         ordered = sorted(_permanent | set(_recent), key=len, reverse=True)
         parts = [
             re.escape(secret)
@@ -77,7 +77,7 @@ def _compiled() -> re.Pattern[str] | None:
 
 
 class RedactingFormatter(logging.Formatter):
-    """Masque le texte final, traceback et pile comprises."""
+    """Mask the final text, traceback and stack included."""
 
     def format(self, record: logging.LogRecord) -> str:
         return redact(super().format(record))

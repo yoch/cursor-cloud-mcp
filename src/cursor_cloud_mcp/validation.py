@@ -1,4 +1,4 @@
-"""Contrôles locaux. Ils ne prouvent pas qu'une ressource existe chez GitHub ou Cursor."""
+"""Local checks. They do not prove that a resource exists on GitHub or Cursor."""
 
 import re
 from urllib.parse import urlsplit
@@ -23,34 +23,34 @@ _MODES = {"agent", "plan"}
 
 def require_prompt(prompt: str) -> str:
     if prompt.strip() == "":
-        raise failure(ErrorCode.VALIDATION, "Le prompt est vide. Il n'est pas tronqué.")
+        raise failure(ErrorCode.VALIDATION, "The prompt is empty. It is not truncated.")
     if len(prompt) > PROMPT_MAX_CHARS:
         raise failure(
             ErrorCode.VALIDATION,
-            "Le prompt dépasse 100000 caractères. Il est refusé, pas tronqué.",
+            "The prompt exceeds 100000 characters. It is rejected, not truncated.",
         )
     return prompt
 
 
 def require_starting_ref(value: str) -> str:
-    """Nom de branche envoyé dans ``startingRef``.
+    """Branch name sent in ``startingRef``.
 
-    Le refus d'un SHA complet est un contournement daté : l'API a répondu ``400`` le
-    1er octobre 2026, alors que la documentation REST annonce qu'une référence peut être un
-    SHA. À requalifier par un test réel autorisé avant de le retirer.
+    Rejecting a full SHA is a dated workaround: the API answered ``400`` on
+    October 1, 2026, even though the REST documentation says a reference may be a
+    SHA. Requalify with an authorized real test before removing it.
     """
     if _SHA.fullmatch(value) is not None:
         raise failure(
             ErrorCode.VALIDATION,
-            "Un SHA complet dans startingRef a été refusé par l'API Cursor (observé le 1er octobre 2026). "
-            "Pousse ce commit sur une branche, vérifie que sa tête est ce SHA, "
-            "puis passe le nom de la branche dans starting_ref.",
+            "A full SHA in startingRef was rejected by the Cursor API (observed on October 1, 2026). "
+            "Push this commit to a branch, check that its head is this SHA, "
+            "then pass the branch name in starting_ref.",
         )
     if not _valid_branch_name(value):
         raise failure(
             ErrorCode.VALIDATION,
-            "starting_ref doit être un nom de branche Git. "
-            "Ce contrôle ne prouve pas que la branche existe sur GitHub.",
+            "starting_ref must be a Git branch name. "
+            "This check does not prove that the branch exists on GitHub.",
         )
     return value
 
@@ -70,7 +70,7 @@ def require_segment(value: str, *, label: str) -> str:
     if _SEGMENT.fullmatch(value) is None:
         raise failure(
             ErrorCode.VALIDATION,
-            f"{label} doit être un identifiant d'un seul segment, sans séparateur d'URL.",
+            f"{label} must be a single-segment identifier, without URL separators.",
         )
     return value
 
@@ -79,7 +79,7 @@ def require_agent_id(value: str) -> str:
     if _AGENT_ID.fullmatch(value) is None:
         raise failure(
             ErrorCode.VALIDATION,
-            "agent_id doit avoir la forme bc-<uuid> documentée par l'API Cursor.",
+            "agent_id must have the bc-<uuid> form documented by the Cursor API.",
         )
     return value
 
@@ -89,12 +89,12 @@ def normalize_repository(url: str) -> str:
     if parts.scheme != "https" or (parts.hostname or "").lower() != "github.com":
         raise failure(
             ErrorCode.VALIDATION,
-            "repository doit être une URL HTTPS github.com, sans hôte différent.",
+            "repository must be an HTTPS github.com URL, with no different host.",
         )
     if parts.username or parts.password or parts.query or parts.fragment:
         raise failure(
             ErrorCode.VALIDATION,
-            "repository ne doit contenir ni identifiants, ni requête, ni fragment.",
+            "repository must not contain credentials, a query string or a fragment.",
         )
     path = parts.path.strip("/")
     path = path.removesuffix(".git")
@@ -106,7 +106,7 @@ def normalize_repository(url: str) -> str:
     ):
         raise failure(
             ErrorCode.VALIDATION,
-            "repository doit viser exactement un dépôt GitHub, sous la forme https://github.com/owner/name.",
+            "repository must point to exactly one GitHub repository, in the form https://github.com/owner/name.",
         )
     return f"https://github.com/{pieces[0]}/{pieces[1]}"
 
@@ -116,12 +116,12 @@ def require_mode(mode: str | None) -> str | None:
         return None
     if mode in _MODES:
         return mode
-    raise failure(ErrorCode.VALIDATION, "mode doit être agent ou plan.")
+    raise failure(ErrorCode.VALIDATION, "mode must be agent or plan.")
 
 
 def require_event_id(value: str) -> str:
     if value.strip() == "" or len(value) > 200 or any(char in value for char in "\r\n"):
-        raise failure(ErrorCode.VALIDATION, "after_event_id est invalide.")
+        raise failure(ErrorCode.VALIDATION, "after_event_id is invalid.")
     return value
 
 
@@ -135,7 +135,7 @@ def require_env_name(name: str) -> str:
     ):
         raise failure(
             ErrorCode.VALIDATION,
-            "Un nom de variable est vide, trop long, commence par CURSOR_ ou contient un caractère refusé.",
+            "A variable name is empty, too long, starts with CURSOR_ or contains a forbidden character.",
         )
     return name
 
@@ -144,7 +144,7 @@ def require_env_value(value: str) -> str:
     if value == "" or len(value.encode("utf-8")) > ENV_VALUE_MAX_BYTES:
         raise failure(
             ErrorCode.VALIDATION,
-            "Une valeur de variable est vide ou dépasse 4096 octets. La valeur n'est pas renvoyée.",
+            "A variable value is empty or exceeds 4096 bytes. The value is not returned.",
         )
     return value
 
@@ -153,12 +153,12 @@ def require_artifact_path(path: str) -> str:
     if path != path.strip() or len(path) > 512 or "\\" in path or path.startswith("/"):
         raise failure(
             ErrorCode.VALIDATION,
-            "Le chemin d'artefact doit être relatif, commencer par artifacts/ et ne pas contenir de .. .",
+            "The artifact path must be relative, start with artifacts/ and not contain .. .",
         )
     pieces = path.split("/")
     if any(piece in {"", ".", ".."} for piece in pieces) or not path.startswith("artifacts/"):
         raise failure(
             ErrorCode.VALIDATION,
-            "Le chemin d'artefact doit être relatif, commencer par artifacts/ et ne pas contenir de .. .",
+            "The artifact path must be relative, start with artifacts/ and not contain .. .",
         )
     return path

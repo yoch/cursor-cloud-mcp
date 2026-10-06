@@ -1,4 +1,4 @@
-"""Point d'entrée ``python -m cursor_cloud_mcp`` et console ``cursor-cloud-mcp``."""
+"""Entry point ``python -m cursor_cloud_mcp`` and console script ``cursor-cloud-mcp``."""
 
 from cursor_cloud_mcp.server import run_stdio
 

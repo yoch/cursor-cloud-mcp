@@ -2,7 +2,7 @@
   "mcpServers": {
     "cursor_cloud": {
       "type": "stdio",
-      "command": "/CHEMIN/ABSOLU/cursor-cloud-mcp/.venv/bin/cursor-cloud-mcp",
+      "command": "/ABSOLUTE/PATH/cursor-cloud-mcp/.venv/bin/cursor-cloud-mcp",
       "args": [],
       "env": {
         "CURSOR_API_KEY": "${CURSOR_API_KEY}",

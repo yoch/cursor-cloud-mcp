@@ -1,4 +1,4 @@
-"""Transport synthétique. Il ne remplace pas l'API et ne s'active que si CURSOR_MCP_FIXTURE=1."""
+"""Synthetic transport. It does not replace the API and is only active if CURSOR_MCP_FIXTURE=1."""
 
 import json
 import uuid
@@ -10,14 +10,14 @@ SEEDED_AGENT_ID = "bc-00000000-0000-0000-0000-000000000001"
 BUSY_AGENT_ID = "bc-00000000-0000-0000-0000-000000000099"
 INCOMPATIBLE_AGENT_ID = "bc-00000000-0000-0000-0000-000000000088"
 SEEDED_RUN_ID = "run-00000000-0000-0000-0000-000000000001"
-ERROR_PROMPT = "ERREUR_ATTENDUE"
+ERROR_PROMPT = "EXPECTED_ERROR"
 _NOW = "2026-09-30T12:00:00.000Z"
 _SHA = "a" * 40
 _ARTIFACT_HOST = "cloud-agent-artifacts.s3.us-east-1.amazonaws.com"
 
 
 class FixtureTransport(httpx.AsyncBaseTransport):
-    """Réponses locales conformes au contrat, sans socket."""
+    """Local responses that follow the contract, without a socket."""
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -31,14 +31,14 @@ class FixtureTransport(httpx.AsyncBaseTransport):
                 SEEDED_RUN_ID,
                 SEEDED_AGENT_ID,
                 "FINISHED",
-                "Résultat fictif. " + ("abcde" * 3000),
+                "Fake result. " + ("abcde" * 3000),
             ),
             (BUSY_AGENT_ID, "run-busy"): _run("run-busy", BUSY_AGENT_ID, "RUNNING", None),
             (INCOMPATIBLE_AGENT_ID, "run-current-branch"): _run(
                 "run-current-branch",
                 INCOMPATIBLE_AGENT_ID,
                 "FINISHED",
-                "Déjà terminé.",
+                "Already finished.",
             ),
         }
 
@@ -60,7 +60,7 @@ class FixtureTransport(httpx.AsyncBaseTransport):
         parts = [part for part in path.split("/") if part]
         if len(parts) >= 3 and parts[0] == "v1" and parts[1] == "agents":
             return self._agent_route(request, parts)
-        return _error(404, "agent_not_found", "Chemin inconnu du fixture.")
+        return _error(404, "agent_not_found", "Unknown path in the fixture.")
 
     def _agent_route(self, request: httpx.Request, parts: list[str]) -> httpx.Response:
         agent_id = parts[2]
@@ -69,7 +69,7 @@ class FixtureTransport(httpx.AsyncBaseTransport):
         if request.method == "GET" and len(parts) == 3:
             agent = self.agents.get(agent_id)
             if agent is None:
-                return _error(404, "agent_not_found", "Agent inconnu.")
+                return _error(404, "agent_not_found", "Unknown agent.")
             return _json(200, agent)
         if len(parts) == 4 and parts[3] == "archive" and request.method == "POST":
             return self._set_status(agent_id, "ARCHIVED")
@@ -88,13 +88,13 @@ class FixtureTransport(httpx.AsyncBaseTransport):
         if len(parts) == 5 and parts[3] == "runs" and request.method == "GET":
             run = self.runs.get((agent_id, parts[4]))
             if run is None:
-                return _error(404, "run_not_found", "Run inconnu.")
+                return _error(404, "run_not_found", "Unknown run.")
             return _json(200, run)
         if len(parts) == 6 and parts[3] == "runs" and parts[5] == "cancel" and request.method == "POST":
             return self._cancel(agent_id, parts[4])
         if len(parts) == 6 and parts[3] == "runs" and parts[5] == "stream" and request.method == "GET":
             return self._stream(request, agent_id, parts[4])
-        return _error(404, "agent_not_found", "Chemin inconnu du fixture.")
+        return _error(404, "agent_not_found", "Unknown path in the fixture.")
 
     def _list_agents(self, request: httpx.Request) -> httpx.Response:
         limit, cursor, error = _page_args(request)
@@ -113,7 +113,7 @@ class FixtureTransport(httpx.AsyncBaseTransport):
 
     def _list_runs(self, request: httpx.Request, agent_id: str) -> httpx.Response:
         if agent_id not in self.agents:
-            return _error(404, "agent_not_found", "Agent inconnu.")
+            return _error(404, "agent_not_found", "Unknown agent.")
         limit, cursor, error = _page_args(request)
         if error is not None:
             return error
@@ -130,20 +130,20 @@ class FixtureTransport(httpx.AsyncBaseTransport):
         body = _body(request)
         prompt = str(body.get("prompt", {}).get("text", "")) if isinstance(body.get("prompt"), dict) else ""
         if prompt == ERROR_PROMPT:
-            return _error(400, "validation_error", "Prompt refusé par le fixture.")
+            return _error(400, "validation_error", "Prompt rejected by the fixture.")
         agent_id = body.get("agentId")
         if not isinstance(agent_id, str):
             if not body.get("envVars"):
-                return _error(400, "validation_error", "agentId absent.")
+                return _error(400, "validation_error", "agentId missing.")
             agent_id = f"bc-{uuid.uuid4()}"
         if agent_id in self.agents:
-            return _error(409, "agent_id_conflict", "Identifiant déjà utilisé.")
+            return _error(409, "agent_id_conflict", "Identifier already in use.")
         run_id = f"run-{uuid.uuid4()}"
         repos = body.get("repos") if isinstance(body.get("repos"), list) else []
         env = body.get("env") if isinstance(body.get("env"), dict) else {"type": "cloud"}
         agent = {
             "id": agent_id,
-            "name": body.get("name") or "Agent fictif",
+            "name": body.get("name") or "Fake agent",
             "status": "ACTIVE",
             "env": env,
             "repos": repos,
@@ -161,20 +161,20 @@ class FixtureTransport(httpx.AsyncBaseTransport):
     def _create_run(self, request: httpx.Request, agent_id: str) -> httpx.Response:
         agent = self.agents.get(agent_id)
         if agent is None:
-            return _error(404, "agent_not_found", "Agent inconnu.")
+            return _error(404, "agent_not_found", "Unknown agent.")
         if agent.get("status") == "ARCHIVED":
-            return _error(409, "agent_archived", "Agent archivé.")
+            return _error(409, "agent_archived", "Agent archived.")
         if agent_id == BUSY_AGENT_ID:
-            return _error(409, "agent_busy", "Un run est déjà actif.")
+            return _error(409, "agent_busy", "A run is already active.")
         body = _body(request)
         prompt = ""
         prompt_body = body.get("prompt")
         if isinstance(prompt_body, dict):
             prompt = str(prompt_body.get("text", ""))
         if prompt == ERROR_PROMPT:
-            return _error(400, "validation_error", "Prompt refusé par le fixture.")
+            return _error(400, "validation_error", "Prompt rejected by the fixture.")
         run_id = f"run-{uuid.uuid4()}"
-        self.runs[(agent_id, run_id)] = _run(run_id, agent_id, "FINISHED", "Continuation fictive appliquée.")
+        self.runs[(agent_id, run_id)] = _run(run_id, agent_id, "FINISHED", "Fake follow-up run applied.")
         agent["latestRunId"] = run_id
         agent["status"] = "IDLE"
         return _json(201, {"run": self.runs[(agent_id, run_id)]})
@@ -182,23 +182,23 @@ class FixtureTransport(httpx.AsyncBaseTransport):
     def _cancel(self, agent_id: str, run_id: str) -> httpx.Response:
         run = self.runs.get((agent_id, run_id))
         if run is None:
-            return _error(404, "run_not_found", "Run inconnu.")
+            return _error(404, "run_not_found", "Unknown run.")
         if run["status"] in {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}:
-            return _error(409, "run_not_cancellable", "Le run est déjà terminal.")
+            return _error(409, "run_not_cancellable", "The run is already terminal.")
         run["status"] = "CANCELLED"
-        run["result"] = "Annulé par le fixture."
+        run["result"] = "Cancelled by the fixture."
         return _json(200, {"id": run_id})
 
     def _set_status(self, agent_id: str, status: str) -> httpx.Response:
         agent = self.agents.get(agent_id)
         if agent is None:
-            return _error(404, "agent_not_found", "Agent inconnu.")
+            return _error(404, "agent_not_found", "Unknown agent.")
         agent["status"] = status
         return _json(200, {"id": agent_id})
 
     def _delete(self, agent_id: str) -> httpx.Response:
         if agent_id not in self.agents:
-            return _error(404, "agent_not_found", "Agent inconnu.")
+            return _error(404, "agent_not_found", "Unknown agent.")
         del self.agents[agent_id]
         for key in [key for key in self.runs if key[0] == agent_id]:
             del self.runs[key]
@@ -206,7 +206,7 @@ class FixtureTransport(httpx.AsyncBaseTransport):
 
     def _artifacts(self, agent_id: str) -> httpx.Response:
         if agent_id not in self.agents:
-            return _error(404, "agent_not_found", "Agent inconnu.")
+            return _error(404, "agent_not_found", "Unknown agent.")
         return _json(
             200,
             {
@@ -217,16 +217,16 @@ class FixtureTransport(httpx.AsyncBaseTransport):
         )
 
     def _download(self, request: httpx.Request) -> httpx.Response:
-        """Stockage simulé : le mode fixture n'ouvre jamais de connexion externe."""
+        """Simulated storage: fixture mode never opens an external connection."""
         if request.method == "GET" and request.url.host == _ARTIFACT_HOST and request.url.path == "/fixture/result.txt":
-            return httpx.Response(200, content=b"fixture artefact\n")
-        return httpx.Response(404, text="Hôte ou chemin inconnu du fixture.")
+            return httpx.Response(200, content=b"fixture artifact\n")
+        return httpx.Response(404, text="Unknown host or path in the fixture.")
 
     def _artifact_url(self, agent_id: str, path: str | None) -> httpx.Response:
         if agent_id not in self.agents:
-            return _error(404, "agent_not_found", "Agent inconnu.")
+            return _error(404, "agent_not_found", "Unknown agent.")
         if path != "artifacts/result.txt":
-            return _error(404, "artifact_not_found", "Artefact inconnu.")
+            return _error(404, "artifact_not_found", "Unknown artifact.")
         return _json(
             200,
             {
@@ -237,14 +237,14 @@ class FixtureTransport(httpx.AsyncBaseTransport):
 
     def _stream(self, request: httpx.Request, agent_id: str, run_id: str) -> httpx.Response:
         if (agent_id, run_id) not in self.runs:
-            return _error(404, "run_not_found", "Run inconnu.")
+            return _error(404, "run_not_found", "Unknown run.")
         last = request.headers.get("last-event-id")
         if last == "expired":
-            return _error(410, "stream_expired", "Flux expiré.")
+            return _error(410, "stream_expired", "Stream expired.")
         lines = [
             f'id: 1\nevent: status\ndata: {{"runId":"{run_id}","status":"RUNNING"}}\n\n',
-            'id: 2\nevent: assistant\ndata: {"text":"calcul fictif"}\n\n',
-            f'id: 3\nevent: result\ndata: {{"runId":"{run_id}","status":"FINISHED","text":"terminé"}}\n\n',
+            'id: 2\nevent: assistant\ndata: {"text":"fake computation"}\n\n',
+            f'id: 3\nevent: result\ndata: {{"runId":"{run_id}","status":"FINISHED","text":"finished"}}\n\n',
             "id: 4\nevent: done\ndata: {}\n\n",
         ]
         if last in {"1", "2", "3", "4"}:
@@ -261,13 +261,13 @@ class FixtureTransport(httpx.AsyncBaseTransport):
 
     def _usage(self, request: httpx.Request, agent_id: str) -> httpx.Response:
         if agent_id not in self.agents:
-            return _error(404, "agent_not_found", "Agent inconnu.")
+            return _error(404, "agent_not_found", "Unknown agent.")
         selected = request.url.params.get("runId")
         rows = [run for (owner, _run_id), run in self.runs.items() if owner == agent_id]
         if selected is not None:
             rows = [run for run in rows if run["id"] == selected]
             if not rows:
-                return _error(404, "run_not_found", "Run inconnu.")
+                return _error(404, "run_not_found", "Unknown run.")
         usage = {
             "inputTokens": 3,
             "outputTokens": 2,
@@ -314,7 +314,7 @@ def _models() -> dict[str, Any]:
 def _agent(agent_id: str, status: str, work_on_current_branch: bool, latest_run_id: str) -> dict[str, Any]:
     return {
         "id": agent_id,
-        "name": "Agent fictif",
+        "name": "Fake agent",
         "status": status,
         "env": {"type": "cloud"},
         "repos": [{"url": "https://github.com/example/demo", "startingRef": _SHA}],
@@ -365,14 +365,14 @@ def _page_args(request: httpx.Request) -> tuple[int, int | None, httpx.Response 
         try:
             limit = int(raw_limit)
         except ValueError:
-            return 0, None, _error(400, "validation_error", "limit invalide.")
+            return 0, None, _error(400, "validation_error", "Invalid limit.")
     raw_cursor = request.url.params.get("cursor")
     cursor = None
     if raw_cursor is not None:
         try:
             cursor = int(raw_cursor)
         except ValueError:
-            return 0, None, _error(400, "validation_error", "cursor invalide.")
+            return 0, None, _error(400, "validation_error", "Invalid cursor.")
     return limit, cursor, None
 
 
