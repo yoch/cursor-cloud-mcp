@@ -19,6 +19,11 @@
   - the check now prints the error code and message;
   - one plausible cause is closed: if closing the connection overran the 0.5 s grace after the events were read, the call failed with `TIMEOUT` and lost them. It now returns them. A test covers it, and that test fails on `ab6f053`.
 - `uv run pytest`: **124 passed** under Python 3.13 and 3.12.
+- Re-run on `7b911ea`: **48 of 48 PASS**, two WARNs:
+  - artifacts, the known API limit;
+  - background task: the agent did not start `sleep 600` as a background command this time. The replaced run's activity was complete and listed no background task. This depends on how the agent runs the prompt; the previous run detected it.
+  - `cursor_read_run_events` right after creation passed (4 events): the earlier failure was intermittent.
+  - Both agents were deleted (404 read back).
 
 
 ## Runner supervision, version 0.3.0 (October 6, 2026)
