@@ -3,6 +3,8 @@
 Opt-in: `SMOKE_PAID=1`. Two `composer-2.5` agents, a few very short runs,
 and both agents are deleted at the end, except with `SMOKE_KEEP=1`, which
 leaves them visible in the web interface and prints their link. No creation is replayed.
+The supervision tools (`cursor_supervise`, `activity`, `tail`) are checked on the runs the
+script already pays for; only `replace_active` adds two short runs.
 The key comes from the environment, or from `.env` read by this script only. It
 is never printed. No prompt and no secret value is printed.
 """
@@ -12,6 +14,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -24,6 +27,8 @@ BRANCH = os.environ.get("SMOKE_BRANCH", "main")
 FWD_VALUE = "smoke-forwarded-value-12345678"
 PUB_VALUE = "smoke-public-value-87654321"
 SHA = "a" * 40
+# Shared by both agent names, so cursor_supervise(name=TAG) finds exactly this run's agents.
+TAG = f"smoke-{uuid.uuid4().hex[:8]}"
 # Network variables passed to the server if they exist: proxy and certificate authority
 # of a managed environment. Without them, the server cannot reach the API behind a proxy.
 NETWORK_ENV = (
@@ -155,6 +160,29 @@ async def main() -> int:
 async def run_all(client: Client, report: Report, created: list[str]) -> None:
     listed = await client.list_tools()
     report.check("tools/list", len(listed.tools) == 17, f"tools={len(listed.tools)}")
+    tools = {tool.name: tool for tool in listed.tools}
+    follow_up = tools.get("cursor_create_run")
+    supervise = tools.get("cursor_supervise")
+    report.check(
+        "annotations (create_run destructive, supervise read-only)",
+        follow_up is not None
+        and follow_up.annotations is not None
+        and follow_up.annotations.destructive_hint is True
+        and supervise is not None
+        and supervise.annotations is not None
+        and supervise.annotations.read_only_hint is True,
+    )
+
+    # Errors are pure JSON: the text parses as is, with no "Error executing tool" prefix.
+    raw = await client.call_tool(
+        "cursor_get_agent", {"agent_id": "bc-00000000-0000-0000-0000-000000000000"}
+    )
+    text = raw.content[0].text if raw.content else ""
+    try:
+        error_code = json.loads(text).get("code")
+    except ValueError:
+        error_code = None
+    report.check("error as pure JSON", raw.is_error and error_code == "NOT_FOUND", f"code={error_code}")
 
     ok, data = await call(client, "cursor_get_account")
     report.check("cursor_get_account", ok, f"key_name_present={'api_key_name' in data}")
@@ -206,10 +234,11 @@ async def run_all(client: Client, report: Report, created: list[str]) -> None:
         code_of(data),
     )
 
-    agent_a = await smoke_repo_agent(client, report, created, fast_values)
-    await smoke_env_agent(client, report, created)
-    if agent_a is not None:
-        await smoke_lifecycle(client, report, agent_a)
+    first = await smoke_repo_agent(client, report, created, fast_values)
+    agent_b = await smoke_env_agent(client, report, created)
+    if first is not None:
+        await smoke_supervision(client, report, agent_a=first[0], run_a=first[1], agent_b=agent_b)
+        await smoke_lifecycle(client, report, first[0])
 
 
 async def smoke_repo_agent(
@@ -217,9 +246,10 @@ async def smoke_repo_agent(
     report: Report,
     created: list[str],
     fast_values: list[str],
-) -> str | None:
+) -> tuple[str, str] | None:
+    """Agent A. Returns its id and its first run, read again later by the supervision checks."""
     agent_id = f"bc-{uuid.uuid4()}"
-    repo_name = f"smoke-repo-{uuid.uuid4().hex[:8]}"
+    repo_name = f"{TAG}-repo"
     args: dict[str, object] = {
         "prompt": "Reply only with the word OK. Run no command and modify no file.",
         "repository": REPO_URL,
@@ -345,10 +375,11 @@ async def smoke_repo_agent(
             data.get("status") == "FINISHED",
             f"status={data.get('status')}",
         )
-    return agent_id
+    return agent_id, run_id
 
 
-async def smoke_env_agent(client: Client, report: Report, created: list[str]) -> None:
+async def smoke_env_agent(client: Client, report: Report, created: list[str]) -> str | None:
+    """Agent B. Returns its id once created, even if a later check fails."""
     ok, data = await call(
         client,
         "cursor_create_agent",
@@ -358,7 +389,7 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
                 'test -n "$SMOKE_PUB" && echo PUB_SET || echo PUB_MISSING` '
                 "then reply with the two words obtained. Never display the value of the variables."
             ),
-            "name": f"smoke-env-{uuid.uuid4().hex[:8]}",
+            "name": f"{TAG}-env",
             "model_id": MODEL,
             "env_vars": {"SMOKE_PUB": PUB_VALUE},
             "forward_env": ["SMOKE_FWD"],
@@ -371,7 +402,7 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
         if ok
         else f"code={code_of(data)} http={data.get('http_status')}",
     ):
-        return
+        return None
     agent_id = str(data["agent_id"])
     created.append(agent_id)
     run_id = str(data["run_id"])
@@ -459,7 +490,7 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
     if not report.check(
         "follow-up run (cancellable)", ok, f"status={data.get('status', code_of(data))}"
     ):
-        return
+        return agent_id
     await asyncio.sleep(8)
     ok, data = await call(
         client, "cursor_cancel_run", {"agent_id": agent_id, "run_id": run3}
@@ -471,6 +502,145 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
         and bool(data.get("outcome_confirmed")) == (data.get("observed_status") == "CANCELLED"),
         f"accepted={data.get('cancel_request_accepted')} outcome={data.get('outcome')} "
         f"status={data.get('observed_status')}",
+    )
+    await smoke_replace_active(client, report, agent_id)
+    return agent_id
+
+
+async def smoke_replace_active(client: Client, report: Report, agent_id: str) -> None:
+    """Two short runs: one that starts a background job then waits, and its replacement."""
+    ok, data = await call(
+        client,
+        "cursor_create_run",
+        {
+            "agent_id": agent_id,
+            "prompt": (
+                "Start `sleep 600` as a background command and do not wait for it. "
+                "Then run `sleep 120` in the foreground and wait for it before replying."
+            ),
+        },
+    )
+    busy_run = str(data.get("run_id", ""))
+    if not report.check("follow-up run (to replace)", ok, f"status={data.get('status', code_of(data))}"):
+        return
+    # Leave the agent time to start its background job before the run is replaced.
+    await asyncio.sleep(30)
+    ok, data = await call(
+        client,
+        "cursor_create_run",
+        {"agent_id": agent_id, "prompt": "Reply only with the word OK3. Run no command.", "replace_active": True},
+    )
+    new_run = str(data.get("run_id", ""))
+    report.check(
+        "cursor_create_run (replace_active)",
+        ok and data.get("replaced_run_id") == busy_run and new_run not in {"", busy_run},
+        f"replaced={data.get('replaced_run_id') == busy_run}"
+        if ok
+        else f"code={code_of(data)} message={str(data.get('message', ''))[:120]}",
+    )
+    if not ok:
+        return
+    data = await wait_terminal(client, agent_id, new_run)
+    report.check("replacement run finished", data.get("status") == "FINISHED", f"status={data.get('status')}")
+    # The replaced run ended CANCELLED without a result: its activity summary comes on its own.
+    ok, data = await call(client, "cursor_get_run", {"agent_id": agent_id, "run_id": busy_run})
+    activity = data.get("activity") or {}
+    report.check(
+        "activity added to the replaced run",
+        ok and data.get("status") == "CANCELLED" and bool(activity.get("complete")),
+        f"status={data.get('status')} complete={activity.get('complete')} error={data.get('activity_error')}",
+    )
+    tasks = activity.get("background_tasks") or []
+    if tasks:
+        report.check(
+            "background task detected",
+            (activity.get("unfinished_background_tasks") or 0) >= 1,
+            f"tasks={len(tasks)} last_state={tasks[-1].get('last_state')}",  # type: ignore[union-attr]
+        )
+    else:
+        # Depends on how the agent ran the command, not on this server.
+        report.add("background task detected", "WARN", "the agent did not start a background command")
+
+
+async def smoke_supervision(
+    client: Client,
+    report: Report,
+    *,
+    agent_a: str,
+    run_a: str,
+    agent_b: str | None,
+) -> None:
+    """Free checks: reads only, on the runs already paid for."""
+    ok, data = await call(
+        client, "cursor_read_run_events", {"agent_id": agent_a, "run_id": run_a, "tail": 3}
+    )
+    kinds = [event["kind"] for event in data.get("events", [])] if ok else []  # type: ignore[union-attr]
+    report.check(
+        "cursor_read_run_events (tail)",
+        ok and data.get("finished") is True and data.get("truncated") is False and bool(data.get("last_event_at")),
+        f"kinds={kinds} scanned={data.get('scanned_events')}",
+    )
+
+    started = time.monotonic()
+    ok, data = await call(
+        client, "cursor_get_run", {"agent_id": agent_a, "run_id": run_a, "activity": True}
+    )
+    first_seconds = time.monotonic() - started
+    activity = data.get("activity") or {}
+    report.check(
+        "cursor_get_run (activity)",
+        ok and bool(activity.get("complete")) and bool(activity.get("last_event_at")),
+        f"complete={activity.get('complete')} idle={activity.get('idle_seconds')} {first_seconds:.1f}s",
+    )
+    started = time.monotonic()
+    ok, data = await call(
+        client, "cursor_get_run", {"agent_id": agent_a, "run_id": run_a, "activity": True}
+    )
+    second_seconds = time.monotonic() - started
+    report.check(
+        "cursor_get_run (activity, cached)",
+        ok and bool((data.get("activity") or {}).get("complete")) and second_seconds < max(first_seconds, 1.0),
+        f"{second_seconds:.1f}s",
+    )
+    ok, data = await call(
+        client, "cursor_get_run", {"agent_id": agent_a, "run_id": run_a, "activity": False}
+    )
+    report.check("cursor_get_run (activity=false)", ok and "activity" not in data)
+
+    expected = {agent_a} | ({agent_b} if agent_b else set())
+    ok, data = await call(client, "cursor_supervise", {"status": "all", "name": TAG})
+    rows = {row["agent_id"]: row for row in data.get("items", [])} if ok else {}  # type: ignore[union-attr]
+    summary = data.get("summary") or {}
+    report.check(
+        "cursor_supervise",
+        ok and set(rows) == expected and all(row.get("status") for row in rows.values()),
+        f"rows={len(rows)} by_status={summary.get('by_status')}",
+    )
+    if agent_b:
+        ok, data = await call(client, "cursor_supervise", {"status": "all", "name": TAG, "limit": 1})
+        cursor = data.get("next_cursor")
+        first_page = {row["agent_id"] for row in data.get("items", [])} if ok else set()  # type: ignore[union-attr]
+        ok2, data2 = (False, {})
+        if ok and cursor:
+            ok2, data2 = await call(
+                client, "cursor_supervise", {"status": "all", "name": TAG, "limit": 1, "cursor": cursor}
+            )
+        second_page = {row["agent_id"] for row in data2.get("items", [])} if ok2 else set()  # type: ignore[union-attr]
+        report.check(
+            "cursor_supervise (exact limit, cursor)",
+            len(first_page) == 1 and len(second_page) == 1 and first_page | second_page == expected,
+            f"pages={len(first_page)}+{len(second_page)}",
+        )
+    ok, data = await call(client, "cursor_supervise", {"status": "all", "name": TAG, "activity": True})
+    rows = data.get("items", []) if ok else []
+    summary = data.get("summary") or {}
+    report.check(
+        "cursor_supervise (activity)",
+        ok
+        and len(rows) == len(expected)  # type: ignore[arg-type]
+        and all((row.get("activity") or {}).get("complete") for row in rows)  # type: ignore[union-attr]
+        and "incomplete" not in summary,
+        f"by_status={summary.get('by_status')} unfinished_after_end={len(summary.get('unfinished_after_end') or [])}",  # type: ignore[arg-type]
     )
 
 
