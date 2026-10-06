@@ -1,12 +1,29 @@
 # cursor-cloud-mcp
 
-To have an agent install or use this MCP server, give it [`AGENT_GUIDE.md`](AGENT_GUIDE.md).
+To have an agent install or use this MCP server, give it [`AGENT_GUIDE.md`](https://github.com/yoch/cursor-cloud-mcp/blob/main/AGENT_GUIDE.md).
 
-Local MCP server, over stdio, that exposes seventeen tools for the Cursor Cloud Agents v1 REST API. A single implementation serves Claude Code, Codex CLI and OpenCode. It lets a calling agent create a Cloud session, choose the model and the reasoning level, send commands, read progress and produced files, then archive or delete the session. It is not an orchestration platform, and the package is not published on PyPI.
+Local MCP server, over stdio, that exposes seventeen tools for the Cursor Cloud Agents v1 REST API. A single implementation serves Claude Code, Codex CLI and OpenCode. It lets a calling agent create a Cloud session, choose the model and the reasoning level, send commands, read progress and produced files, then archive or delete the session. It is not an orchestration platform.
 
-## Local installation
+## Installation
 
-Python 3.12 or newer, and `uv`.
+Python 3.12 or newer. The package is published on PyPI as `cursor-cloud-mcp`. The simplest is to let the MCP client start it with `uvx`, which needs neither a clone nor an absolute path:
+
+```bash
+uvx cursor-cloud-mcp
+```
+
+The first start downloads the package and its dependencies, then `uvx` reuses its cache. To pin the installed version, or for a client whose startup timeout is short, install it once and register the `cursor-cloud-mcp` command instead:
+
+```bash
+uv tool install cursor-cloud-mcp    # or: pipx install cursor-cloud-mcp
+uv tool upgrade cursor-cloud-mcp    # later, to update it
+```
+
+A client started from a desktop launcher may not inherit the shell's `PATH`: if the command is not found, register the absolute path printed by `command -v uvx` (or `command -v cursor-cloud-mcp`).
+
+## Development
+
+In a copy of this repository, with `uv`:
 
 ```bash
 uv sync
@@ -14,7 +31,7 @@ uv run pytest
 uv run cursor-cloud-mcp
 ```
 
-The repository environment's binary is `.venv/bin/cursor-cloud-mcp`. You can also run `uv run python -m cursor_cloud_mcp`. These commands assume a copy of this repository, not a public package.
+The repository environment's binary is `.venv/bin/cursor-cloud-mcp`. You can also run `uv run python -m cursor_cloud_mcp`.
 
 To check the wheel in a clean environment:
 
@@ -24,6 +41,8 @@ uv venv /tmp/cursor-cloud-mcp-wheel
 uv pip install --python /tmp/cursor-cloud-mcp-wheel/bin/python dist/*.whl
 /tmp/cursor-cloud-mcp-wheel/bin/cursor-cloud-mcp
 ```
+
+Releases: `__version__` in `src/cursor_cloud_mcp/__init__.py` is the only version number. Pushing a tag `vX.Y.Z` equal to it runs `.github/workflows/release.yml`, which checks, tests and builds the package, then publishes it on PyPI through Trusted Publishing (no stored token).
 
 ## Variables
 
@@ -125,7 +144,7 @@ Cancellation does not delete commits that were already pushed. It is asynchronou
 
 ## Configurations
 
-The fragments in `examples/` use a placeholder absolute path. The copies resolved to this machine's binary are in `examples/resolved/` after installation, and modify no personal profile.
+The fragments in [`examples/`](https://github.com/yoch/cursor-cloud-mcp/blob/main/examples) start the server with `uvx cursor-cloud-mcp`. With `uv tool install`, the command becomes `cursor-cloud-mcp` without arguments. For a development copy, use the absolute path of `.venv/bin/cursor-cloud-mcp`.
 
 To allow a real mutation, set `CURSOR_MCP_ALLOW_WRITES` to `1` in the relevant client's configuration, then restart that client. The key is passed through the environment, never as a command-line argument.
 
@@ -140,7 +159,7 @@ export CURSOR_API_KEY
 Claude Code, project configuration `.mcp.json`: see `examples/claude.mcp.json`. Check with `claude mcp list`, `claude mcp get cursor_cloud` and `/mcp`. The project file may ask for approval. For a user configuration, the form consistent with the installed help is:
 
 ```bash
-claude mcp add --transport stdio --scope user cursor_cloud -- /ABSOLUTE/PATH/.venv/bin/cursor-cloud-mcp
+claude mcp add --transport stdio --scope user cursor_cloud -- uvx cursor-cloud-mcp
 ```
 
 Then provide `CURSOR_API_KEY` in the process environment, not in the command. `CURSOR_MCP_ALLOW_WRITES` goes in the JSON's `env` entry, not on the command line with the key.
@@ -161,7 +180,7 @@ OpenCode: `examples/opencode.json`. The key uses `{env:CURSOR_API_KEY}`. The pub
 - `GET /v1/repositories` can be slow and is heavily rate-limited (1 request per minute, 30 per hour). The five-minute cache covers only the current process.
 - stderr announces `SIMULATED MODE` when `CURSOR_MCP_FIXTURE=1`. This variable with a real key prevents any call.
 - stdout must remain the MCP channel. If a client reports invalid JSON, look for a `print` or a log that is not on stderr.
-- "bad interpreter" or "No such file" after moving the folder: a virtual environment keeps absolute paths in its scripts. Run `uv sync` again in the new place, or register `uv run --directory /path/to/cursor-cloud-mcp cursor-cloud-mcp` as the command.
+- "bad interpreter" or "No such file" after moving a development copy: a virtual environment keeps absolute paths in its scripts. Run `uv sync` again in the new place, or register `uv run --directory /path/to/cursor-cloud-mcp cursor-cloud-mcp` as the command.
 
 ## Out of scope
 

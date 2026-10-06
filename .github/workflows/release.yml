@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.17"
+      - name: Tag matches the package version
+        run: |
+          version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/cursor_cloud_mcp/__init__.py)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match __version__ $version" >&2
+            exit 1
+          fi
+      - name: Locked install
+        run: uv sync --locked --python 3.12
+      - name: Static check
+        run: uvx ruff@0.16.10 check src tests scripts
+      - name: Tests (no real Cursor call)
+        run: uv run --locked pytest
+      - name: Build
+        run: uv build
+      - name: Install the built package
+        run: |
+          python_bin="$(uv python find 3.12)"
+          "$python_bin" -m venv /tmp/wheel-env
+          /tmp/wheel-env/bin/pip install dist/*.whl
+          cd /tmp && /tmp/wheel-env/bin/python "$GITHUB_WORKSPACE/scripts/wheel_smoke.py"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/cursor-cloud-mcp/
+    permissions:
+      # Trusted Publishing: PyPI accepts this workflow's OIDC token, no stored secret.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

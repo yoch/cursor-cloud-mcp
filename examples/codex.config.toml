@@ -1,8 +1,8 @@
 [mcp_servers.cursor_cloud]
-command = "/ABSOLUTE/PATH/cursor-cloud-mcp/.venv/bin/cursor-cloud-mcp"
-args = []
+command = "uvx"
+args = ["cursor-cloud-mcp"]
 env_vars = ["CURSOR_API_KEY"]
-startup_timeout_sec = 10
+startup_timeout_sec = 30
 tool_timeout_sec = 100
 
 [mcp_servers.cursor_cloud.env]

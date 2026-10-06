@@ -1,13 +1,34 @@
 [project]
 name = "cursor-cloud-mcp"
-version = "0.3.0"
+dynamic = ["version"]
 description = "Minimal stdio MCP server for the Cursor Cloud Agents API v1"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Yoch Melka" }]
 requires-python = ">=3.12"
-dependencies = [
-  "httpx==0.28.1",
-  "mcp==2.3.0",
+keywords = ["mcp", "model-context-protocol", "cursor", "cloud-agents"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development",
 ]
+dependencies = [
+  "httpx>=0.28.1,<0.29",
+  "mcp>=2.3.0,<3",
+]
+
+[project.urls]
+Homepage = "https://github.com/yoch/cursor-cloud-mcp"
+Repository = "https://github.com/yoch/cursor-cloud-mcp"
+Issues = "https://github.com/yoch/cursor-cloud-mcp/issues"
+Documentation = "https://github.com/yoch/cursor-cloud-mcp#readme"
 
 [project.scripts]
 cursor-cloud-mcp = "cursor_cloud_mcp.__main__:main"
@@ -21,8 +42,14 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.version]
+path = "src/cursor_cloud_mcp/__init__.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/cursor_cloud_mcp"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml", "uv.lock"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
