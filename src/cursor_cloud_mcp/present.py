@@ -1,4 +1,4 @@
-"""Projection des payloads Cursor vers les vues MCP. Les champs inconnus sont ignorés."""
+"""Projection of Cursor payloads onto MCP views. Unknown fields are ignored."""
 
 import json
 from typing import Literal
@@ -45,7 +45,7 @@ from cursor_cloud_mcp.models import (
 )
 from cursor_cloud_mcp.slicing import slice_text
 
-_NEXT_POLL = "Suivre avec cursor_get_run (wait_seconds) ou cursor_read_run_events. Ne pas créer un autre agent."
+_NEXT_POLL = "Follow with cursor_get_run (wait_seconds) or cursor_read_run_events. Do not create another agent."
 
 
 def account_view(remote: RemoteAccount) -> AccountView:
@@ -60,7 +60,7 @@ def account_view(remote: RemoteAccount) -> AccountView:
 
 
 def model_list_view(remote: RemoteModelList, *, model_id: str | None = None) -> ModelListView:
-    """Catalogue compact. Avec model_id, un seul modèle et ses variantes valides."""
+    """Compact catalog. With model_id, a single model and its valid variants."""
     if model_id is not None:
         model = find_model(remote, model_id)
         variants = [
@@ -190,7 +190,7 @@ def run_view(remote: RemoteRun, *, offset: int, limit: int) -> RunView:
     }
     if remote.result is None:
         if offset != 0:
-            raise failure(ErrorCode.VALIDATION, "Ce run n'a pas de champ result à découper.")
+            raise failure(ErrorCode.VALIDATION, "This run has no result field to slice.")
         return RunView(result_present=False, **common)
     chunk, truncated, next_offset = slice_text(remote.result, offset, limit)
     return RunView(
@@ -236,7 +236,7 @@ def cancel_view(
     observed_status: str | None,
     reread_error: str | None,
 ) -> CancelView:
-    """Distingue demande acceptée, run terminal et run réellement annulé."""
+    """Distinguishes an accepted request, a terminal run and a run actually cancelled."""
     observed_terminal = None if observed_status is None else run_terminal(observed_status)
     outcome: Literal["cancelled", "ended_without_cancel", "still_running", "unknown"]
     if observed_status == "CANCELLED":
@@ -282,7 +282,7 @@ def _cost(remote: RemoteCost | None) -> CostView | None:
 
 
 def _run_error(value: object) -> str | None:
-    """``error`` est libre dans le contrat : message lisible si présent, sinon JSON compact borné."""
+    """``error`` is free-form in the contract: readable message if present, otherwise bounded compact JSON."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -296,29 +296,29 @@ def _run_error(value: object) -> str | None:
 
 
 def ensure_continuation_allowed(agent: RemoteAgent) -> None:
-    """Une écriture exige de savoir qu'elle est permise : une information absente refuse."""
+    """A write requires knowing it is allowed: missing information means refusal."""
     if agent.status == "ARCHIVED":
         raise failure(
             ErrorCode.CONTINUATION_REFUSED,
-            "L'agent est archivé. Le désarchiver avec cursor_archive_agent (unarchive=true) avant une continuation.",
+            "The agent is archived. Unarchive it with cursor_archive_agent (unarchive=true) before a follow-up run.",
         )
     if not agent_status_known(agent.status):
         raise failure(
             ErrorCode.CONTINUATION_REFUSED,
-            f"Statut d'agent inconnu ({agent.status}). Ce MCP ne continue que des agents IDLE ou ACTIVE.",
+            f"Unknown agent status ({agent.status}). This MCP only follows up on IDLE or ACTIVE agents.",
             agent_id=agent.id,
         )
     if agent.workOnCurrentBranch is True:
         raise failure(
             ErrorCode.CONTINUATION_REFUSED,
-            "workOnCurrentBranch est true. Ce MCP ne continue pas un agent qui pousse sur la branche de départ.",
+            "workOnCurrentBranch is true. This MCP does not follow up on an agent that pushes to the starting branch.",
             agent_id=agent.id,
         )
     if agent.workOnCurrentBranch is None:
         raise failure(
             ErrorCode.CONTINUATION_REFUSED,
-            "workOnCurrentBranch est absent de la réponse Cursor : impossible d'établir que l'agent "
-            "ne pousse pas sur la branche de départ. Continuer depuis l'interface Cursor si c'est voulu.",
+            "workOnCurrentBranch is absent from the Cursor response: cannot establish that the agent "
+            "does not push to the starting branch. Continue from the Cursor interface if that is intended.",
             agent_id=agent.id,
         )
 
@@ -329,7 +329,7 @@ def _cursor(value: str | None) -> tuple[str | None, bool]:
     except ValueError:
         raise failure(
             ErrorCode.INCOMPATIBLE_RESPONSE,
-            "Le curseur de pagination reçu est vide.",
+            "The pagination cursor received is empty.",
         ) from None
 
 
@@ -337,6 +337,6 @@ def _bounds(offset: int, limit: int) -> None:
     if offset < 0 or limit < 1 or limit > RESULT_MAX_LIMIT:
         raise failure(
             ErrorCode.VALIDATION,
-            f"result_offset doit être >= 0 et result_limit entre 1 et {RESULT_MAX_LIMIT}.",
+            f"result_offset must be >= 0 and result_limit between 1 and {RESULT_MAX_LIMIT}.",
         )
 

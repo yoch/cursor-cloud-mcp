@@ -1,8 +1,8 @@
-"""Point d'entrée de test équivalent au binaire, avec le transport fictif.
+"""Test entry point equivalent to the binary, with the fictional transport.
 
-Les tests stdio lancent ``python -m cursor_cloud_mcp`` et posent
-``CURSOR_MCP_FIXTURE=1`` dans l'environnement du sous-processus. Ce module
-reste disponible pour un client qui ne sait passer qu'une commande Python.
+The stdio tests launch ``python -m cursor_cloud_mcp`` and set
+``CURSOR_MCP_FIXTURE=1`` in the subprocess environment. This module
+remains available for a client that can only pass a Python command.
 """
 
 import os

@@ -1,4 +1,4 @@
-"""Configuration lue uniquement depuis l'environnement du processus."""
+"""Configuration read only from the process environment."""
 
 import os
 import re
@@ -12,11 +12,11 @@ RESULT_MAX_LIMIT = 20_000
 DEFAULT_DEADLINE_SECONDS = 40.0
 REPOSITORIES_DEADLINE_SECONDS = 90.0
 CREATE_DEADLINE_SECONDS = 90.0
-# Budgets absolus par appel d'outil : lectures, relectures et pauses comprises.
+# Absolute budgets per tool call: reads, re-reads and pauses included.
 TOOL_BUDGET_SECONDS = 45.0
 CREATE_TOOL_BUDGET_SECONDS = 95.0
 CANCEL_TOOL_BUDGET_SECONDS = 45.0
-# Une mutation n'est pas envoyée s'il reste moins que ce temps (ou la moitié de son délai).
+# A mutation is not sent if less than this time remains (or half of its timeout).
 MUTATION_MIN_SECONDS = 5.0
 REPOSITORY_CACHE_TTL_SECONDS = 300.0
 MODEL_CACHE_TTL_SECONDS = 600.0
@@ -24,7 +24,7 @@ MAX_RESPONSE_BYTES = 8_000_000
 STREAM_MAX_BYTES = 1_000_000
 ARTIFACT_MAX_BYTES = 5_000_000
 EVENT_TEXT_MAX_CHARS = 500
-# Fragments de texte consécutifs fusionnés en un événement, jusqu'à cette taille.
+# Consecutive text fragments merged into one event, up to this size.
 EVENT_MERGED_MAX_CHARS = 4000
 ENV_MAX_COUNT = 50
 ENV_NAME_MAX_BYTES = 255
@@ -33,14 +33,14 @@ REPO_MAX_COUNT = 20
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 _UNEXPANDED = re.compile(r"^\$\{[^}]*\}$|^\{env:[^}]*\}$")
 _FIXTURE_WITH_KEY = (
-    "CURSOR_MCP_FIXTURE=1 ne peut pas être combiné avec CURSOR_API_KEY. "
-    "Retirer la clé pour le mode simulé, ou retirer CURSOR_MCP_FIXTURE pour l'API réelle."
+    "CURSOR_MCP_FIXTURE=1 cannot be combined with CURSOR_API_KEY. "
+    "Remove the key for simulated mode, or remove CURSOR_MCP_FIXTURE for the real API."
 )
 
 
 @dataclass(frozen=True)
 class Settings:
-    """Réglages du processus. ``api_key`` vaut ``None`` si elle est absente."""
+    """Process settings. ``api_key`` is ``None`` when it is absent."""
 
     api_key: str | None
     allow_writes: bool
@@ -52,7 +52,7 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    """Lit l'environnement. Ne charge aucun fichier ``.env``."""
+    """Read the environment. Loads no ``.env`` file."""
     raw_key = os.environ.get("CURSOR_API_KEY")
     api_key, config_error = _interpret_key(raw_key)
     fixture = os.environ.get("CURSOR_MCP_FIXTURE") == "1"
@@ -83,7 +83,7 @@ def _interpret_key(raw: str | None) -> tuple[str | None, str | None]:
         return None, None
     value = raw.strip()
     if value == "":
-        return None, "CURSOR_API_KEY est vide."
+        return None, "CURSOR_API_KEY is empty."
     if _UNEXPANDED.match(value) or "${" in value or "{env:" in value:
-        return None, "CURSOR_API_KEY n'est pas interpolée. Le serveur ne charge pas de fichier .env."
+        return None, "CURSOR_API_KEY is not interpolated. The server does not load a .env file."
     return value, None

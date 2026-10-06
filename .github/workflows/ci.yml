@@ -20,13 +20,13 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.8.17"
-      - name: Installation verrouillée
+      - name: Locked install
         run: uv sync --locked --python ${{ matrix.python }}
-      - name: Contrôle statique
+      - name: Static check
         run: uvx ruff@0.16.10 check src tests scripts
-      - name: Tests (aucun appel Cursor réel)
+      - name: Tests (no real Cursor call)
         run: uv run --locked pytest
-      - name: Installation du paquet construit
+      - name: Install the built package
         run: |
           uv build --wheel
           python_bin="$(uv python find ${{ matrix.python }})"

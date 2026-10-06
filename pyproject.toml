@@ -1,7 +1,7 @@
 [project]
 name = "cursor-cloud-mcp"
 version = "0.2.0"
-description = "Serveur MCP stdio minimal pour l'API Cursor Cloud Agents v1"
+description = "Minimal stdio MCP server for the Cursor Cloud Agents API v1"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

@@ -1,4 +1,4 @@
-"""Catalogue, sessions de calcul, flux, artefacts et garde-fous de suppression."""
+"""Catalog, compute sessions, streams, artifacts and deletion guards."""
 
 import asyncio
 import io
@@ -61,11 +61,11 @@ def _created(agent_id: str = _AGENT) -> httpx.Response:
 def test_sse_parser_keeps_a_split_event() -> None:
     parser = SseParser()
     assert parser.feed('id: 1\nevent: assistant\ndata: {"te') == []
-    found = parser.feed('xt":"bonjour"}\n\n')
+    found = parser.feed('xt":"hello"}\n\n')
     assert len(found) == 1
     assert found[0].event_id == "1"
     assert found[0].event == "assistant"
-    assert json.loads(found[0].data)["text"] == "bonjour"
+    assert json.loads(found[0].data)["text"] == "hello"
 
 
 def test_fixture_and_real_key_are_refused(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -116,7 +116,7 @@ def test_formatter_redacts_child_sdk_loggers_and_tracebacks() -> None:
         logging.getLogger("cursor_cloud_mcp.client").warning("child %s", secret)
         logging.getLogger("mcp").warning("sdk %s", secret)
         try:
-            raise RuntimeError(f"échec avec {secret}")
+            raise RuntimeError(f"failure with {secret}")
         except RuntimeError:
             logging.getLogger("mcp").exception("crash")
         text = stream.getvalue()
@@ -141,12 +141,12 @@ def test_short_secret_is_masked_as_a_whole_word_only(isolated_secrets: None) -> 
 
 def test_error_payload_stays_valid_json_with_short_secrets(isolated_secrets: None) -> None:
     redaction.register("1", "en")
-    body = failure(ErrorCode.AUTHENTICATION, "refusé : 1", http_status=401, agent_id="bc-x").as_dict()
+    body = failure(ErrorCode.AUTHENTICATION, "refused: 1", http_status=401, agent_id="bc-x").as_dict()
     redacted = redaction.redact_value(body)
     assert json.loads(json.dumps(redacted)) == redacted
     assert set(redacted) == set(body)  # type: ignore[arg-type]
     assert redacted["http_status"] == 401  # type: ignore[index]
-    assert redacted["message"] == "refusé : [redacted]"  # type: ignore[index]
+    assert redacted["message"] == "refused: [redacted]"  # type: ignore[index]
 
 
 def test_permanent_secrets_survive_eviction_of_per_call_values(
@@ -178,7 +178,7 @@ async def test_reasoning_level_is_resolved_before_post() -> None:
             await client.call_tool(
                 "cursor_create_agent",
                 {
-                    "prompt": "Calcule 2+2 et écris artifacts/result.txt",
+                    "prompt": "Compute 2+2 and write artifacts/result.txt",
                     "model_id": "grok-4.6",
                     "reasoning_level": "high",
                     "model_params": [{"id": "thinking", "value": "true"}],
@@ -203,7 +203,7 @@ _CATALOG = {
                 {"id": "reasoning", "values": [{"value": "low"}, {"value": "high"}]},
                 {"id": "fast", "values": [{"value": "false"}, {"value": "true"}]},
             ],
-            # Trois variantes sur quatre combinaisons : low + fast n'existe pas.
+            # Three variants out of four combinations: low + fast does not exist.
             "variants": [
                 {
                     "params": [{"id": "reasoning", "value": "low"}, {"id": "fast", "value": "false"}],
@@ -271,7 +271,7 @@ async def test_alias_and_invalid_combination_are_resolved_before_post() -> None:
         await client.__aexit__(None, None, None)
     assert created.is_error is False
     assert _error_payload(refused)["code"] == "VALIDATION"
-    assert "Combinaison" in str(_error_payload(refused)["message"])
+    assert "Combination" in str(_error_payload(refused)["message"])
     assert _error_payload(ambiguous)["code"] == "VALIDATION"
     assert [call[0] for call in router.calls].count("POST") == 1
 
@@ -297,7 +297,7 @@ async def test_unknown_reasoning_value_does_not_post() -> None:
 
 
 async def test_named_cloud_with_repos_and_unpooled_multi_repo_are_local_errors() -> None:
-    router = Router(lambda _request: (_ for _ in ()).throw(AssertionError("réseau")))
+    router = Router(lambda _request: (_ for _ in ()).throw(AssertionError("network")))
     client, _router = await _session(router)
     try:
         named = await client.call_tool(
@@ -335,7 +335,7 @@ async def test_forward_env_reads_allowlist_and_omits_agent_id(monkeypatch: pytes
         body = json.loads(request.content.decode())
         assert body["envVars"] == {"WORK_TOKEN": "super-secret-token", "PUBLIC": "visible"}
         assert "agentId" not in body
-        assert body["name"] == "calcul"
+        assert body["name"] == "compute"
         assert body["env"] == {"type": "pool", "name": "gpu"}
         return _created("bc-33333333-3333-3333-3333-333333333333")
 
@@ -349,7 +349,7 @@ async def test_forward_env_reads_allowlist_and_omits_agent_id(monkeypatch: pytes
                 "cursor_create_agent",
                 {
                     "prompt": "x",
-                    "name": "calcul",
+                    "name": "compute",
                     "env_type": "pool",
                     "env_name": "gpu",
                     "env_vars": {"PUBLIC": "visible"},
@@ -363,7 +363,7 @@ async def test_forward_env_reads_allowlist_and_omits_agent_id(monkeypatch: pytes
         )
         blocked = await client.call_tool(
             "cursor_create_agent",
-            {"prompt": "x", "name": "calcul", "forward_env": ["OTHER_SECRET"]},
+            {"prompt": "x", "name": "compute", "forward_env": ["OTHER_SECRET"]},
         )
     finally:
         await client.__aexit__(None, None, None)
@@ -377,12 +377,12 @@ async def test_stream_resume_and_expired_code() -> None:
         'id: 1\nevent: status\ndata: {"status":"RUNNING"}\n\n'
         'id: 2\nevent: heartbeat\ndata: {}\n\n'
         'id: 3\nevent: tool_call\ndata: {"name":"shell","status":"completed","args":{"cmd":"x"},"result":{"ok":true}}\n\n'
-        'id: 4\nevent: result\ndata: {"status":"FINISHED","text":"fait"}\n\n'
+        'id: 4\nevent: result\ndata: {"status":"FINISHED","text":"done"}\n\n'
     )
 
     def responder(request: httpx.Request) -> httpx.Response:
         if request.headers.get("last-event-id") == "expired":
-            return httpx.Response(410, json={"error": {"code": "stream_expired", "message": "parti"}})
+            return httpx.Response(410, json={"error": {"code": "stream_expired", "message": "gone"}})
         assert request.headers.get("last-event-id") == "1"
         return httpx.Response(
             200,
@@ -453,7 +453,7 @@ async def test_artifact_download_has_no_cursor_authorization_and_rejects_other_h
     def download(request: httpx.Request) -> httpx.Response:
         assert "authorization" not in {key.lower() for key in request.headers}
         assert request.url.host == "bucket.s3.us-east-1.amazonaws.com"
-        return httpx.Response(200, content="résultat".encode())
+        return httpx.Response(200, content=b"result")
 
     server = build_server(
         _settings(),
@@ -477,7 +477,7 @@ async def test_artifact_download_has_no_cursor_authorization_and_rejects_other_h
                 {"agent_id": _AGENT, "path": "artifacts/result.txt", "url_only": True},
             )
         )
-    assert text["text"] == "résultat"
+    assert text["text"] == "result"
     assert "url" not in text
     assert _error_payload(refused)["code"] == "VALIDATION"
     assert located == {
@@ -584,7 +584,7 @@ async def test_cancel_rejects_a_different_returned_id() -> None:
     def responder(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             return httpx.Response(200, json={"id": "run-other"})
-        raise AssertionError("relecture")
+        raise AssertionError("re-read")
 
     client, _router = await _session(Router(responder))
     try:

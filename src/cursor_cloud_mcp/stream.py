@@ -1,4 +1,4 @@
-"""Lecture bornée du flux SSE d'un run et attente par relectures."""
+"""Bounded reading of a run's SSE stream and waiting by re-reads."""
 
 import asyncio
 import codecs
@@ -31,7 +31,7 @@ class SseEvent:
 
 
 class SseParser:
-    """Parseur incrémental. Un événement coupé entre deux morceaux reste en attente."""
+    """Incremental parser. An event split between two chunks stays pending."""
 
     def __init__(self) -> None:
         self._buffer = ""
@@ -89,24 +89,24 @@ async def read_run_events(
     if after_event_id is not None:
         headers["Last-Event-ID"] = after_event_id
     path = client.run_stream_path(agent_id, run_id)
-    # Une seule échéance pour l'ouverture et la collecte.
+    # A single deadline for opening and collecting.
     deadline_at = budget.deadline_at(max_wait_seconds)
     loop = asyncio.get_running_loop()
     try:
-        # Garde-fou global : ouverture, corps d'erreur et fermeture. La collecte a son propre
-        # timer à deadline_at, qui expire avant celui-ci et rend les événements partiels.
+        # Global guard: opening, error body and closing. Collection has its own
+        # timer at deadline_at, which expires before this one and returns the partial events.
         async with asyncio.timeout_at(deadline_at + _OUTER_GRACE_SECONDS):
             async with client.stream_get(
                 path, headers=headers, deadline=max(0.1, deadline_at - loop.time())
             ) as response:
                 if response.status_code in {301, 302, 303, 307, 308}:
-                    raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "Redirection du flux refusée.")
+                    raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "Stream redirect refused.")
                 if response.status_code != 200:
                     raw = await _read_error_body(response)
                     raise client.error_from_response(response, raw)
                 content_type = response.headers.get("content-type")
                 if content_type and "text/event-stream" not in content_type.lower():
-                    raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "Le flux n'est pas du text/event-stream.")
+                    raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "The stream is not text/event-stream.")
                 return await _collect(
                     response,
                     agent_id=agent_id,
@@ -118,7 +118,7 @@ async def read_run_events(
                     retention_seconds=_retention(response),
                 )
     except TimeoutError:
-        raise failure(ErrorCode.TIMEOUT, "Délai dépassé avant la fin de la réponse du flux.") from None
+        raise failure(ErrorCode.TIMEOUT, "Timed out before the end of the stream response.") from None
 
 
 async def wait_run(
@@ -131,7 +131,7 @@ async def wait_run(
     limit: int,
     progress: Callable[[int, str], Awaitable[None]] | None = None,
 ) -> RunView:
-    """Relit le run toutes les cinq secondes jusqu'à un état terminal ou l'échéance."""
+    """Re-read the run every five seconds until a terminal state or the deadline."""
     require_segment(agent_id, label="agent_id")
     require_segment(run_id, label="run_id")
     loop = asyncio.get_running_loop()
@@ -142,20 +142,20 @@ async def wait_run(
         remaining = deadline - loop.time()
         if remaining <= 0:
             if last is None:
-                raise failure(ErrorCode.TIMEOUT, "Délai d'attente dépassé avant la première lecture.")
+                raise failure(ErrorCode.TIMEOUT, "Wait timed out before the first read.")
             return last.model_copy(update={"timed_out": True})
         try:
             remote = await client.get_run(agent_id, run_id, deadline=min(client.deadline_seconds, remaining))
         except CursorFailure as exc:
             if last is None or exc.body.code not in _TRANSIENT:
                 raise
-            # Observation antérieure, pas une garantie sur l'état courant.
+            # Earlier observation, not a guarantee about the current state.
             return last.model_copy(update={"timed_out": True, "reread_error": exc.body.message})
         view = run_view(remote, offset=offset, limit=limit)
         last = view.model_copy(update={"timed_out": False})
         reads += 1
         if progress is not None:
-            await progress(reads, f"Statut relu : {view.status}")
+            await progress(reads, f"Status re-read: {view.status}")
         if view.terminal is True:
             return last
         remaining = deadline - loop.time()
@@ -176,10 +176,10 @@ async def _collect(
     retention_seconds: int | None,
 ) -> RunEventsView:
     parser = SseParser()
-    # Un caractère UTF-8 peut être coupé entre deux blocs réseau : décodage incrémental.
+    # A UTF-8 character may be split between two network chunks: incremental decoding.
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     events: list[RunEventView] = []
-    # Sans nouvel événement, le curseur fourni reste le bon point de reprise.
+    # Without a new event, the provided cursor remains the right resume point.
     last_event_id: str | None = after_event_id
     run_status: str | None = None
     finished = False
@@ -210,7 +210,7 @@ async def _collect(
                         run_status = view.status
                     _append(events, view)
                     if view.kind == "error":
-                        # Erreur du flux : elle ne prouve pas, seule, la fin du run.
+                        # Stream error: on its own it does not prove the run has ended.
                         stream_error = True
                         break
                     if view.kind in {"result", "done"}:
@@ -224,7 +224,7 @@ async def _collect(
     except (TimeoutError, httpx.TimeoutException):
         truncated = not finished
     except httpx.RequestError:
-        # Coupure : on rend ce qui a été reçu et le curseur de reprise.
+        # Disconnection: return what was received and the resume cursor.
         interrupted = True
         truncated = not finished
     return RunEventsView(
@@ -245,7 +245,7 @@ def _simplify(event: SseEvent) -> RunEventView:
     payload = _payload(event.data)
     status = _string_field(payload, "status")
     if event.event == "tool_call":
-        # Le SDK Cursor lit aussi la forme imbriquée sous data.
+        # The Cursor SDK also reads the nested form under data.
         if isinstance(payload, dict) and "name" not in payload and isinstance(payload.get("data"), dict):
             payload = payload["data"]
             status = _string_field(payload, "status")
@@ -263,7 +263,7 @@ def _simplify(event: SseEvent) -> RunEventView:
         )
     kind = event.event if event.event in {"status", "thinking", "result", "error", "done"} else "assistant"
     if kind in {"status", "result", "done"}:
-        # Leur JSON brut répète status et git : seul un vrai texte est gardé.
+        # Their raw JSON repeats status and git: only real text is kept.
         text, clipped = _clip(_message_of(payload))
         return RunEventView(event_id=event.event_id, kind=kind, text=text, status=status, clipped=clipped or None)
     text, clipped = _text_of(payload, event.data)
@@ -271,10 +271,10 @@ def _simplify(event: SseEvent) -> RunEventView:
 
 
 def _append(events: list[RunEventView], view: RunEventView) -> None:
-    """Le flux envoie le texte mot par mot : les fragments consécutifs forment un seul événement."""
+    """The stream sends text word by word: consecutive fragments form a single event."""
     previous = events[-1] if events else None
     if previous is not None and _completes(previous, view):
-        # Un appel d'outil arrive deux fois (running, puis terminé) : seul le dernier état est gardé.
+        # A tool call arrives twice (running, then finished): only the last state is kept.
         events[-1] = view
         return
     if (
@@ -344,7 +344,7 @@ def _string_field(payload: object, key: str) -> str | None:
 
 
 def _clip(value: object) -> tuple[str | None, bool]:
-    """Texte borné et indicateur de coupure."""
+    """Bounded text and truncation flag."""
     if value is None:
         return None, False
     if isinstance(value, str):

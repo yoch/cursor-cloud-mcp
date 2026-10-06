@@ -1,10 +1,10 @@
-"""Smoke test réel, PAYANT, des seize outils, sur le vrai serveur stdio.
+"""Real, PAID smoke test of the sixteen tools, on the real stdio server.
 
-Opt-in : `SMOKE_PAID=1`. Deux agents `composer-2.5`, quelques runs très courts,
-et suppression de ces deux agents à la fin, sauf avec `SMOKE_KEEP=1` qui les
-laisse visibles dans l'interface web et affiche leur lien. Aucune création n'est rejouée.
-La clé vient de l'environnement, ou de `.env` lu par ce script seulement. Elle
-n'est jamais affichée. Aucun prompt, aucune valeur secrète n'est imprimé.
+Opt-in: `SMOKE_PAID=1`. Two `composer-2.5` agents, a few very short runs,
+and both agents are deleted at the end, except with `SMOKE_KEEP=1`, which
+leaves them visible in the web interface and prints their link. No creation is replayed.
+The key comes from the environment, or from `.env` read by this script only. It
+is never printed. No prompt and no secret value is printed.
 """
 
 import asyncio
@@ -24,8 +24,8 @@ BRANCH = os.environ.get("SMOKE_BRANCH", "main")
 FWD_VALUE = "smoke-forwarded-value-12345678"
 PUB_VALUE = "smoke-public-value-87654321"
 SHA = "a" * 40
-# Variables réseau transmises au serveur si elles existent : proxy et autorité de certification
-# d'un environnement géré. Sans elles, le serveur ne joint pas l'API derrière un proxy.
+# Network variables passed to the server if they exist: proxy and certificate authority
+# of a managed environment. Without them, the server cannot reach the API behind a proxy.
 NETWORK_ENV = (
     "HTTPS_PROXY",
     "https_proxy",
@@ -105,12 +105,12 @@ async def wait_terminal(
 async def main() -> int:
     root = Path(__file__).resolve().parents[1]
     if os.environ.get("SMOKE_PAID") != "1":
-        print("Smoke payant non lancé : définir SMOKE_PAID=1.")
+        print("Paid smoke not run: set SMOKE_PAID=1.")
         return 2
     load_key(root)
     key = os.environ.get("CURSOR_API_KEY")
     if not key:
-        print("CURSOR_API_KEY absente")
+        print("CURSOR_API_KEY missing")
         return 2
     params = StdioServerParameters(
         command=sys.executable,
@@ -140,21 +140,21 @@ async def main() -> int:
     stderr = stderr_path.read_text(encoding="utf-8")
     leaked = [
         label
-        for label, value in (("clé", key), ("secret", FWD_VALUE))
+        for label, value in (("key", key), ("secret", FWD_VALUE))
         if value in stderr
     ]
-    report.check("stderr sans secret", not leaked, f"fuites={leaked}")
+    report.check("stderr without secret", not leaked, f"leaks={leaked}")
     stderr_path.unlink()
-    print(f"\nRésumé : {len(report.rows) - len(report.failed)}/{len(report.rows)} PASS")
+    print(f"\nSummary: {len(report.rows) - len(report.failed)}/{len(report.rows)} PASS")
     if report.failed:
-        print("ÉCHECS :", ", ".join(report.failed))
+        print("FAILURES:", ", ".join(report.failed))
         return 1
     return 0
 
 
 async def run_all(client: Client, report: Report, created: list[str]) -> None:
     listed = await client.list_tools()
-    report.check("tools/list", len(listed.tools) == 16, f"outils={len(listed.tools)}")
+    report.check("tools/list", len(listed.tools) == 16, f"tools={len(listed.tools)}")
 
     ok, data = await call(client, "cursor_get_account")
     report.check("cursor_get_account", ok, f"key_name_present={'api_key_name' in data}")
@@ -165,11 +165,11 @@ async def run_all(client: Client, report: Report, created: list[str]) -> None:
     report.check(
         "cursor_list_models",
         composer is not None,
-        f"modèles={len(models)} {MODEL}={'présent' if composer else 'absent'}",
+        f"models={len(models)} {MODEL}={'present' if composer else 'absent'}",
     )
     model_params: dict[str, list[str]] = (composer or {}).get("params") or {}  # type: ignore[assignment]
     fast_values = model_params.get("fast", [])
-    print(f"      {MODEL} paramètres={sorted(model_params)} fast={fast_values}")
+    print(f"      {MODEL} parameters={sorted(model_params)} fast={fast_values}")
 
     ok, data = await call(client, "cursor_list_repositories")
     repos = [str(item) for item in data.get("items", [])] if ok else []  # type: ignore[union-attr]
@@ -183,17 +183,17 @@ async def run_all(client: Client, report: Report, created: list[str]) -> None:
     report.check(
         "cursor_list_repositories",
         ok and present,
-        f"dépôts={len(repos)} cible_présente={present}",
+        f"repositories={len(repos)} target_present={present}",
     )
 
-    # Garde-fous locaux, gratuits.
+    # Local guards, free.
     ok, data = await call(
         client,
         "cursor_create_agent",
         {"prompt": "x", "repository": REPO_URL, "starting_ref": SHA, "model_id": MODEL},
     )
     report.check(
-        "SHA refusé localement", not ok and code_of(data) == "VALIDATION", code_of(data)
+        "SHA refused locally", not ok and code_of(data) == "VALIDATION", code_of(data)
     )
     ok, data = await call(
         client,
@@ -201,7 +201,7 @@ async def run_all(client: Client, report: Report, created: list[str]) -> None:
         {"prompt": "x", "model_id": MODEL, "reasoning_level": "high"},
     )
     report.check(
-        "reasoning_level inconnu refusé",
+        "unknown reasoning_level refused",
         not ok and code_of(data) == "VALIDATION",
         code_of(data),
     )
@@ -221,7 +221,7 @@ async def smoke_repo_agent(
     agent_id = f"bc-{uuid.uuid4()}"
     repo_name = f"smoke-repo-{uuid.uuid4().hex[:8]}"
     args: dict[str, object] = {
-        "prompt": "Réponds uniquement par le mot OK. N'exécute aucune commande et ne modifie aucun fichier.",
+        "prompt": "Reply only with the word OK. Run no command and modify no file.",
         "repository": REPO_URL,
         "starting_ref": BRANCH,
         "name": repo_name,
@@ -234,9 +234,9 @@ async def smoke_repo_agent(
     if ok:
         created.append(agent_id)
     if not report.check(
-        "cursor_create_agent (dépôt + branche)",
+        "cursor_create_agent (repository + branch)",
         ok,
-        f"statut={data.get('run_status', '-')}"
+        f"status={data.get('run_status', '-')}"
         if ok
         else f"code={code_of(data)} http={data.get('http_status')}",
     ):
@@ -245,7 +245,7 @@ async def smoke_repo_agent(
     print(f"      url={data.get('url')}")
 
     ok, data = await call(client, "cursor_get_agent", {"agent_id": agent_id})
-    # L'API ne renvoie pas startingRef en lecture : la branche est prouvée par le 201 à la création.
+    # The API does not return startingRef on read: the branch is proven by the 201 at creation.
     repos = data.get("repos") or []
     same_repo = len(repos) == 1 and str(repos[0].get("url", "")).endswith(
         REPO_URL.removeprefix("https://")
@@ -253,11 +253,11 @@ async def smoke_repo_agent(
     report.check(
         "cursor_get_agent",
         ok and same_repo,
-        f"dépôt_rattaché={same_repo} url_présente={'url' in data}",
+        f"repository_attached={same_repo} url_present={'url' in data}",
     )
-    # La continuation est refusée si ce champ manque : le contrat réel doit le fournir.
+    # The follow-up run is refused if this field is missing: the real contract must provide it.
     report.check(
-        "workOnCurrentBranch renvoyé",
+        "workOnCurrentBranch returned",
         ok and data.get("work_on_current_branch") is False,
         f"work_on_current_branch={data.get('work_on_current_branch')}",
     )
@@ -276,14 +276,14 @@ async def smoke_repo_agent(
     report.check(
         "cursor_read_run_events",
         ok,
-        f"événements={len(data.get('events', []))} types={kinds}",
+        f"events={len(data.get('events', []))} types={kinds}",
     )  # type: ignore[arg-type]
 
     data = await wait_terminal(client, agent_id, run_id)
     report.check(
         "cursor_get_run (wait_seconds)",
         data.get("status") == "FINISHED",
-        f"statut={data.get('status')} timed_out={data.get('timed_out')}",
+        f"status={data.get('status')} timed_out={data.get('timed_out')}",
     )
 
     ok, data = await call(
@@ -292,7 +292,7 @@ async def smoke_repo_agent(
     report.check(
         "cursor_get_run",
         ok and data.get("terminal") is True and bool(data.get("result_present")),
-        f"statut={data.get('status')} résultat_présent={data.get('result_present')}",
+        f"status={data.get('status')} result_present={data.get('result_present')}",
     )
     ok, data = await call(client, "cursor_list_runs", {"agent_id": agent_id})
     report.check(
@@ -307,13 +307,13 @@ async def smoke_repo_agent(
         report.check(
             "cursor_get_usage",
             total > 0,
-            f"jetons={total} coût_facturé_cents={cost.get('charged_cents', 'absent')}",  # type: ignore[union-attr]
+            f"tokens={total} charged_cost_cents={cost.get('charged_cents', 'absent')}",  # type: ignore[union-attr]
         )
     else:
         report.add(
             "cursor_get_usage",
             "WARN",
-            f"code={code_of(data)} (fonction à accès anticipé)",
+            f"code={code_of(data)} (early-access feature)",
         )
 
     ok, data = await call(client, "cursor_list_agents", {"name": repo_name})
@@ -321,7 +321,7 @@ async def smoke_repo_agent(
     report.check(
         "cursor_list_agents (name)",
         agent_id in names,
-        f"trouvé={agent_id in names} parcourus={data.get('scanned')}",
+        f"found={agent_id in names} scanned={data.get('scanned')}",
     )
 
     ok, data = await call(
@@ -329,21 +329,21 @@ async def smoke_repo_agent(
         "cursor_create_run",
         {
             "agent_id": agent_id,
-            "prompt": "Réponds uniquement par le mot OK2. Ne modifie aucun fichier.",
+            "prompt": "Reply only with the word OK2. Modify no file.",
         },
     )
     run2 = str(data.get("run_id", ""))
     report.check(
-        "cursor_create_run (continuation)",
+        "cursor_create_run (follow-up run)",
         ok and run2 not in {"", run_id},
-        f"nouveau_run={run2 != run_id}",
+        f"new_run={run2 != run_id}",
     )
     if ok:
         data = await wait_terminal(client, agent_id, run2)
         report.check(
-            "continuation terminée",
+            "follow-up run finished",
             data.get("status") == "FINISHED",
-            f"statut={data.get('status')}",
+            f"status={data.get('status')}",
         )
     return agent_id
 
@@ -354,9 +354,9 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
         "cursor_create_agent",
         {
             "prompt": (
-                'Exécute `test -n "$SMOKE_FWD" && echo FWD_SET || echo FWD_MISSING; '
+                'Run `test -n "$SMOKE_FWD" && echo FWD_SET || echo FWD_MISSING; '
                 'test -n "$SMOKE_PUB" && echo PUB_SET || echo PUB_MISSING` '
-                "puis réponds avec les deux mots obtenus. N'affiche jamais la valeur des variables."
+                "then reply with the two words obtained. Never display the value of the variables."
             ),
             "name": f"smoke-env-{uuid.uuid4().hex[:8]}",
             "model_id": MODEL,
@@ -365,9 +365,9 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
         },
     )
     if not report.check(
-        "cursor_create_agent (env_vars + forward_env, sans agentId)",
+        "cursor_create_agent (env_vars + forward_env, without agentId)",
         ok,
-        f"statut={data.get('run_status', '-')}"
+        f"status={data.get('run_status', '-')}"
         if ok
         else f"code={code_of(data)} http={data.get('http_status')}",
     ):
@@ -382,18 +382,18 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
     )
     text = str(data.get("result") or "")
     report.check(
-        "variables transmises à l'agent",
+        "variables passed to the agent",
         ok and "FWD_SET" in text and "PUB_SET" in text and FWD_VALUE not in text,
-        f"FWD_SET={'FWD_SET' in text} PUB_SET={'PUB_SET' in text} valeur_recopiée={FWD_VALUE in text}",
+        f"FWD_SET={'FWD_SET' in text} PUB_SET={'PUB_SET' in text} value_echoed={FWD_VALUE in text}",
     )
 
     ok, data = await call(
         client,
         "cursor_create_agent",
-        {"prompt": "x", "forward_env": ["PAS_AUTORISEE"], "name": "n"},
+        {"prompt": "x", "forward_env": ["NOT_ALLOWED"], "name": "n"},
     )
     report.check(
-        "forward_env hors liste refusé",
+        "forward_env outside the allowlist refused",
         not ok and code_of(data) == "VALIDATION",
         code_of(data),
     )
@@ -403,18 +403,18 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
         "cursor_create_run",
         {
             "agent_id": agent_id,
-            "prompt": "Écris le mot ARTEFACT dans /agent/artifacts/smoke.txt puis réponds par ARTEFACT.",
+            "prompt": "Write the word ARTIFACT in /agent/artifacts/smoke.txt then reply with ARTIFACT.",
         },
     )
     run2 = str(data.get("run_id", ""))
     report.check(
-        "continuation (artefact)", ok, f"statut={data.get('status', code_of(data))}"
+        "follow-up run (artifact)", ok, f"status={data.get('status', code_of(data))}"
     )
     if ok:
         await wait_terminal(client, agent_id, run2)
     ok, data = await call(client, "cursor_list_artifacts", {"agent_id": agent_id})
     items = [item["path"] for item in data.get("items", [])] if ok else []  # type: ignore[union-attr]
-    report.check("cursor_list_artifacts", ok, f"artefacts={len(items)}")
+    report.check("cursor_list_artifacts", ok, f"artifacts={len(items)}")
     if items:
         path = items[0]
         ok, data = await call(
@@ -422,18 +422,18 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
             "cursor_read_artifact",
             {"agent_id": agent_id, "path": path, "url_only": True},
         )
-        report.check("cursor_read_artifact (url_only)", ok, f"url_présente={'url' in data}")
+        report.check("cursor_read_artifact (url_only)", ok, f"url_present={'url' in data}")
         ok, data = await call(
             client, "cursor_read_artifact", {"agent_id": agent_id, "path": path}
         )
         report.check(
-            "cursor_read_artifact", ok and "ARTEFACT" in str(data.get("text", "")), ""
+            "cursor_read_artifact", ok and "ARTIFACT" in str(data.get("text", "")), ""
         )
     else:
         report.add(
             "cursor_read_artifact (url_only)",
             "WARN",
-            "aucun artefact listé (limite connue de l'API)",
+            "no artifact listed (known API limitation)",
         )
         ok, data = await call(
             client,
@@ -441,7 +441,7 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
             {"agent_id": agent_id, "path": "artifacts/smoke.txt"},
         )
         report.check(
-            "cursor_read_artifact (absent → erreur propre)",
+            "cursor_read_artifact (absent → clean error)",
             not ok
             and code_of(data) in {"NOT_FOUND", "ARTIFACT_NOT_FOUND", "UPSTREAM_ERROR"},
             f"code={code_of(data)}",
@@ -452,12 +452,12 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
         "cursor_create_run",
         {
             "agent_id": agent_id,
-            "prompt": "Exécute `sleep 120` dans le shell et attends la fin avant de répondre.",
+            "prompt": "Run `sleep 120` in the shell and wait for it to finish before replying.",
         },
     )
     run3 = str(data.get("run_id", ""))
     if not report.check(
-        "continuation (annulable)", ok, f"statut={data.get('status', code_of(data))}"
+        "follow-up run (cancellable)", ok, f"status={data.get('status', code_of(data))}"
     ):
         return
     await asyncio.sleep(8)
@@ -469,8 +469,8 @@ async def smoke_env_agent(client: Client, report: Report, created: list[str]) ->
         ok
         and bool(data.get("cancel_request_accepted"))
         and bool(data.get("outcome_confirmed")) == (data.get("observed_status") == "CANCELLED"),
-        f"accepté={data.get('cancel_request_accepted')} issue={data.get('outcome')} "
-        f"statut={data.get('observed_status')}",
+        f"accepted={data.get('cancel_request_accepted')} outcome={data.get('outcome')} "
+        f"status={data.get('observed_status')}",
     )
 
 
@@ -479,7 +479,7 @@ async def smoke_lifecycle(client: Client, report: Report, agent_id: str) -> None
     report.check(
         "cursor_archive_agent",
         ok and bool(data.get("outcome_confirmed")),
-        f"statut={data.get('observed_status')}",
+        f"status={data.get('observed_status')}",
     )
     ok, data = await call(
         client, "cursor_list_agents", {"include_archived": True, "limit": 20}
@@ -488,13 +488,13 @@ async def smoke_lifecycle(client: Client, report: Report, agent_id: str) -> None
     report.check(
         "cursor_list_agents (include_archived)",
         agent_id in names,
-        f"trouvé={agent_id in names}",
+        f"found={agent_id in names}",
     )
     ok, data = await call(
         client, "cursor_create_run", {"agent_id": agent_id, "prompt": "x"}
     )
     report.check(
-        "continuation refusée sur agent archivé",
+        "follow-up run refused on archived agent",
         not ok and code_of(data) == "CONTINUATION_REFUSED",
         code_of(data),
     )
@@ -504,7 +504,7 @@ async def smoke_lifecycle(client: Client, report: Report, agent_id: str) -> None
     report.check(
         "cursor_archive_agent (unarchive)",
         ok and bool(data.get("outcome_confirmed")),
-        f"statut={data.get('observed_status')}",
+        f"status={data.get('observed_status')}",
     )
     ok, data = await call(
         client,
@@ -514,13 +514,13 @@ async def smoke_lifecycle(client: Client, report: Report, agent_id: str) -> None
             "confirm_agent_id": "bc-00000000-0000-0000-0000-000000000000",
         },
     )
-    report.check("suppression sans bonne confirmation refusée", not ok, code_of(data))
+    report.check("deletion without correct confirmation refused", not ok, code_of(data))
 
 
 async def cleanup(client: Client, report: Report, created: list[str]) -> None:
     if os.environ.get("SMOKE_KEEP") == "1":
         for agent_id in created:
-            print(f"      conservé : https://cursor.com/agents/{agent_id}")
+            print(f"      kept: https://cursor.com/agents/{agent_id}")
         return
     for agent_id in created:
         ok, data = await call(

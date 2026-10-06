@@ -1,20 +1,20 @@
-"""Découpe locale du texte de résultat. Ce n'est pas un curseur REST Cursor."""
+"""Local slicing of the result text. This is not a Cursor REST cursor."""
 
 from cursor_cloud_mcp.config import RESULT_MAX_LIMIT
 from cursor_cloud_mcp.errors import ErrorCode, failure
 
 
 def slice_text(text: str, offset: int, limit: int) -> tuple[str, bool, int | None]:
-    """Retourne le morceau, l'indicateur de troncature et le prochain offset."""
+    """Return the chunk, the truncation flag and the next offset."""
     if offset < 0 or limit < 1 or limit > RESULT_MAX_LIMIT:
         raise failure(
             ErrorCode.VALIDATION,
-            f"result_offset doit être >= 0 et result_limit entre 1 et {RESULT_MAX_LIMIT}.",
+            f"result_offset must be >= 0 and result_limit between 1 and {RESULT_MAX_LIMIT}.",
         )
     if offset > len(text):
         raise failure(
             ErrorCode.VALIDATION,
-            "result_offset dépasse la longueur du résultat.",
+            "result_offset exceeds the length of the result.",
         )
     end = min(len(text), offset + limit)
     truncated = end < len(text)

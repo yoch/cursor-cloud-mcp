@@ -1,4 +1,4 @@
-"""Contournements du SDK MCP, isolés ici et limités aux outils de ce serveur."""
+"""Workarounds for the MCP SDK, isolated here and limited to this server's tools."""
 
 import functools
 import json
@@ -11,15 +11,15 @@ from pydantic import BaseModel, ConfigDict
 
 
 def strict_tool(fn: Callable[..., Any], *, name: str, annotations: ToolAnnotations) -> Tool:
-    """Construit un outil qui refuse les arguments inconnus et rend une sortie compacte.
+    """Build a tool that rejects unknown arguments and returns a compact output.
 
-    MCP 2.3.0 accepte encore les champs inconnus (``ArgModelBase`` sans ``extra="forbid"``).
-    Plutôt que de modifier cette classe pour tout le processus, on dérive un modèle propre
-    à l'outil et on republie son schéma : schéma annoncé et validation restent cohérents.
+    MCP 2.3.0 still accepts unknown fields (``ArgModelBase`` without ``extra="forbid"``).
+    Rather than modifying that class for the whole process, we derive a model specific
+    to the tool and republish its schema: the advertised schema and the validation stay consistent.
 
-    Le SDK écrit aussi le bloc texte en JSON indenté, champs nuls compris : souvent plus du
-    double du contenu utile, relu par le modèle à chaque appel. Le texte et le contenu
-    structuré deviennent ici le même JSON compact, sans champ nul.
+    The SDK also writes the text block as indented JSON, null fields included: often more than
+    double the useful content, re-read by the model on every call. The text and the structured
+    content become the same compact JSON here, without null fields.
     """
     tool = Tool.from_function(fn, name=name, annotations=annotations)
     base = tool.fn_metadata.arg_model

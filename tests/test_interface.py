@@ -1,4 +1,4 @@
-"""Ergonomie de l'interface : sorties compactes, recherche, coût, erreurs de run, événements."""
+"""Interface ergonomics: compact outputs, search, cost, run errors, events."""
 
 import json
 
@@ -37,7 +37,7 @@ async def test_text_is_compact_json_without_nulls() -> None:
 
 async def test_name_search_scans_pages_and_reports_what_it_read() -> None:
     pages = {
-        None: ([_agent(f"bc-00000000-0000-0000-0000-00000000000{i}", name=f"autre {i}") for i in range(3)], "p2"),
+        None: ([_agent(f"bc-00000000-0000-0000-0000-00000000000{i}", name=f"other {i}") for i in range(3)], "p2"),
         "p2": ([_agent(_AGENT, name="Smoke Repo")], "p3"),
         "p3": ([_agent("bc-99999999-9999-9999-9999-999999999999", name="smoke-env")], None),
     }
@@ -59,7 +59,7 @@ async def test_name_search_scans_pages_and_reports_what_it_read() -> None:
     assert [item["name"] for item in found["items"]] == ["Smoke Repo", "smoke-env"]
     assert found["scanned"] == 5
     assert found["has_more"] is False and "next_cursor" not in found
-    # Assez de résultats : arrêt à la page qui les contient, reprise possible ensuite.
+    # Enough results: stop at the page that contains them, resuming is possible afterwards.
     assert [item["name"] for item in first["items"]] == ["Smoke Repo"]
     assert first["next_cursor"] == "p3" and first["has_more"] is True
     assert len(router.calls) == 5
@@ -115,21 +115,21 @@ async def test_usage_reports_the_cost_returned_by_the_api() -> None:
 
 
 async def test_run_error_is_exposed() -> None:
-    failed = _run(status="ERROR", result=None, error={"code": "vm_failed", "message": "La VM n'a pas démarré"})
+    failed = _run(status="ERROR", result=None, error={"code": "vm_failed", "message": "The VM did not start"})
     client, _router = await _session(Router(lambda _request: httpx.Response(200, json=failed)))
     try:
         run = _data(await client.call_tool("cursor_get_run", {"agent_id": _AGENT, "run_id": _RUN}))
     finally:
         await client.__aexit__(None, None, None)
     assert run["status"] == "ERROR" and run["terminal"] is True
-    assert run["error"] == "vm_failed: La VM n'a pas démarré"
+    assert run["error"] == "vm_failed: The VM did not start"
 
 
 async def test_status_and_result_events_do_not_repeat_raw_json() -> None:
     sse = (
         'id: 1\nevent: status\ndata: {"runId":"r","status":"RUNNING"}\n\n'
-        'id: 2\nevent: assistant\ndata: {"text":"Je"}\n\n'
-        'id: 2b\nevent: assistant\ndata: {"text":" regarde."}\n\n'
+        'id: 2\nevent: assistant\ndata: {"text":"I"}\n\n'
+        'id: 2b\nevent: assistant\ndata: {"text":" am looking."}\n\n'
         'id: 3\nevent: result\ndata: {"runId":"r","status":"FINISHED","result":"OK","git":{"branches":[]}}\n\n'
     )
 
@@ -145,8 +145,8 @@ async def test_status_and_result_events_do_not_repeat_raw_json() -> None:
         await client.__aexit__(None, None, None)
     status, assistant, result = view["events"]
     assert status == {"event_id": "1", "kind": "status", "status": "RUNNING"}
-    # Fragments fusionnés ; l'identifiant est celui du dernier, point de reprise exact.
-    assert assistant["text"] == "Je regarde." and assistant["event_id"] == "2b"
+    # Merged fragments; the identifier is that of the last one, an exact resume point.
+    assert assistant["text"] == "I am looking." and assistant["event_id"] == "2b"
     assert result["text"] == "OK" and result["status"] == "FINISHED"
     assert view["finished"] is True
 
@@ -155,7 +155,7 @@ async def test_integration_error_keeps_help_url_and_provider() -> None:
     body = {
         "error": {
             "code": "integration_not_connected",
-            "message": "GitHub n'est pas connecté.",
+            "message": "GitHub is not connected.",
             "helpUrl": "https://cursor.com/dashboard/integrations",
             "provider": "github",
         }
@@ -205,7 +205,7 @@ async def test_tool_call_keeps_only_its_last_state() -> None:
     assert view["last_event_id"] == "3"
 
 
-async def test_continuation_can_switch_model_after_catalog_check() -> None:
+async def test_follow_up_run_can_switch_model_after_catalog_check() -> None:
     catalog = {
         "items": [
             {
@@ -233,25 +233,25 @@ async def test_continuation_can_switch_model_after_catalog_check() -> None:
                 "cursor_create_run",
                 {
                     "agent_id": _AGENT,
-                    "prompt": "suite",
+                    "prompt": "follow-up",
                     "model_id": "haiku",
                     "model_params": [{"id": "thinking", "value": "false"}],
                 },
             )
         )
-        kept = _data(await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "suite"}))
+        kept = _data(await client.call_tool("cursor_create_run", {"agent_id": _AGENT, "prompt": "follow-up"}))
         refused = await client.call_tool(
             "cursor_create_run",
-            {"agent_id": _AGENT, "prompt": "suite", "model_id": "haiku", "reasoning_level": "high"},
+            {"agent_id": _AGENT, "prompt": "follow-up", "model_id": "haiku", "reasoning_level": "high"},
         )
     finally:
         await client.__aexit__(None, None, None)
     posts = [call[2] for call in router.calls if call[0] == "POST"]
     assert posts[0] == {
-        "prompt": {"text": "suite"},
+        "prompt": {"text": "follow-up"},
         "model": {"id": "claude-haiku-4-5", "params": [{"id": "thinking", "value": "false"}]},
     }
-    assert posts[1] == {"prompt": {"text": "suite"}}
+    assert posts[1] == {"prompt": {"text": "follow-up"}}
     assert len(posts) == 2
     assert switched["model_id"] == "claude-haiku-4-5"
     assert "model_id" not in kept

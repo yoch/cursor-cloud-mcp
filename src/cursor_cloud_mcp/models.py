@@ -1,4 +1,4 @@
-"""Schémas d'entrée, vues MCP et payloads distants utilisés par les outils."""
+"""Input schemas, MCP views and remote payloads used by the tools."""
 
 from typing import Literal
 
@@ -13,7 +13,7 @@ from cursor_cloud_mcp.config import (
 
 
 class ModelParam(BaseModel):
-    """Paramètre ``model.params[]`` tel que ``GET /v1/models`` le décrit."""
+    """Parameter ``model.params[]`` as ``GET /v1/models`` describes it."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -243,7 +243,7 @@ class RemoteArtifactDownload(BaseModel):
 
 
 class RepositoryInput(BaseModel):
-    """Dépôt demandé à la création. ``starting_ref`` est un nom de branche."""
+    """Repository requested at creation. ``starting_ref`` is a branch name."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -267,7 +267,7 @@ class AccountView(BaseModel):
 
 
 class ModelView(BaseModel):
-    """Forme compacte : les valeurs de chaque paramètre ; les variantes du modèle seulement sur demande."""
+    """Compact form: the values of each parameter; the model variants only on request."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -442,7 +442,7 @@ class TokenUsageView(BaseModel):
 
 
 class CostView(BaseModel):
-    """Coût tel que l'API le renvoie, en centimes de dollar. Absent si l'API ne le donne pas."""
+    """Cost as the API returns it, in US cents. Absent if the API does not provide it."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -460,7 +460,7 @@ class RunUsageView(BaseModel):
 
 
 class UsageView(BaseModel):
-    """Jetons et coût réellement renvoyés. Rien n'est estimé."""
+    """Tokens and cost actually returned. Nothing is estimated."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -522,7 +522,7 @@ class ArtifactUrlView(BaseModel):
 
 
 class ArtifactReadView(BaseModel):
-    """Texte d'un artefact, ou son URL présignée s'il n'est pas lisible comme texte ou si elle est demandée."""
+    """Text of an artifact, or its presigned URL if it is not readable as text or if the URL is requested."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -602,11 +602,11 @@ def summary_from(remote: RemoteAgentSummary) -> AgentSummaryView:
 
 
 def cursor_of(value: str | None) -> tuple[str | None, bool]:
-    """L'absence de curseur termine la page. Une chaîne vide est un contrat cassé."""
+    """A missing cursor ends the page. An empty string is a broken contract."""
     if value is None:
         return None, False
     if value == "":
-        raise ValueError("curseur vide")
+        raise ValueError("empty cursor")
     return value, True
 
 

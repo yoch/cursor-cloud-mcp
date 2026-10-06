@@ -1,4 +1,4 @@
-"""Création, continuation et cycle de vie d'un agent Cloud."""
+"""Creation, follow-up runs and lifecycle of a Cloud agent."""
 
 import os
 import uuid
@@ -57,12 +57,12 @@ async def perform_create(
     checked_prompt = require_prompt(prompt)
     checked_mode = require_mode(mode)
     if name is not None and name.strip() == "":
-        raise failure(ErrorCode.VALIDATION, "name est vide.")
+        raise failure(ErrorCode.VALIDATION, "name is empty.")
     repos = _repositories(repository, starting_ref, repositories)
     _check_environment(env_type, env_name, len(repos))
     merged = _environment_variables(settings, env_vars, forward_env)
     if merged is not None:
-        # Valeurs fournies par appel : masquées dans les logs et les erreurs dès maintenant.
+        # Per-call values: redacted from logs and errors from now on.
         redaction.register(*merged.values())
     chosen_id, lookup_name = _identity(agent_id, name, merged is not None)
     model_body = await _model_body(
@@ -111,7 +111,7 @@ async def perform_followup(
     checked_mode = require_mode(mode)
     agent = await client.get_agent(agent_id)
     ensure_continuation_allowed(agent)
-    # Vérifié en réel le 5 octobre 2026 : model sur POST /runs change le modèle, et le choix persiste.
+    # Verified against the real API on October 5, 2026: model on POST /runs changes the model, and the choice persists.
     model_body = await _model_body(
         client,
         model_id=model_id,
@@ -154,7 +154,7 @@ async def perform_archive(
             outcome_confirmed=False,
             reread_error=exc.body.message,
         )
-    # Un statut inconnu ne confirme rien : seul un état connu et attendu compte.
+    # An unknown status confirms nothing: only a known, expected state counts.
     if action == "archive":
         confirmed = agent.status == "ARCHIVED"
     else:
@@ -185,12 +185,12 @@ async def _model_body(
         if model_params or reasoning_level is not None:
             raise failure(
                 ErrorCode.VALIDATION,
-                "model_id est requis avec model_params ou reasoning_level. "
-                "Aucun identifiant de modèle n'est inventé.",
+                "model_id is required with model_params or reasoning_level. "
+                "No model identifier is invented.",
             )
         return None
     if model_id.strip() == "" or len(model_id) > 128:
-        raise failure(ErrorCode.VALIDATION, "model_id est vide ou trop long.")
+        raise failure(ErrorCode.VALIDATION, "model_id is empty or too long.")
     catalog, _hit = await client.cached_models()
     return resolve_model_selection(
         catalog,
@@ -209,11 +209,11 @@ def _repositories(
     if single and repositories:
         raise failure(
             ErrorCode.VALIDATION,
-            "Fournir soit repository et starting_ref, soit repositories, pas les deux.",
+            "Provide either repository and starting_ref, or repositories, not both.",
         )
     if single:
         if repository is None or starting_ref is None:
-            raise failure(ErrorCode.VALIDATION, "repository et starting_ref vont ensemble.")
+            raise failure(ErrorCode.VALIDATION, "repository and starting_ref go together.")
         return [
             {
                 "url": normalize_repository(repository),
@@ -223,7 +223,7 @@ def _repositories(
     if not repositories:
         return []
     if len(repositories) > REPO_MAX_COUNT:
-        raise failure(ErrorCode.VALIDATION, "20 dépôts au plus.")
+        raise failure(ErrorCode.VALIDATION, "At most 20 repositories.")
     return [
         {
             "url": normalize_repository(item.url),
@@ -235,20 +235,20 @@ def _repositories(
 
 def _check_environment(env_type: str | None, env_name: str | None, repo_count: int) -> None:
     if env_name is not None and env_type is None:
-        raise failure(ErrorCode.VALIDATION, "env_name exige env_type.")
+        raise failure(ErrorCode.VALIDATION, "env_name requires env_type.")
     if env_name is not None and (env_name.strip() == "" or len(env_name) > 128):
-        raise failure(ErrorCode.VALIDATION, "env_name est vide ou trop long.")
+        raise failure(ErrorCode.VALIDATION, "env_name is empty or too long.")
     named_cloud = env_type == "cloud" and env_name is not None
     named_pool = env_type == "pool" and env_name is not None
     if named_cloud and repo_count:
         raise failure(
             ErrorCode.VALIDATION,
-            "Un environnement cloud nommé ne se combine pas avec des dépôts.",
+            "A named cloud environment cannot be combined with repositories.",
         )
     if repo_count > 1 and not named_pool:
         raise failure(
             ErrorCode.VALIDATION,
-            "Plusieurs dépôts exigent un pool nommé (env_type=pool et env_name).",
+            "Multiple repositories require a named pool (env_type=pool and env_name).",
         )
 
 
@@ -267,20 +267,20 @@ def _environment_variables(
         if name not in settings.forward_env:
             raise failure(
                 ErrorCode.VALIDATION,
-                f"{name} n'est pas dans CURSOR_MCP_FORWARD_ENV. La valeur n'est pas lue.",
+                f"{name} is not in CURSOR_MCP_FORWARD_ENV. The value is not read.",
             )
         if name in merged:
-            raise failure(ErrorCode.VALIDATION, f"{name} est fourni à la fois dans env_vars et forward_env.")
+            raise failure(ErrorCode.VALIDATION, f"{name} is provided in both env_vars and forward_env.")
         raw = os.environ.get(name)
         if raw is None or raw == "":
             raise failure(
                 ErrorCode.VALIDATION,
-                f"{name} est absent de l'environnement du processus. La valeur n'est pas renvoyée.",
+                f"{name} is missing from the process environment. The value is not returned.",
             )
         require_env_value(raw)
         merged[name] = raw
     if len(merged) > ENV_MAX_COUNT:
-        raise failure(ErrorCode.VALIDATION, "50 variables d'environnement au plus.")
+        raise failure(ErrorCode.VALIDATION, "At most 50 environment variables.")
     return merged or None
 
 
@@ -289,13 +289,13 @@ def _identity(agent_id: str | None, name: str | None, has_env: bool) -> tuple[st
         if agent_id is not None:
             raise failure(
                 ErrorCode.VALIDATION,
-                "agent_id est incompatible avec env_vars et forward_env. "
-                "Omettre agent_id, fournir name, puis retrouver l'agent avec cursor_list_agents si la création est incertaine.",
+                "agent_id is incompatible with env_vars and forward_env. "
+                "Omit agent_id, provide name, then find the agent with cursor_list_agents if the creation is uncertain.",
             )
         if name is None:
             raise failure(
                 ErrorCode.VALIDATION,
-                "name est obligatoire quand des variables d'environnement sont envoyées.",
+                "name is required when environment variables are sent.",
             )
         return None, name
     if agent_id is not None:
@@ -307,5 +307,5 @@ def _same_id(returned: str | None, expected: str) -> None:
     if returned is not None and returned != expected:
         raise failure(
             ErrorCode.INCOMPATIBLE_RESPONSE,
-            "L'identifiant renvoyé ne correspond pas à l'agent demandé.",
+            "The returned identifier does not match the requested agent.",
         )

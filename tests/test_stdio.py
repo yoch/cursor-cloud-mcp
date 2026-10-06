@@ -1,4 +1,4 @@
-"""Le vrai point d'entrée, en sous-processus, sur le transport fictif."""
+"""The real entry point, in a subprocess, on the fictional transport."""
 
 import json
 import os
@@ -60,7 +60,7 @@ async def test_stdio_auto_and_legacy_negotiate_and_call_tools(tmp_path: Path) ->
             {
                 "repository": "https://github.com/example/demo",
                 "starting_ref": _BRANCH,
-                "prompt": "Décris le dépôt fictif",
+                "prompt": "Describe the fictional repository",
             },
         )
         created_data = _payload(created)
@@ -74,7 +74,7 @@ async def test_stdio_auto_and_legacy_negotiate_and_call_tools(tmp_path: Path) ->
             {
                 "repository": "https://github.com/example/demo",
                 "starting_ref": _BRANCH,
-                "prompt": "Nom canonique",
+                "prompt": "Canonical name",
             },
         )
         assert canonical.is_error is False
@@ -84,10 +84,10 @@ async def test_stdio_auto_and_legacy_negotiate_and_call_tools(tmp_path: Path) ->
             "cursor_read_artifact",
             {"agent_id": SEEDED_AGENT_ID, "path": "artifacts/result.txt"},
         )
-        assert _payload(artifact)["text"] == "fixture artefact\n"
+        assert _payload(artifact)["text"] == "fixture artifact\n"
         follow = await client.call_tool(
             "cursor_create_run",
-            {"agent_id": agent_id, "prompt": "Ajoute une phrase"},
+            {"agent_id": agent_id, "prompt": "Add a sentence"},
         )
         assert follow.is_error is False
         assert _payload(follow)["agent_id"] == agent_id
@@ -136,7 +136,7 @@ async def test_stdio_read_only_and_clean_stderr(tmp_path: Path) -> None:
             {
                 "repository": "https://github.com/example/demo",
                 "starting_ref": _BRANCH,
-                "prompt": "lecture seule",
+                "prompt": "read-only",
             },
         )
     assert _payload(refused)["code"] == "READ_ONLY"
@@ -178,11 +178,11 @@ def test_stdout_has_no_banner_and_eof_stops_the_process(tmp_path: Path) -> None:
     assert proc.poll() is not None
     stderr = proc.stderr.read().decode() if proc.stderr is not None else ""
     assert "Traceback" not in stderr
-    assert "MODE SIMULÉ" in stderr
+    assert "SIMULATED MODE" in stderr
 
 
 async def test_stdio_per_call_secret_never_reaches_stderr(tmp_path: Path) -> None:
-    value = "k7"  # court : l'ancien filtre ignorait les secrets de moins de 8 caractères
+    value = "k7"  # short: the old filter ignored secrets shorter than 8 characters
     params = _params(
         tmp_path,
         CURSOR_MCP_FIXTURE="1",
@@ -194,7 +194,7 @@ async def test_stdio_per_call_secret_never_reaches_stderr(tmp_path: Path) -> Non
         async with Client(stdio_client(params, errlog=errlog)) as client:
             created = await client.call_tool(
                 "cursor_create_agent",
-                {"prompt": "secret par appel", "name": "avec-env", "env_vars": {"WORK_TOKEN": f"zz{value}zz"}},
+                {"prompt": "per-call secret", "name": "with-env", "env_vars": {"WORK_TOKEN": f"zz{value}zz"}},
             )
     assert created.is_error is False
     stderr = errlog_path.read_text(encoding="utf-8")

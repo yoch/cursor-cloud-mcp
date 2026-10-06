@@ -1,7 +1,7 @@
-"""Lectures Cursor réelles, sans mutation.
+"""Real Cursor reads, no mutation.
 
-Le serveur MCP ne charge pas `.env`. Ce script, lancé à part, peut le faire
-pour exporter la clé dans son propre processus. Il n'affiche jamais la clé.
+The MCP server does not load `.env`. This script, launched separately, can do so
+to export the key into its own process. It never prints the key.
 """
 
 import asyncio
@@ -34,7 +34,7 @@ async def main() -> int:
     load_key(root)
     key = os.environ.get("CURSOR_API_KEY")
     if not key:
-        print("CURSOR_API_KEY absente")
+        print("CURSOR_API_KEY missing")
         return 2
     client = CursorCloudClient(api_key=key)
     await client.open()

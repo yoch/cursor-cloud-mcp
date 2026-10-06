@@ -1,4 +1,4 @@
-"""Client REST Cursor. Les POST ne sont jamais rejoués."""
+"""Cursor REST client. POST requests are never replayed."""
 
 import asyncio
 import json
@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 _REDIRECTS = {301, 302, 303, 307, 308}
 _REQUEST_ID_HEADERS = ("x-request-id", "request-id", "x-cursor-request-id")
-_RECOVERY = "Relire l'état distant avant toute nouvelle mutation."
+_RECOVERY = "Re-read the remote state before any new mutation."
 
 
 @dataclass(frozen=True)
@@ -59,16 +59,16 @@ class MutationContext:
 
 
 class ResponseTooLarge(Exception):
-    """Le corps dépasse la limite lue en flux."""
+    """The body exceeds the limit applied while streaming."""
 
 
 class _Retry(Exception):
-    """Un GET peut être relancé une fois dans le même budget."""
+    """A GET may be retried once within the same budget."""
 
 
 @dataclass
 class _TtlCache[T]:
-    """Cache TTL sous verrou. Annuler un appelant n'annule que sa propre lecture."""
+    """TTL cache under a lock. Cancelling a caller only cancels its own read."""
 
     ttl: float
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -79,7 +79,7 @@ class _TtlCache[T]:
             async with asyncio.timeout_at(budget.deadline_at(wait_cap)):
                 await self.lock.acquire()
         except TimeoutError:
-            raise failure(ErrorCode.TIMEOUT, "Délai dépassé en attendant une lecture déjà en cours.") from None
+            raise failure(ErrorCode.TIMEOUT, "Timed out waiting for a read already in progress.") from None
         try:
             if self.entry is not None and time.monotonic() - self.entry[0] < self.ttl:
                 return self.entry[1], True
@@ -91,7 +91,7 @@ class _TtlCache[T]:
 
 
 class CursorCloudClient:
-    """Un client HTTP par processus, avec cache mémoire des dépôts."""
+    """One HTTP client per process, with an in-memory repository cache."""
 
     def __init__(
         self,
@@ -222,7 +222,7 @@ class CursorCloudClient:
             deadline=self._deadline if deadline is None else deadline,
         )
         _require_same_id(remote.id, run, "run")
-        _require_same_id(remote.agentId, agent, "agent du run")
+        _require_same_id(remote.agentId, agent, "run's agent")
         return remote
 
     def run_stream_path(self, agent_id: str, run_id: str) -> str:
@@ -238,9 +238,9 @@ class CursorCloudClient:
         headers: Mapping[str, str] | None,
         deadline: float,
     ) -> AsyncIterator[httpx.Response]:
-        """GET en flux, sans retry. L'appelant ferme la réponse via ce contexte."""
+        """Streaming GET, no retry. The caller closes the response through this context."""
         if self._http is None:
-            raise failure(ErrorCode.CONFIGURATION_MISSING, "Le client HTTP n'est pas ouvert.")
+            raise failure(ErrorCode.CONFIGURATION_MISSING, "The HTTP client is not open.")
         request = self._http.build_request(
             "GET",
             path,
@@ -253,7 +253,7 @@ class CursorCloudClient:
         except httpx.TimeoutException:
             raise failure(ErrorCode.TIMEOUT, explain(ErrorCode.TIMEOUT)) from None
         except httpx.RequestError:
-            raise failure(ErrorCode.TIMEOUT, "Connexion interrompue pendant la lecture.") from None
+            raise failure(ErrorCode.TIMEOUT, "Connection interrupted while reading.") from None
         request_id = _request_id(response.headers)
         _log("GET", path, str(response.status_code), started, request_id)
         try:
@@ -389,22 +389,22 @@ class CursorCloudClient:
         deadline: float,
         mutation: MutationContext | None,
     ) -> object | None:
-        """Un appel HTTP borné par ``deadline`` et par le budget de l'outil.
+        """One HTTP call bounded by ``deadline`` and by the tool budget.
 
-        Tout ce qui suit l'envoi d'une mutation — en-têtes, corps, décodage, fermeture —
-        produit au pire ``MUTATION_OUTCOME_UNKNOWN`` avec le contexte connu. Une mutation
-        n'est jamais rejouée ; un GET l'est au plus une fois.
+        Anything that follows the sending of a mutation — headers, body, decoding, closing —
+        produces at worst ``MUTATION_OUTCOME_UNKNOWN`` with the known context. A mutation
+        is never replayed; a GET is replayed at most once.
         """
         if self._http is None:
-            raise failure(ErrorCode.CONFIGURATION_MISSING, "Le client HTTP n'est pas ouvert.")
+            raise failure(ErrorCode.CONFIGURATION_MISSING, "The HTTP client is not open.")
         loop = asyncio.get_running_loop()
         deadline_at = budget.deadline_at(deadline)
         floor = min(MUTATION_MIN_SECONDS, deadline / 2) if mutation is not None else 0.0
         if deadline_at - loop.time() <= floor:
-            # Rien n'est envoyé : mieux vaut un refus net qu'une mutation à l'issue inconnue.
+            # Nothing is sent: a clean refusal beats a mutation with unknown outcome.
             raise failure(
                 ErrorCode.TIMEOUT,
-                "Budget de l'outil épuisé avant l'envoi. Aucune requête n'a été envoyée.",
+                "Tool budget exhausted before sending. No request was sent.",
                 agent_id=mutation.agent_id if mutation is not None else None,
                 run_id=mutation.run_id if mutation is not None else None,
             )
@@ -435,7 +435,7 @@ class CursorCloudClient:
                         if method == "GET" and attempt == 0 and deadline_at - loop.time() > 0:
                             attempt = 1
                             continue
-                        raise _interrupted(mutation, "La connexion a été coupée.") from None
+                        raise _interrupted(mutation, "The connection was cut.") from None
                     status = response.status_code
                     request_id = _request_id(response.headers)
                     _log(method, path, str(status), started, request_id)
@@ -454,14 +454,14 @@ class CursorCloudClient:
                     finally:
                         await close_quietly(response)
         except (TimeoutError, httpx.TimeoutException):
-            detail = "Le délai a expiré après l'envoi possible de la requête."
+            detail = "The timeout expired after the request may have been sent."
             if status is not None:
-                detail = "Le délai a expiré pendant la lecture de la réponse."
+                detail = "The timeout expired while reading the response."
             raise _interrupted(mutation, detail, status=status, request_id=request_id, timeout=True) from None
         except httpx.RequestError:
             raise _interrupted(
                 mutation,
-                "La connexion a été coupée pendant la lecture de la réponse.",
+                "The connection was cut while reading the response.",
                 status=status,
                 request_id=request_id,
             ) from None
@@ -519,12 +519,12 @@ class CursorCloudClient:
                 mutation,
                 request_id,
                 response.status_code,
-                "La réponse dépasse la limite locale.",
+                "The response exceeds the local limit.",
             ) from None
 
 
 async def close_quietly(response: httpx.Response) -> None:
-    """Une erreur de fermeture n'écrase ni un résultat établi ni l'erreur d'origine."""
+    """A close error overrides neither an established result nor the original error."""
     try:
         await response.aclose()
     except (httpx.HTTPError, OSError) as exc:
@@ -532,15 +532,15 @@ async def close_quietly(response: httpx.Response) -> None:
 
 
 def _require_same_id(received: str, expected: str, label: str) -> None:
-    """Refuse une réponse qui décrit une autre ressource que celle demandée.
+    """Refuse a response that describes a different resource than the one requested.
 
-    Les identifiants sont des UUID préfixés : l'API accepte des chiffres hexadécimaux en majuscules
-    et répond avec la forme minuscule (vérifié le 6 octobre 2026). La casse ne distingue rien.
+    Identifiers are prefixed UUIDs: the API accepts uppercase hexadecimal digits
+    and replies in lowercase form (verified on October 6, 2026). Case distinguishes nothing.
     """
     if received.lower() != expected.lower():
         raise failure(
             ErrorCode.INCOMPATIBLE_RESPONSE,
-            f"La réponse Cursor décrit un autre {label} que celui demandé. Rien n'a été modifié.",
+            f"The Cursor response describes a different {label} than the one requested. Nothing was modified.",
         )
 
 
@@ -597,7 +597,7 @@ def _log(method: str, path: str, status: str, started: float, request_id: str | 
 
 
 async def read_bounded(response: httpx.Response, limit: int) -> bytes:
-    """Lit le corps en flux et s'arrête au-delà de ``limit``."""
+    """Read the body as a stream and stop beyond ``limit``."""
     chunks: list[bytes] = []
     total = 0
     try:
@@ -609,8 +609,8 @@ async def read_bounded(response: httpx.Response, limit: int) -> bytes:
                 raise ResponseTooLarge
             chunks.append(chunk)
     except httpx.RequestError:
-        # httpx ferme le flux en fin d'itération : une erreur de fermeture n'écrase pas
-        # un corps reçu en entier, ce que seul Content-Length (sans encodage) établit.
+        # httpx closes the stream at the end of iteration: a close error does not override
+        # a fully received body, which only Content-Length (without encoding) establishes.
         if _complete(response, total):
             logger.debug("http close_error_after_full_body")
             return b"".join(chunks)
@@ -647,11 +647,11 @@ def _interpret_bytes(
         return None
     content_type = headers.get("content-type", "")
     if "html" in content_type.lower() or raw.lstrip().startswith(b"<"):
-        raise _body_failure(mutation, request_id, status, "La réponse est du HTML.")
+        raise _body_failure(mutation, request_id, status, "The response is HTML.")
     try:
         return json.loads(raw.decode())
     except (ValueError, UnicodeError):
-        raise _body_failure(mutation, request_id, status, "La réponse n'est pas du JSON.") from None
+        raise _body_failure(mutation, request_id, status, "The response is not JSON.") from None
 
 
 def _parse[M: BaseModel](model: type[M], payload: object | None, *, mutation: MutationContext | None) -> M:
@@ -659,10 +659,10 @@ def _parse[M: BaseModel](model: type[M], payload: object | None, *, mutation: Mu
         return model.model_validate(payload)
     except ValidationError:
         if mutation is not None:
-            raise _uncertain(mutation, "Le corps de succès ne respecte pas le schéma.") from None
+            raise _uncertain(mutation, "The success body does not match the schema.") from None
         raise failure(
             ErrorCode.INCOMPATIBLE_RESPONSE,
-            f"{explain(ErrorCode.INCOMPATIBLE_RESPONSE)} Un champ essentiel est absent ou d'un type inattendu.",
+            f"{explain(ErrorCode.INCOMPATIBLE_RESPONSE)} An essential field is missing or has an unexpected type.",
         ) from None
 
 
@@ -674,7 +674,7 @@ def _uncertain(
     request_id: str | None = None,
     remote_code: str | None = None,
 ) -> CursorFailure:
-    """Issue de mutation inconnue, avec tout le contexte utile à une reprise sans doublon."""
+    """Mutation with unknown outcome, with all the context needed to resume without duplicates."""
     return failure(
         ErrorCode.MUTATION_OUTCOME_UNKNOWN,
         f"{explain(ErrorCode.MUTATION_OUTCOME_UNKNOWN)} {detail}".strip(),
@@ -698,7 +698,7 @@ def _interrupted(
 ) -> CursorFailure:
     if mutation is not None:
         return _uncertain(mutation, detail, status=status, request_id=request_id)
-    message = explain(ErrorCode.TIMEOUT) if timeout else "Connexion interrompue pendant la lecture."
+    message = explain(ErrorCode.TIMEOUT) if timeout else "Connection interrupted while reading."
     return failure(ErrorCode.TIMEOUT, message, http_status=status, request_id=request_id)
 
 
@@ -731,9 +731,9 @@ def _redirect_failure(
         except httpx.InvalidURL:
             host = ""
     if host and host != "api.cursor.com":
-        message = "Redirection d'authentification vers un autre domaine refusée."
+        message = "Authentication redirect to another domain refused."
     else:
-        message = "Redirection HTTP refusée."
+        message = "HTTP redirect refused."
     if mutation is not None:
         return _uncertain(mutation, message, status=response.status_code, request_id=request_id)
     return failure(
@@ -747,8 +747,8 @@ def _redirect_failure(
 def _recovery_for(mutation: MutationContext | None) -> str:
     if mutation is not None and mutation.agent_id is None and mutation.lookup_name:
         return (
-            f"Chercher l'agent nommé {mutation.lookup_name} avec cursor_list_agents "
-            "avant toute nouvelle tentative."
+            f"Look up the agent named {mutation.lookup_name} with cursor_list_agents "
+            "before any new attempt."
         )
     return _RECOVERY
 
@@ -770,7 +770,7 @@ def _status_from(
         return _uncertain(mutation, remote_message, status=status, request_id=request_id, remote_code=remote_code)
     message = explain(code)
     if blocked_by_deadline:
-        message = f"{message} L'attente Retry-After dépasse la deadline."
+        message = f"{message} The Retry-After wait exceeds the deadline."
     if remote_message:
         message = f"{message} {remote_message}"
     agent_id = mutation.agent_id if mutation is not None else None
@@ -778,13 +778,13 @@ def _status_from(
     previous = mutation.previous_latest_run_id if mutation is not None else None
     recovery = None
     if code is ErrorCode.AGENT_ID_CONFLICT:
-        recovery = "Relire cet agent avant toute nouvelle création. Ne pas changer l'identifiant."
+        recovery = "Re-read this agent before any new creation. Do not change the identifier."
     if code is ErrorCode.AGENT_BUSY:
-        recovery = "Attendre la fin du run ou l'annuler. Ne pas créer un autre agent."
+        recovery = "Wait for the run to finish or cancel it. Do not create another agent."
     if code is ErrorCode.STREAM_EXPIRED:
-        recovery = "Le flux n'est plus rejouable. Lire le résultat avec cursor_get_run."
+        recovery = "The stream can no longer be replayed. Read the result with cursor_get_run."
     if remote_code == "invalid_last_event_id":
-        recovery = "Curseur refusé par le flux : relancer cursor_read_run_events sans after_event_id."
+        recovery = "Cursor rejected by the stream: call cursor_read_run_events again without after_event_id."
     help_url, provider = _remote_help(raw)
     return failure(
         code,
@@ -857,7 +857,7 @@ def _remote_error_bytes(headers: httpx.Headers, raw: bytes) -> tuple[str | None,
 
 
 def _remote_help(raw: bytes) -> tuple[str | None, str | None]:
-    """``helpUrl`` et ``provider`` du corps d'erreur, par exemple pour ``integration_not_connected``."""
+    """``helpUrl`` and ``provider`` from the error body, for example for ``integration_not_connected``."""
     try:
         payload = json.loads(raw.decode()) if raw else None
     except (ValueError, UnicodeError):
@@ -875,9 +875,9 @@ def _remote_help(raw: bytes) -> tuple[str | None, str | None]:
 
 
 def _clean(message: str) -> str:
-    """Message distant masqué, puis compacté, puis borné.
+    """Remote message redacted, then compacted, then bounded.
 
-    L'ordre compte : compacter d'abord casserait la correspondance avec un secret multiligne.
+    Order matters: compacting first would break matching against a multiline secret.
     """
     compact = " ".join(redaction.redact(message).split())
     if len(compact) > 300:

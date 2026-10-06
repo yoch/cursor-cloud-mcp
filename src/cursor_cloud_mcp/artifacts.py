@@ -1,4 +1,4 @@
-"""Liste, URL et lecture texte des artefacts. Le téléchargement n'envoie pas la clé Cursor."""
+"""List, URL and text reading of artifacts. The download does not send the Cursor key."""
 
 import asyncio
 import logging
@@ -49,7 +49,7 @@ async def read_artifact(
     limit: int,
     url_only: bool = False,
 ) -> ArtifactReadView:
-    """Texte UTF-8 de 5 Mo au plus. Sinon, ou sur demande, l'URL présignée à télécharger ailleurs."""
+    """UTF-8 text of at most 5 MB. Otherwise, or on request, the presigned URL to download elsewhere."""
     located = await artifact_url(client, agent_id, path)
     if url_only:
         return ArtifactReadView(path=located.path, expires_at=located.expires_at, url=located.url)
@@ -80,7 +80,7 @@ async def read_artifact(
 
 
 class _TooLarge(Exception):
-    """Artefact au-delà de la limite de lecture texte : l'URL est rendue à la place."""
+    """Artifact beyond the text-reading limit: the URL is returned instead."""
 
 
 def _unreadable(located: ArtifactUrlView, reason: Literal["not_utf8", "too_large"]) -> ArtifactReadView:
@@ -99,12 +99,12 @@ async def fetch_presigned(
     max_bytes: int,
     deadline: float,
 ) -> bytes:
-    """Téléchargement borné de bout en bout : connexion, lecture et fermeture."""
+    """Download bounded end to end: connection, reading and closing."""
     _require_presigned(url)
     deadline_at = budget.deadline_at(deadline)
     remaining = deadline_at - asyncio.get_running_loop().time()
     if remaining <= 0:
-        raise failure(ErrorCode.TIMEOUT, "Budget de l'outil épuisé avant le téléchargement de l'artefact.")
+        raise failure(ErrorCode.TIMEOUT, "Tool budget exhausted before the artifact download.")
     try:
         async with asyncio.timeout_at(deadline_at):
             async with httpx.AsyncClient(
@@ -114,26 +114,26 @@ async def fetch_presigned(
             ) as http:
                 request = http.build_request("GET", url)
                 if "authorization" in {name.lower() for name in request.headers}:
-                    raise failure(ErrorCode.VALIDATION, "Le téléchargement ne doit pas porter la clé Cursor.")
+                    raise failure(ErrorCode.VALIDATION, "The download must not carry the Cursor key.")
                 response = await http.send(request, stream=True)
                 try:
                     return await _read_download(response, max_bytes)
                 finally:
                     await close_quietly(response)
     except (TimeoutError, httpx.TimeoutException):
-        raise failure(ErrorCode.TIMEOUT, "Délai dépassé pendant le téléchargement de l'artefact.") from None
+        raise failure(ErrorCode.TIMEOUT, "Timed out during the artifact download.") from None
     except httpx.RequestError:
-        raise failure(ErrorCode.TIMEOUT, "Téléchargement de l'artefact interrompu.") from None
+        raise failure(ErrorCode.TIMEOUT, "Artifact download interrupted.") from None
 
 
 async def _read_download(response: httpx.Response, max_bytes: int) -> bytes:
     logger.info("artifact_download status=%s", response.status_code)
     if response.status_code in _REDIRECTS:
-        raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "Redirection de téléchargement refusée.")
+        raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "Download redirect refused.")
     if response.status_code != 200:
         raise failure(
             ErrorCode.UPSTREAM,
-            f"Téléchargement de l'artefact refusé ({response.status_code}).",
+            f"Artifact download refused ({response.status_code}).",
         )
     try:
         return await read_bounded(response, max_bytes)
@@ -145,12 +145,12 @@ def _require_presigned(url: str) -> None:
     try:
         parsed = httpx.URL(url)
     except httpx.InvalidURL:
-        raise failure(ErrorCode.VALIDATION, "URL d'artefact invalide.") from None
+        raise failure(ErrorCode.VALIDATION, "Invalid artifact URL.") from None
     host = parsed.host
     if parsed.scheme != "https" or not host.endswith(".amazonaws.com"):
         raise failure(
             ErrorCode.VALIDATION,
-            "Le téléchargement n'accepte qu'une URL HTTPS dont l'hôte se termine par .amazonaws.com.",
+            "The download only accepts an HTTPS URL whose host ends with .amazonaws.com.",
         )
     if parsed.username or parsed.password:
-        raise failure(ErrorCode.VALIDATION, "L'URL d'artefact ne doit pas contenir d'identifiants.")
+        raise failure(ErrorCode.VALIDATION, "The artifact URL must not contain credentials.")

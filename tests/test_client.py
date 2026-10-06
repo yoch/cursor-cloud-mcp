@@ -1,4 +1,4 @@
-"""Client HTTP sans aucun appel réseau réel."""
+"""HTTP client with no real network call."""
 
 import asyncio
 
@@ -46,7 +46,7 @@ def test_settings_reject_unexpanded_keys(monkeypatch: pytest.MonkeyPatch, tmp_pa
     monkeypatch.setenv("CURSOR_API_KEY", "")
     assert load_settings().config_error is not None
     monkeypatch.setenv("CURSOR_API_KEY", "${CURSOR_API_KEY}")
-    assert "interpol" in (load_settings().config_error or "")
+    assert "interpolated" in (load_settings().config_error or "")
     monkeypatch.setenv("CURSOR_API_KEY", "{env:CURSOR_API_KEY}")
     assert load_settings().config_error is not None
     monkeypatch.setenv("CURSOR_MCP_ALLOW_WRITES", "true")
@@ -146,12 +146,12 @@ async def test_post_transport_error_is_unknown_and_not_retried() -> None:
 
     def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        raise httpx.ConnectError("coupé")
+        raise httpx.ConnectError("cut off")
 
     client = await _open(httpx.MockTransport(handler), deadline_seconds=2)
     try:
         with pytest.raises(CursorFailure) as caught:
-            await client.create_run(_AGENT_ID, {"prompt": {"text": "suite"}}, previous_latest_run_id="run-old")
+            await client.create_run(_AGENT_ID, {"prompt": {"text": "follow-up"}}, previous_latest_run_id="run-old")
     finally:
         await client.aclose()
     error = caught.value
@@ -225,7 +225,7 @@ async def test_auth_redirect_to_another_host_is_refused() -> None:
     finally:
         await client.aclose()
     assert calls["n"] == 1
-    assert "autre domaine" in caught.value.body.message
+    assert "another domain" in caught.value.body.message
     assert "evil.example" not in caught.value.body.message
 
 
@@ -277,12 +277,12 @@ async def test_agent_busy_conflict_is_not_retried() -> None:
 
     def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        return httpx.Response(409, json={"error": {"code": "agent_busy", "message": "occupé"}})
+        return httpx.Response(409, json={"error": {"code": "agent_busy", "message": "busy"}})
 
     client = await _open(httpx.MockTransport(handler))
     try:
         with pytest.raises(CursorFailure) as caught:
-            await client.create_run(_AGENT_ID, {"prompt": {"text": "suite"}}, previous_latest_run_id="run-9")
+            await client.create_run(_AGENT_ID, {"prompt": {"text": "follow-up"}}, previous_latest_run_id="run-9")
     finally:
         await client.aclose()
     assert calls["n"] == 1
