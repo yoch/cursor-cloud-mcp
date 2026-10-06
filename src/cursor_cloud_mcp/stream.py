@@ -2,15 +2,24 @@
 
 import asyncio
 import codecs
+import datetime as dt
 import json
-from collections.abc import Awaitable, Callable
+from collections import deque
+from collections.abc import AsyncIterator, Awaitable, Callable, MutableSequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import httpx
 
 from cursor_cloud_mcp import budget
+from cursor_cloud_mcp.activity import ActivityTracker, event_time
 from cursor_cloud_mcp.client import CursorCloudClient, ResponseTooLarge, read_bounded
-from cursor_cloud_mcp.config import EVENT_MERGED_MAX_CHARS, EVENT_TEXT_MAX_CHARS, STREAM_MAX_BYTES
+from cursor_cloud_mcp.config import (
+    EVENT_MERGED_MAX_CHARS,
+    EVENT_TEXT_MAX_CHARS,
+    STREAM_MAX_BYTES,
+    TAIL_MAX_BYTES,
+)
 from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure
 from cursor_cloud_mcp.models import RunEventsView, RunEventView, RunView
 from cursor_cloud_mcp.present import run_view
@@ -91,22 +100,11 @@ async def read_run_events(
     path = client.run_stream_path(agent_id, run_id)
     # A single deadline for opening and collecting.
     deadline_at = budget.deadline_at(max_wait_seconds)
-    loop = asyncio.get_running_loop()
     try:
         # Global guard: opening, error body and closing. Collection has its own
         # timer at deadline_at, which expires before this one and returns the partial events.
         async with asyncio.timeout_at(deadline_at + _OUTER_GRACE_SECONDS):
-            async with client.stream_get(
-                path, headers=headers, deadline=max(0.1, deadline_at - loop.time())
-            ) as response:
-                if response.status_code in {301, 302, 303, 307, 308}:
-                    raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "Stream redirect refused.")
-                if response.status_code != 200:
-                    raw = await _read_error_body(response)
-                    raise client.error_from_response(response, raw)
-                content_type = response.headers.get("content-type")
-                if content_type and "text/event-stream" not in content_type.lower():
-                    raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "The stream is not text/event-stream.")
+            async with _open_stream(client, path, headers, deadline_at) as response:
                 return await _collect(
                     response,
                     agent_id=agent_id,
@@ -119,6 +117,154 @@ async def read_run_events(
                 )
     except TimeoutError:
         raise failure(ErrorCode.TIMEOUT, "Timed out before the end of the stream response.") from None
+
+
+@dataclass
+class Replay:
+    """Outcome of a full replay walk: the last events, an activity summary, how far it got."""
+
+    events: list[RunEventView]
+    tracker: ActivityTracker
+    finished: bool
+    stream_error: bool
+    interrupted: bool
+    complete: bool
+    run_status: str | None
+    retention_seconds: int | None
+
+
+async def walk_replay(
+    client: CursorCloudClient,
+    *,
+    agent_id: str,
+    run_id: str,
+    keep: int,
+    include_thinking: bool,
+    max_wait_seconds: float,
+) -> Replay:
+    """Walk the whole replay of a run's stream, keeping only the last ``keep`` events.
+
+    The API cannot start a stream from its end: a made-up Last-Event-ID returns no past
+    events (checked 2026-10-06). The walk therefore reads from the start and holds a bounded
+    queue. The API sends no end-of-replay marker either, so the walk only stops on signals that
+    prove the replay has been delivered, never on a silence:
+
+    - ``result`` or ``done``: the run is over;
+    - an event whose id (a millisecond timestamp) is not older than the connection: it is live;
+    - ``heartbeat``: the server only sends it when it has nothing queued, on the same ordered
+      connection. On 2026-10-06 the first heartbeat came 30 to 36 s after connecting, always after
+      the replay, while replays paused up to 1.3 s mid-way.
+
+    Reaching the deadline or TAIL_MAX_BYTES first leaves ``complete`` false.
+    """
+    require_segment(agent_id, label="agent_id")
+    require_segment(run_id, label="run_id")
+    path = client.run_stream_path(agent_id, run_id)
+    deadline_at = budget.deadline_at(max_wait_seconds)
+    try:
+        async with asyncio.timeout_at(deadline_at + _OUTER_GRACE_SECONDS):
+            async with _open_stream(client, path, {"Accept": "text/event-stream"}, deadline_at) as response:
+                return await _walk(
+                    response,
+                    deadline_at=deadline_at,
+                    keep=keep,
+                    include_thinking=include_thinking,
+                    retention_seconds=_retention(response),
+                )
+    except TimeoutError:
+        raise failure(ErrorCode.TIMEOUT, "Timed out before the end of the stream response.") from None
+
+
+async def _walk(
+    response: httpx.Response,
+    *,
+    deadline_at: float,
+    keep: int,
+    include_thinking: bool,
+    retention_seconds: int | None,
+) -> Replay:
+    parser = SseParser()
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    tail: deque[RunEventView] = deque(maxlen=keep)
+    tracker = ActivityTracker()
+    connected_at = dt.datetime.now(dt.UTC)
+    run_status: str | None = None
+    finished = stream_error = interrupted = complete = False
+    total = 0
+    chunks = response.aiter_bytes().__aiter__()
+    try:
+        async with asyncio.timeout_at(deadline_at):
+            while not complete:
+                try:
+                    chunk = await anext(chunks)
+                except StopAsyncIteration:
+                    complete = True
+                    break
+                total += len(chunk)
+                if total > TAIL_MAX_BYTES:
+                    break
+                for raw_event in parser.feed(decoder.decode(chunk)):
+                    payload = _payload(raw_event.data)
+                    view: RunEventView | None = None
+                    wanted = raw_event.event in _KEEP and (raw_event.event != "thinking" or include_thinking)
+                    if wanted:
+                        view = _simplify(raw_event)
+                        if view.status is not None and view.kind in {"status", "result"}:
+                            run_status = view.status
+                        if keep > 0:
+                            _append(tail, view)
+                    tracker.feed(raw_event.event_id, raw_event.event, payload, view)
+                    if raw_event.event == "error":
+                        stream_error = complete = True
+                    elif raw_event.event in {"result", "done"}:
+                        finished = complete = True
+                    if raw_event.event == "heartbeat":
+                        # Sent only once nothing is queued: the whole replay is behind it.
+                        complete = True
+                    moment = event_time(raw_event.event_id)
+                    # Newer than the connection: live, so the replay is behind it. Compared with the
+                    # local clock: a clock running behind the API's could end the walk a few seconds
+                    # early; one running ahead only delays the stop until the heartbeat.
+                    if moment is not None and moment >= connected_at:
+                        complete = True
+                    if complete:
+                        break
+    except (TimeoutError, httpx.TimeoutException):
+        complete = False
+    except httpx.RequestError:
+        interrupted = True
+        complete = False
+    return Replay(
+        events=list(tail),
+        tracker=tracker,
+        finished=finished,
+        stream_error=stream_error,
+        interrupted=interrupted,
+        complete=complete,
+        run_status=run_status,
+        retention_seconds=retention_seconds,
+    )
+
+
+@asynccontextmanager
+async def _open_stream(
+    client: CursorCloudClient,
+    path: str,
+    headers: dict[str, str],
+    deadline_at: float,
+) -> AsyncIterator[httpx.Response]:
+    """Open the stream and check status and content type before any event is read."""
+    loop = asyncio.get_running_loop()
+    async with client.stream_get(path, headers=headers, deadline=max(0.1, deadline_at - loop.time())) as response:
+        if response.status_code in {301, 302, 303, 307, 308}:
+            raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "Stream redirect refused.")
+        if response.status_code != 200:
+            raw = await _read_error_body(response)
+            raise client.error_from_response(response, raw)
+        content_type = response.headers.get("content-type")
+        if content_type and "text/event-stream" not in content_type.lower():
+            raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "The stream is not text/event-stream.")
+        yield response
 
 
 async def wait_run(
@@ -270,7 +416,7 @@ def _simplify(event: SseEvent) -> RunEventView:
     return RunEventView(event_id=event.event_id, kind=kind, text=text, status=status, clipped=clipped or None)
 
 
-def _append(events: list[RunEventView], view: RunEventView) -> None:
+def _append(events: MutableSequence[RunEventView], view: RunEventView) -> None:
     """The stream sends text word by word: consecutive fragments form a single event."""
     previous = events[-1] if events else None
     if previous is not None and _completes(previous, view):

@@ -378,6 +378,44 @@ class RunPageView(BaseModel):
     has_more: bool
 
 
+class ToolCallSummaryView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    status: str | None = None
+    args: str | None = None
+    result: str | None = None
+
+
+class BackgroundTaskView(BaseModel):
+    """A background task the agent started, as last observed in the stream (not proof it is alive)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    command: str | None = None
+    last_state: Literal["running", "complete", "unknown"]
+    runtime_ms: int | None = None
+    observed_at: str | None = None
+
+
+class ActivityView(BaseModel):
+    """What the stream shows about a run: liveness, last action, background tasks."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    last_event_id: str | None = None
+    last_event_at: str | None = None
+    idle_seconds: int | None = None
+    last_assistant_text: str | None = None
+    last_tool_call: ToolCallSummaryView | None = None
+    background_tasks: list[BackgroundTaskView] | None = None
+    unfinished_background_tasks: int | None = None
+    run_terminal: bool | None = None
+    scanned_events: int
+    complete: bool = True
+
+
 class RunView(RunSummaryView):
     result_present: bool
     result: str | None = None
@@ -390,6 +428,49 @@ class RunView(RunSummaryView):
     git: GitView | None = None
     timed_out: bool | None = None
     reread_error: str | None = None
+    activity: ActivityView | None = None
+    activity_error: str | None = None
+
+
+class SupervisedAgentView(BaseModel):
+    """One agent and its latest run, as seen in a single supervision pass."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    name: str | None = None
+    url: str
+    agent_status: str
+    run_id: str | None = None
+    status: str | None = None
+    terminal: bool | None = None
+    created_at: str | None = None
+    duration_ms: int | None = None
+    result_present: bool | None = None
+    error: str | None = None
+    read_error: str | None = None
+    activity: ActivityView | None = None
+    activity_error: str | None = None
+
+
+class SuperviseSummaryView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agents: int
+    by_status: dict[str, int]
+    stale: list[str] | None = None
+    unfinished_after_end: list[str] | None = None
+    read_errors: int | None = None
+
+
+class SuperviseView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[SupervisedAgentView]
+    summary: SuperviseSummaryView
+    scanned: int | None = None
+    has_more: bool
+    next_cursor: str | None = None
 
 
 class CreateAgentView(BaseModel):
@@ -414,6 +495,7 @@ class CreateRunView(BaseModel):
     previous_latest_run_id: str | None = None
     url: str | None = None
     model_id: str | None = None
+    replaced_run_id: str | None = None
     next_step: str
 
 
@@ -497,6 +579,8 @@ class RunEventsView(BaseModel):
     run_status: str | None = None
     retention_seconds: int | None = None
     truncated: bool
+    last_event_at: str | None = None
+    scanned_events: int | None = None
 
 
 class ArtifactItemView(BaseModel):

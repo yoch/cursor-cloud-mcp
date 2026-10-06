@@ -2,7 +2,15 @@
 
 Instructions for an agent that must install or use this MCP server. Read this file in full before acting. The details of the API contract are in `docs/api-contract.md`. Extended troubleshooting is in `README.md`.
 
-This server is local, over stdio. It exposes sixteen tools for the Cursor Cloud Agents v1 REST API. It is used to create a Cloud session, choose the model and the reasoning level, send a command, read the result, then archive or delete the session. It is not an orchestration platform. The package is not on PyPI: it runs from a copy of this repository.
+This server is local, over stdio. It exposes seventeen tools for the Cursor Cloud Agents v1 REST API. It is used to create a Cloud session, choose the model and the reasoning level, send a command, read the result, then archive or delete the session. It is not an orchestration platform. The package is not on PyPI: it runs from a copy of this repository.
+
+## Migration 0.2 → 0.3
+
+- New read-only tool `cursor_supervise`: every runner and the state of its latest run in one call (see "Supervising runners").
+- `cursor_get_run(activity=true)` adds what the stream shows: `last_event_at`, `idle_seconds`, last assistant text and tool call, background tasks. It is added automatically to a terminal run without a result.
+- `cursor_read_run_events(tail=N)` returns the last N events, without manual paging.
+- `cursor_create_run(replace_active=true)` cancels the current run, waits until it is terminal, then sends the follow-up.
+- Errors are pure JSON: the text of an `isError` result is the error object itself, with no "Error executing tool" prefix. Only a malformed argument, rejected by the MCP SDK before the tool runs, still returns plain text.
 
 ## Migration 0.1 → 0.2
 
@@ -35,6 +43,8 @@ test -x .venv/bin/cursor-cloud-mcp
 ```
 
 The binary to register in the client is the absolute path of `.venv/bin/cursor-cloud-mcp`. Equivalent: `uv run python -m cursor_cloud_mcp`, always from this root.
+
+A virtual environment cannot be moved: its scripts start with an absolute path to its Python (shebang). After moving or copying the folder, run `uv sync` again in the new place. To avoid absolute paths altogether, register `uv run --directory /path/to/cursor-cloud-mcp cursor-cloud-mcp` as the command.
 
 `uv run pytest` is the local check. It does not contact Cursor.
 
@@ -181,6 +191,39 @@ Useful parameters of `cursor_create_agent`:
 
 `cursor_get_run` gives the state, the final text and the run's `error` if any. A long result is sliced with `result_offset` and `result_limit` (default 12000, maximum 20000). `FINISHED` proves neither that the tests ran nor that a pull request is correct.
 
+### Supervising runners
+
+What the API does not tell you, measured on October 6, 2026. These are API limits; the MCP works around them where it can.
+
+- `FINISHED` means the agent ended its turn, not that its job is done. Jobs it started in the background may have been killed or may still be running.
+- A `RUNNING` run keeps `updated_at` at its creation time, even after hours: it is not a liveness signal.
+- An `ERROR` run carries no cause: neither `error` nor `result`.
+- A run in progress cannot receive a message: a follow-up answers `AGENT_BUSY`.
+- The stream can only be replayed from its start.
+
+What to use instead:
+
+```text
+cursor_supervise(name="runner")                 every runner, latest run, one call (a few seconds)
+cursor_supervise(name="runner", activity=true)  + last_event_at, idle_seconds, background tasks (about 30-60 s)
+cursor_get_run(agent_id, run_id, activity=true) detail of one run: last text, last tool call, background tasks
+cursor_read_run_events(..., tail=20)            the last 20 events
+cursor_create_run(..., replace_active=true)     redirect a runner: stop its run, then follow up
+```
+
+- Liveness is `idle_seconds`: the time since the run's last stream event. `summary.stale` lists the runs idle for more than `stale_after_minutes`.
+- `background_tasks` lists the commands the agent started in the background, with their last observed state (`running` or `complete`) and when it was observed. It is the last thing the stream shows, not proof that the process is alive. `unfinished_background_tasks > 0` on a `FINISHED` run means a job was last seen running when the agent ended its turn: check its output before trusting the result. `summary.unfinished_after_end` lists those runs.
+- For an `ERROR` run, `cursor_get_run` adds the activity summary on its own: the last tool call is the best available hint of what was going on.
+- `activity` and `tail` replay the whole stream, because the API cannot start from its end. They stop at the run's result, at the first live event, or at the server's first heartbeat, which can take about 35 s on an idle run. `complete: false` or `truncated: true` means that point was not reached.
+- A follow-up on the same agent keeps the conversation: send only the new instruction, not a full resume prompt. `replace_active=true` cancels the current run first: its work in progress stops, pushed commits stay. Nothing is sent if the run does not end in time (`AGENT_BUSY`).
+- Scripts: keep one MCP session open for all calls. Starting the stdio server for every call costs a few seconds each time.
+
+Prompting long-running runners makes all of this easier:
+
+- ask the agent not to end its turn while its job runs, and to wait for it (it can `await` a background task);
+- ask it to put the useful result, or a clear failure reason, in its final answer;
+- ask it to push progress or a status file to a branch, which outlives the VM.
+
 ### Result to retrieve
 
 Ask in the prompt for the useful result to be in the agent's final response. Read it with `cursor_get_run`.
@@ -234,3 +277,4 @@ A client that cuts off before 95 seconds may abandon a creation that was already
 - `STREAM_EXPIRED`: the stream can no longer be replayed. Read `cursor_get_run`.
 - stderr announces `SIMULATED MODE`: `CURSOR_MCP_FIXTURE=1`. This mode refuses a real key and does not contact Cursor. Do not enable it for real use.
 - A client reports invalid JSON: something wrote to stdout. The MCP channel must be alone on stdout.
+- Scripts fail with "bad interpreter" or "No such file" after moving the folder: the virtual environment kept the old absolute path. Run `uv sync` again in the new place.

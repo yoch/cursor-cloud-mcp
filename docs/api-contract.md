@@ -31,7 +31,7 @@ Authentication chosen: `Authorization: Bearer`. The OpenAPI also accepts Basic w
 | `GET /v1/agents/{id}/runs/{runId}` | 200 `Run` | `cursor_get_run` |
 | `POST /v1/agents/{id}/runs` | 201 `CreateRunResponse` | `cursor_create_run` |
 | `POST /v1/agents/{id}/runs/{runId}/cancel` | 200 `IdResponse` | `cursor_cancel_run` |
-| `GET /v1/agents/{id}/runs/{runId}/stream` | 200 `text/event-stream` | `cursor_read_run_events` |
+| `GET /v1/agents/{id}/runs/{runId}/stream` | 200 `text/event-stream` | `cursor_read_run_events`, `cursor_get_run(activity)`, `cursor_supervise(activity)` |
 | `GET /v1/agents/{id}/usage` | 200 `AgentUsageResponse` | `cursor_get_usage` |
 | `GET /v1/agents/{id}/artifacts` | 200 `ListArtifactsResponse` | `cursor_list_artifacts` |
 | `GET /v1/agents/{id}/artifacts/download` | 200 `DownloadArtifactResponse` | `cursor_read_artifact` |
@@ -58,7 +58,7 @@ Authentication chosen: `Authorization: Bearer`. The OpenAPI also accepts Basic w
 
 `GET /v1/agents` and `GET /v1/agents/{id}/runs`: `limit` (1 to 100) and `cursor` only if provided. `GET /v1/agents` adds `includeArchived` and `prUrl` only if provided. The API refuses any other filter (`400`, "Unrecognized key(s)", verified on October 5, 2026 for `name`, `q`, `search`, `status`, `sort`): the name search of `cursor_list_agents` therefore walks at most five pages of one hundred and filters locally.
 
-`GET /v1/agents/{id}/runs/{runId}/stream`: `Last-Event-ID` header only if provided. Reading stops on `done`, `result` or `error`, at the local deadline, or at 1 MB. `error` is a stream error, returned as `stream_error`: only `result` and `done` mark `finished`. UTF-8 decoding is incremental, so that a character split between two network chunks stays intact. `heartbeat` and `interaction_update` are not returned to the caller. Consecutive `assistant` (and `thinking`) fragments, sent word by word by the API, are merged into one event of at most 4000 characters, which carries the identifier of the last fragment.
+`GET /v1/agents/{id}/runs/{runId}/stream`: `Last-Event-ID` header only if provided. Reading stops on `done`, `result` or `error`, at the local deadline, or at 1 MB. `error` is a stream error, returned as `stream_error`: only `result` and `done` mark `finished`. UTF-8 decoding is incremental, so that a character split between two network chunks stays intact. `heartbeat` and `interaction_update` are not returned to the caller. Consecutive `assistant` (and `thinking`) fragments, sent word by word by the API, are merged into one event of at most 4000 characters, which carries the identifier of the last fragment. The `tail` mode and the activity summary send no `Last-Event-ID`: they walk the whole replay (see "Stream replay and supervision" below).
 
 `GET /v1/agents/{id}/artifacts/download`: `path`, relative, `artifacts/` prefix, no `..`.
 
@@ -76,7 +76,7 @@ Authentication chosen: `Authorization: Bearer`. The OpenAPI also accepts Basic w
 - Cancellation, archiving, unarchiving, deletion: `id`. It is compared to the requested identifier when present.
 - Usage: `totalUsage` and `runs[].usage` with `inputTokens`, `outputTokens`, `cacheWriteTokens`, `cacheReadTokens`, `totalTokens`. `usageUuid` if present. `cost` and `runs[].cost` (`rawCostCents`, `chargedCents`) if present: absent from the September 30 OpenAPI, but returned by the real API on October 5, 2026 and typed by the Cursor SDK. Rendered in cents, rounded to 4 decimals, never estimated.
 - Artifacts: `items[]` with `path`, `sizeBytes`, `updatedAt`. The download returns `url` and `expiresAt`. The presigned URL is followed only if it is HTTPS and the host ends with `.amazonaws.com`, with no redirect and no `Authorization` header.
-- Stream: events `status`, `assistant`, `tool_call`, `result`, `error`, `done`, and `thinking` only on request. The `X-Cursor-Stream-Retention-Seconds` header is kept if present.
+- Stream: events `status`, `assistant`, `tool_call`, `result`, `error`, `done`, and `thinking` only on request. The `X-Cursor-Stream-Retention-Seconds` header is kept if present. For the activity summary: event ids read as millisecond timestamps (`<ms>-<sequence>`, otherwise ignored), `run_terminal_cmd` calls with `args.isBackground` or `result.isBackground` and their `result.success.shellId`, and `await` results `success.stillRunning` / `success.complete` (`taskId`, `runtimeMs`). `heartbeat` ends a replay walk.
 
 Known run states: `CREATING`, `RUNNING`, `FINISHED`, `ERROR`, `CANCELLED`, `EXPIRED`. The last four are terminal. Any other state is kept and is not a success.
 
@@ -133,6 +133,9 @@ Re-read on October 5, 2026 against the code of the official Python SDK `cursor-s
 | Agent metadata (`metadata`) | no | no | yes | no |
 | Conversation of a run | no (SSE stream and `cursor_get_run`) | no | yes, rebuilt client-side from `interaction_update` | no |
 | Observation with resume by ordinal (`observe`) | no | no | bridge only | no |
+| Liveness of a running run | yes (`last_event_at` from event ids) | no (`updatedAt` frozen) | no | yes (October 6, 2026) |
+| Reading the end of a stream | yes (full replay walk) | no | no | no server-side tail (October 6, 2026) |
+| Message to a run in progress | no (`replace_active`: cancel, then follow up) | no | no (`steer` reverts to a follow-up for cloud agents) | `agent_busy` |
 
 ### `Idempotency-Key`: real test of October 5, 2026
 
@@ -157,3 +160,15 @@ Authorized paid test, direct REST v1. An agent with no repository, created with 
 | 3 | follow-up run **without** `model` | "Claude Haiku 4.5" | re-reads exactly the 18,618 tokens cached at run 2; 0.28 cents |
 
 Conclusion: `model` on a follow-up run changes the model, and the choice persists for the following runs. Neither the agent, nor the run, nor the stream mentions the active model: the caller must remember the one it chose. Total cost: 3.54 cents, agent deleted.
+
+### Stream replay and supervision: real observations of October 6, 2026
+
+GET requests only, on the account's real runs.
+
+- **`updatedAt` of a `RUNNING` run stays at creation + 1 s**, even after 7 hours of activity (3 runs). It is no liveness signal.
+- **Event ids are millisecond timestamps**: `1791250392023-0` came 7 s after the run's creation. `heartbeat` and the first `status` event carry no id.
+- **No server-side tail.** A made-up `Last-Event-ID` of the form `<ms>-0` is accepted but returns no past event, 5, 30 or 60 minutes back; without the `-0` suffix, or invalid, it answers `400 invalid_last_event_id` ("Last-Event-ID must refer to an event within the requested run"). The only way to the latest events is the full replay: 2,426 events and 839 KB for a 7-hour run.
+- **No end-of-replay marker**: no SSE comment, no `retry:` field, no dedicated event type; `interaction_update` carries only progress types (`token-delta`, `step-started`, `tool-call-completed`…). A replay can pause 1.3 s before its first event and 1.1 s in the middle; under 6 parallel reads, an 851 KB replay took 15 s. On the 6 active runs read in parallel, the first `heartbeat` came 30 to 36 s after connecting, always after the replay, then every 15 s. A replay walk therefore stops only on `result`/`done`, on an event newer than the connection, or on `heartbeat`, never on a silence.
+- **An `ERROR` run carries no cause**: the only one younger than 24 hours ended its stream with `status: ERROR`, a `result` event without text or error, and `done`, after 4 h 27 min. Its last tool call was an `await` on a background task, still `running`.
+- **Background tasks are visible**: a `run_terminal_cmd` launched in the background returns `success.shellId` (the task id), `pid` and the command; `await` returns `success.stillRunning {taskId, runtimeMs, …}` or `success.complete {taskId, runtimeMs, …}`.
+- **No run listing across agents**: `GET /v1/agents` returns `latestRunId`, not the run's status.
