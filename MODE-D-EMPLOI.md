@@ -4,6 +4,13 @@ Consigne pour un agent qui doit installer ou utiliser ce serveur MCP. Lis ce fic
 
 Ce serveur est local, sur stdio. Il expose seize outils pour l'API REST Cursor Cloud Agents v1. Il sert à créer une session Cloud, choisir le modèle et le niveau de réflexion, envoyer une commande, lire le retour, puis archiver ou supprimer la session. Ce n'est pas une plateforme d'orchestration. Le paquet n'est pas sur PyPI : il se lance depuis une copie de ce dépôt.
 
+## Migration 0.1 → 0.2
+
+- Dix-neuf outils deviennent seize : `cursor_wait_run` → `cursor_get_run(wait_seconds=…)`, `cursor_get_artifact_url` → `cursor_read_artifact(url_only=true)`, `cursor_unarchive_agent` → `cursor_archive_agent(unarchive=true)`.
+- `starting_sha` n'existe plus : utilise `starting_ref`.
+- `cursor_cancel_run` rend `outcome` (`cancelled`, `ended_without_cancel`, `still_running`, `unknown`) ; `outcome_confirmed` ne vaut `true` que pour `CANCELLED`.
+- `cursor_get_run(wait_seconds=…)` peut rendre `reread_error` : la relecture a échoué après une première lecture, et l'observation rendue est antérieure à l'erreur.
+
 ## Règles
 
 - La clé `CURSOR_API_KEY` vient uniquement de l'environnement du processus MCP. Ne la mets pas en argument de commande, dans un outil, dans un fichier suivi par Git, ni dans un exemple. Ne l'affiche pas, ne la journalise pas, ne copie pas `.env`.
@@ -162,7 +169,7 @@ Paramètres utiles de `cursor_create_agent` :
 - `model_params` : les autres paramètres, par exemple `[{"id": "thinking", "value": "true"}]`. Une combinaison absente du catalogue est refusée avant l'envoi.
 - `mode` : `agent` ou `plan`.
 - `auto_create_pr` : `false` par défaut.
-- `agent_id` : facultatif. Omis, le serveur en génère un et le renvoie, même dans `MUTATION_OUTCOME_UNKNOWN`. Réutilise-le si l'appel est coupé. Donne aussi un `name` reconnaissable : c'est ce qui permet de retrouver l'agent si ton client coupe l'appel avant toute réponse.
+- `agent_id` : facultatif. Omis, le serveur en génère un, mais tu ne le connais que si une réponse t'arrive (succès ou `MUTATION_OUTCOME_UNKNOWN`). Pour une création sensible, fournis et conserve toi-même un `agent_id` avant l'appel, et réutilise-le si l'appel est coupé. Donne aussi un `name` reconnaissable : c'est ce qui permet de retrouver l'agent si ton client abandonne avant toute réponse.
 - `repository` et `starting_ref` : un dépôt. `starting_ref` est un nom de branche, pas un SHA. Un SHA complet est refusé localement, après un refus de l'API observé le 1er octobre 2026.
 - `repositories` : jusqu'à vingt dépôts. Plusieurs dépôts exigent un pool nommé.
 - `env_type` : `cloud`, `pool` ou `machine`. Un environnement cloud nommé ne se combine pas à des dépôts.

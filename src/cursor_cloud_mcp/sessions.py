@@ -123,7 +123,7 @@ async def perform_followup(
         body["mode"] = checked_mode
     if model_body is not None:
         body["model"] = model_body
-    remote = await client.create_run(agent.id, body, previous_latest_run_id=agent.latestRunId)
+    remote = await client.create_run(agent_id, body, previous_latest_run_id=agent.latestRunId)
     view = create_run_view(remote, previous_latest_run_id=agent.latestRunId, url=agent.url)
     if model_body is None:
         return view

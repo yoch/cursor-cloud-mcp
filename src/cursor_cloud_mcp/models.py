@@ -389,6 +389,7 @@ class RunView(RunSummaryView):
     error: str | None = None
     git: GitView | None = None
     timed_out: bool | None = None
+    reread_error: str | None = None
 
 
 class CreateAgentView(BaseModel):
