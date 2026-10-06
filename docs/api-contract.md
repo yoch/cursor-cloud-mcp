@@ -1,25 +1,25 @@
-# Contrat API utilisé
+# API contract used
 
-Consultation du 30 septembre 2026, relue le 1er octobre 2026. L'empreinte du fichier brut est inchangée.
+Consulted on September 30, 2026, re-read on October 1, 2026. The raw file's fingerprint is unchanged.
 
-Ce document ne recopie pas l'OpenAPI. Il fixe les champs que ce MCP envoie ou lit. En cas d'écart avec `mission_cursor_cloud_mcp.md`, le contrat officiel relu prime. Les écarts sont listés plus bas.
+This document does not copy the OpenAPI. It fixes the fields this MCP server sends or reads. The officially read contract prevails over any other source. The discrepancies are listed below.
 
 ## Source
 
-- Page endpoints : <https://cursor.com/docs/cloud-agent/api/endpoints>
-- Lien OpenAPI suivi depuis cette page : <https://cursor.com/docs-static/cloud-agents-openapi.yaml>
-- Réponse HTTP du téléchargement : `200`, `content-type: text/yaml; charset=utf-8`, `date: Wed, 30 Sep 2026 19:13:31 GMT`, `etag: "fb90bd68a38f8414b4d85c52e6bfa7e0"`, 59344 octets
-- `info.title` : Cursor Cloud Agents API
-- `info.version` : `1.0.0`
-- `openapi` : `3.0.3`
-- Serveur : `https://api.cursor.com`
-- Empreinte SHA-256 du fichier brut : `7fb350f40e928721afaba13d44377880f235f087734bc26ef51b54f7323ad209`
+- Endpoints page: <https://cursor.com/docs/cloud-agent/api/endpoints>
+- OpenAPI link followed from that page: <https://cursor.com/docs-static/cloud-agents-openapi.yaml>
+- HTTP response of the download: `200`, `content-type: text/yaml; charset=utf-8`, `date: Wed, 30 Sep 2026 19:13:31 GMT`, `etag: "fb90bd68a38f8414b4d85c52e6bfa7e0"`, 59344 bytes
+- `info.title`: Cursor Cloud Agents API
+- `info.version`: `1.0.0`
+- `openapi`: `3.0.3`
+- Server: `https://api.cursor.com`
+- SHA-256 fingerprint of the raw file: `7fb350f40e928721afaba13d44377880f235f087734bc26ef51b54f7323ad209`
 
-Authentification retenue : `Authorization: Bearer`. L'OpenAPI accepte aussi Basic avec la clé comme nom d'utilisateur et un mot de passe vide. Les deux schémas sont documentés comme équivalents. Aucune redirection n'est suivie.
+Authentication chosen: `Authorization: Bearer`. The OpenAPI also accepts Basic with the key as the username and an empty password. Both schemes are documented as equivalent. No redirect is followed.
 
-## Endpoints utilisés
+## Endpoints used
 
-| Méthode et chemin | Succès OpenAPI | Rôle dans ce MCP |
+| Method and path | OpenAPI success | Role in this MCP server |
 |---|---|---|
 | `GET /v1/me` | 200 `ApiKeyInfo` | `cursor_get_account` |
 | `GET /v1/models` | 200 `ListModelsResponse` | `cursor_list_models` |
@@ -36,124 +36,124 @@ Authentification retenue : `Authorization: Bearer`. L'OpenAPI accepte aussi Basi
 | `GET /v1/agents/{id}/artifacts` | 200 `ListArtifactsResponse` | `cursor_list_artifacts` |
 | `GET /v1/agents/{id}/artifacts/download` | 200 `DownloadArtifactResponse` | `cursor_read_artifact` |
 | `POST /v1/agents/{id}/archive` | 200 `IdResponse` | `cursor_archive_agent` |
-| `POST /v1/agents/{id}/unarchive` | 200 `IdResponse` | `cursor_archive_agent` avec `unarchive=true` |
+| `POST /v1/agents/{id}/unarchive` | 200 `IdResponse` | `cursor_archive_agent` with `unarchive=true` |
 | `DELETE /v1/agents/{id}` | 200 `IdResponse` | `cursor_delete_agent` |
 
-## Champs envoyés
+## Fields sent
 
-`POST /v1/agents`, uniquement les clés fournies, jamais de `null` :
+`POST /v1/agents`, only the keys provided, never `null`:
 
-- `prompt.text` : obligatoire, non vide
-- `repos` : zéro à vingt éléments `{ "url", "startingRef" }`. Absent s'il n'y a pas de dépôt. `startingRef` est un nom de branche. Le schéma OpenAPI le type comme `string`, mais un essai réel du 1er octobre 2026 a reçu `400 validation_error` pour un SHA complet de 40 caractères, et `201` pour le nom de branche dont la tête était ce SHA
-- `workOnCurrentBranch` : toujours `false`
-- `autoCreatePR` : booléen, `false` si l'appelant ne demande pas `true`
-- `agentId` : `bc-` suivi d'un UUID, fourni ou généré une fois avant l'envoi. Absent quand `envVars` est envoyé : l'API interdit les deux ensemble
-- `name`, `model` (`id` et éventuellement `params[{id,value}]`), `mode` (`agent` ou `plan`) : seulement s'ils sont fournis
-- `env` : `{ "type": "cloud" | "pool" | "machine", "name"? }` seulement s'il est fourni
-- `envVars` : objet de chaînes, au plus 50, seulement s'il est fourni. Les noms ne commencent pas par `CURSOR_`
+- `prompt.text`: required, non-empty
+- `repos`: zero to twenty elements `{ "url", "startingRef" }`. Absent if there is no repository. `startingRef` is a branch name. The OpenAPI schema types it as `string`, but a real trial on October 1, 2026 received `400 validation_error` for a full 40-character SHA, and `201` for the branch name whose head was that SHA
+- `workOnCurrentBranch`: always `false`
+- `autoCreatePR`: boolean, `false` unless the caller asks for `true`
+- `agentId`: `bc-` followed by a UUID, supplied or generated once before sending. Absent when `envVars` is sent: the API forbids both together
+- `name`, `model` (`id` and optionally `params[{id,value}]`), `mode` (`agent` or `plan`): only if provided
+- `env`: `{ "type": "cloud" | "pool" | "machine", "name"? }` only if provided
+- `envVars`: object of strings, at most 50, only if provided. Names do not start with `CURSOR_`
 
-`model.id` est un id du catalogue ; un alias n'est accepté que s'il ne désigne qu'un modèle, et il est envoyé sous la forme de cet id. `model.params` est vérifié contre `GET /v1/models` avant l'envoi : chaque valeur, puis la combinaison, qui doit tenir dans au moins une variante publiée (le catalogue réel du 5 octobre 2026 omet 5 combinaisons sur 20 pour `gpt-5.5`). `reasoning_level` est placé dans le premier paramètre présent parmi `effort`, `reasoning_effort` et `reasoning`.
+`model.id` is a catalog id; an alias is accepted only if it designates a single model, and it is sent as that id. `model.params` is checked against `GET /v1/models` before sending: each value, then the combination, which must fit in at least one published variant (the real catalog of October 5, 2026 omits 5 combinations out of 20 for `gpt-5.5`). `reasoning_level` is placed in the first parameter present among `effort`, `reasoning_effort` and `reasoning`.
 
-`POST /v1/agents/{id}/runs` : `prompt.text`, et `mode` et `model` (même forme et même contrôle que pour la création) seulement s'ils sont fournis.
+`POST /v1/agents/{id}/runs`: `prompt.text`, and `mode` and `model` (same shape and same check as for creation) only if provided.
 
-`GET /v1/agents` et `GET /v1/agents/{id}/runs` : `limit` (1 à 100) et `cursor` seulement s'ils sont fournis. `GET /v1/agents` ajoute `includeArchived` et `prUrl` seulement s'ils sont fournis. L'API refuse tout autre filtre (`400`, « Unrecognized key(s) », vérifié le 5 octobre 2026 pour `name`, `q`, `search`, `status`, `sort`) : la recherche par nom de `cursor_list_agents` parcourt donc au plus cinq pages de cent et filtre localement.
+`GET /v1/agents` and `GET /v1/agents/{id}/runs`: `limit` (1 to 100) and `cursor` only if provided. `GET /v1/agents` adds `includeArchived` and `prUrl` only if provided. The API refuses any other filter (`400`, "Unrecognized key(s)", verified on October 5, 2026 for `name`, `q`, `search`, `status`, `sort`): the name search of `cursor_list_agents` therefore walks at most five pages of one hundred and filters locally.
 
-`GET /v1/agents/{id}/runs/{runId}/stream` : en-tête `Last-Event-ID` seulement s'il est fourni. La lecture s'arrête sur `done`, `result` ou `error`, à l'échéance locale, ou à 1 Mo. `error` est une erreur du flux, rendue comme `stream_error` : seuls `result` et `done` marquent `finished`. Le décodage UTF-8 est incrémental, pour qu'un caractère coupé entre deux blocs réseau reste intact. `heartbeat` et `interaction_update` ne sont pas renvoyés à l'appelant. Les fragments `assistant` (et `thinking`) consécutifs, envoyés mot par mot par l'API, sont fusionnés en un événement de 4000 caractères au plus, qui porte l'identifiant du dernier fragment.
+`GET /v1/agents/{id}/runs/{runId}/stream`: `Last-Event-ID` header only if provided. Reading stops on `done`, `result` or `error`, at the local deadline, or at 1 MB. `error` is a stream error, returned as `stream_error`: only `result` and `done` mark `finished`. UTF-8 decoding is incremental, so that a character split between two network chunks stays intact. `heartbeat` and `interaction_update` are not returned to the caller. Consecutive `assistant` (and `thinking`) fragments, sent word by word by the API, are merged into one event of at most 4000 characters, which carries the identifier of the last fragment.
 
-`GET /v1/agents/{id}/artifacts/download` : `path`, relatif, préfixe `artifacts/`, sans `..`.
+`GET /v1/agents/{id}/artifacts/download`: `path`, relative, `artifacts/` prefix, no `..`.
 
-`GET /v1/agents/{id}/usage` : `runId` seulement s'il est fourni.
+`GET /v1/agents/{id}/usage`: `runId` only if provided.
 
-## Champs lus
+## Fields read
 
-- Compte : `apiKeyName`, `createdAt`, et s'ils sont présents `userId`, `userEmail`, `userFirstName`, `userLastName`. Pas de secret de clé.
-- Modèles : `items[]` avec `id`, `displayName`, et s'ils sont présents `description`, `aliases`, `parameters`, `variants`. Les variantes sont propres à chaque modèle : ce sont les combinaisons qu'il accepte. Le 5 octobre 2026, elles couvraient toutes les combinaisons pour 38 modèles sur 43 ; `gpt-5.5`, `gpt-5.4` et `claude-opus-5` en excluaient, et certaines portaient un paramètre non publié (`cyber`), ignoré ici. Elles servent au contrôle des combinaisons, modèle par modèle, et à `defaults`, et ne sont rendues qu'avec `model_id`.
-- Dépôts : `items[].url`. Pas de curseur dans ce schéma.
-- Agents, page : `items[]` (`id`, `status`, `env`, `url`, `createdAt`, `updatedAt`, `name` et `latestRunId` optionnels) et `nextCursor` s'il est présent. Son absence signifie fin de liste, pas une valeur `null`.
-- Agent : les champs de la page, plus `repos`, `workOnCurrentBranch`, `autoCreatePR` lorsqu'ils sont présents. Une absence reste une absence.
-- Runs, page : `items[]` du schéma `Run` et `nextCursor` selon la même règle.
-- Run : `id`, `agentId`, `status`, `createdAt`, `updatedAt`, et s'ils sont présents `durationMs`, `result`, `error` (forme libre ; `code: message` si c'est un objet), `git.branches[]` (`repoUrl`, `branch`, `prUrl`). `git` est l'état courant de l'agent, pas un instantané immuable du run. `repoUrl` est renvoyé sans schéma. Aucun `final_sha` n'est inventé.
-- Annulation, archivage, désarchivage, suppression : `id`. Il est comparé à l'identifiant demandé quand il est présent.
-- Usage : `totalUsage` et `runs[].usage` avec `inputTokens`, `outputTokens`, `cacheWriteTokens`, `cacheReadTokens`, `totalTokens`. `usageUuid` s'il est présent. `cost` et `runs[].cost` (`rawCostCents`, `chargedCents`) s'ils sont présents : absents de l'OpenAPI du 30 septembre, mais renvoyés par l'API réelle le 5 octobre 2026 et typés par le SDK Cursor. Rendus en centimes, arrondis à 4 décimales, jamais estimés.
-- Artefacts : `items[]` avec `path`, `sizeBytes`, `updatedAt`. Le téléchargement renvoie `url` et `expiresAt`. L'URL présignée n'est suivie que si elle est HTTPS et si l'hôte se termine par `.amazonaws.com`, sans redirection et sans en-tête `Authorization`.
-- Flux : événements `status`, `assistant`, `tool_call`, `result`, `error`, `done`, et `thinking` seulement sur demande. L'en-tête `X-Cursor-Stream-Retention-Seconds` est conservé s'il est présent.
+- Account: `apiKeyName`, `createdAt`, and if present `userId`, `userEmail`, `userFirstName`, `userLastName`. No key secret.
+- Models: `items[]` with `id`, `displayName`, and if present `description`, `aliases`, `parameters`, `variants`. Variants are specific to each model: they are the combinations it accepts. On October 5, 2026, they covered all combinations for most models of the catalog; `gpt-5.5`, `gpt-5.4` and `claude-opus-5` excluded some, and some carried an unpublished parameter (`cyber`), ignored here. They serve the combination check, model by model, and `defaults`, and are returned only with `model_id`.
+- Repositories: `items[].url`. No cursor in this schema.
+- Agents, page: `items[]` (`id`, `status`, `env`, `url`, `createdAt`, `updatedAt`, optional `name` and `latestRunId`) and `nextCursor` if present. Its absence means end of list, not a `null` value.
+- Agent: the page's fields, plus `repos`, `workOnCurrentBranch`, `autoCreatePR` when present. An absence stays an absence.
+- Runs, page: `items[]` of the `Run` schema and `nextCursor` under the same rule.
+- Run: `id`, `agentId`, `status`, `createdAt`, `updatedAt`, and if present `durationMs`, `result`, `error` (free form; `code: message` if it is an object), `git.branches[]` (`repoUrl`, `branch`, `prUrl`). `git` is the agent's current state, not an immutable snapshot of the run. `repoUrl` is returned without a scheme. No `final_sha` is invented.
+- Cancellation, archiving, unarchiving, deletion: `id`. It is compared to the requested identifier when present.
+- Usage: `totalUsage` and `runs[].usage` with `inputTokens`, `outputTokens`, `cacheWriteTokens`, `cacheReadTokens`, `totalTokens`. `usageUuid` if present. `cost` and `runs[].cost` (`rawCostCents`, `chargedCents`) if present: absent from the September 30 OpenAPI, but returned by the real API on October 5, 2026 and typed by the Cursor SDK. Rendered in cents, rounded to 4 decimals, never estimated.
+- Artifacts: `items[]` with `path`, `sizeBytes`, `updatedAt`. The download returns `url` and `expiresAt`. The presigned URL is followed only if it is HTTPS and the host ends with `.amazonaws.com`, with no redirect and no `Authorization` header.
+- Stream: events `status`, `assistant`, `tool_call`, `result`, `error`, `done`, and `thinking` only on request. The `X-Cursor-Stream-Retention-Seconds` header is kept if present.
 
-États de run connus : `CREATING`, `RUNNING`, `FINISHED`, `ERROR`, `CANCELLED`, `EXPIRED`. Les quatre derniers sont terminaux. Tout autre état est conservé et n'est pas un succès.
+Known run states: `CREATING`, `RUNNING`, `FINISHED`, `ERROR`, `CANCELLED`, `EXPIRED`. The last four are terminal. Any other state is kept and is not a success.
 
-États d'agent : la page endpoints décrit `ACTIVE`, `IDLE` et `ARCHIVED`. L'OpenAPI enumère seulement `ACTIVE` et `ARCHIVED`. `IDLE` est donc accepté et affiché. Un état inconnu reste visible.
+Agent states: the endpoints page describes `ACTIVE`, `IDLE` and `ARCHIVED`. The OpenAPI enumerates only `ACTIVE` and `ARCHIVED`. `IDLE` is therefore accepted and displayed. An unknown state stays visible.
 
-`agentId` créé : `^bc-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`.
+Created `agentId`: `^bc-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`.
 
-## Erreurs distantes
+## Remote errors
 
-Corps documenté : `{ "error": { "code", "message", "helpUrl"?, "provider"? } }`. `helpUrl` (HTTPS seulement) et `provider` sont rendus dans `help_url` et `provider` quand ils sont présents, par exemple pour `integration_not_connected`. `invalid_last_event_id` porte une consigne de reprise sans curseur.
+Documented body: `{ "error": { "code", "message", "helpUrl"?, "provider"? } }`. `helpUrl` (HTTPS only) and `provider` are rendered in `help_url` and `provider` when present, for example for `integration_not_connected`. `invalid_last_event_id` carries a resume instruction without a cursor.
 
-Codes cités par le schéma : `unauthorized`, `api_key_not_found`, `plan_required`, `role_forbidden`, `feature_unavailable`, `integration_not_connected`, `validation_error`, `missing_body`, `invalid_model`, `invalid_branch_name`, `repository_required`, `repository_access`, `pr_resolution_failed`, `artifact_not_found`, `service_account_required`, `agent_not_found`, `run_not_found`, `agent_busy`, `agent_archived`, `agent_id_conflict`, `run_not_cancellable`, `rate_limit_exceeded`, `usage_limit_exceeded`, `stream_expired`, `stream_unavailable`, `invalid_last_event_id`, `client_cancelled`, `not_implemented`, `upstream_error`, `internal_error`.
+Codes cited by the schema: `unauthorized`, `api_key_not_found`, `plan_required`, `role_forbidden`, `feature_unavailable`, `integration_not_connected`, `validation_error`, `missing_body`, `invalid_model`, `invalid_branch_name`, `repository_required`, `repository_access`, `pr_resolution_failed`, `artifact_not_found`, `service_account_required`, `agent_not_found`, `run_not_found`, `agent_busy`, `agent_archived`, `agent_id_conflict`, `run_not_cancellable`, `rate_limit_exceeded`, `usage_limit_exceeded`, `stream_expired`, `stream_unavailable`, `invalid_last_event_id`, `client_cancelled`, `not_implemented`, `upstream_error`, `internal_error`.
 
-Statuts utilisés pour classer : 400 validation, 401 authentification, 403 permissions (`feature_unavailable` inclus), 404 ressource absente, 409 conflit, 410 flux expiré, 429 quota. Le 429 peut porter `Retry-After`. Sans cet en-tête, une seule relance GET attend une seconde, dans la deadline. L'OpenAPI mentionne aussi `X-RateLimit-Limit`, `X-RateLimit-Remaining` et `X-RateLimit-Reset`. Aucun identifiant de requête n'est spécifié : les en-têtes `x-request-id`, `request-id` et `x-cursor-request-id` sont conservés seulement s'ils sont présents.
+Statuses used for classification: 400 validation, 401 authentication, 403 permissions (`feature_unavailable` included), 404 missing resource, 409 conflict, 410 expired stream, 429 quota. The 429 may carry `Retry-After`. Without this header, a single GET retry waits one second, within the deadline. The OpenAPI also mentions `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`. No request identifier is specified: the `x-request-id`, `request-id` and `x-cursor-request-id` headers are kept only if present.
 
-`GET /v1/agents/{id}/usage` peut répondre `403 feature_unavailable` (accès anticipé).
+`GET /v1/agents/{id}/usage` may answer `403 feature_unavailable` (early access).
 
-`GET /v1/repositories` est limité à 1 requête par utilisateur et par minute, et 30 par heure. La page indique que la réponse peut prendre des dizaines de secondes.
+`GET /v1/repositories` is limited to 1 request per user per minute, and 30 per hour. The page states that the response may take tens of seconds.
 
-## Ajustements assumés
+## Accepted adjustments
 
-- Les créations sont spécifiées en `201`. Un `200` avec le même JSON est accepté, car le succès se juge sur le schéma, pas sur un statut voisin.
-- Budget par outil : une seule échéance absolue par appel MCP, transmise en temps restant à chaque requête, relecture et pause (45 secondes par défaut, 95 pour la création, la continuation et la liste des dépôts, 45 pour l'annulation, `max_wait_seconds` pour le flux, `wait_seconds` (au moins 45) pour l'attente d'un run). Une mutation n'est pas envoyée s'il reste moins de 5 secondes, ou moins de la moitié de son propre délai.
-- Deadline par requête, à l'intérieur de ce budget : 40 secondes par appel, 90 secondes pour `POST /v1/agents` et `POST /v1/agents/{id}/runs` (une création réelle a dépassé 40 secondes avant de réussir), 90 secondes pour `GET /v1/repositories`, parce que le contrat officiel prévient que cet appel peut durer des dizaines de secondes. `cursor_get_run` avec `wait_seconds` enchaîne des lectures dans une échéance d'au plus 60 secondes. `cursor_read_run_events` borne son attente à 50 secondes.
-- `IDLE` n'est pas dans l'enum OpenAPI de l'agent, mais la page endpoints le définit. Il n'est pas rejeté.
-- Le flux SSE est lu une fois, sans reconnexion interne. `410 stream_expired` devient `STREAM_EXPIRED`.
-- Les artefacts, l'archivage, le désarchivage et la suppression sont exposés. `prUrl` sert de filtre de lecture (`cursor_list_agents`), pas à la création. Les images, `mcpServers`, `customSubagents` et `POST /v1/sub-tokens` restent hors de ce MCP.
-- `startingRef` est ignoré par Cursor lorsque `prUrl` est fourni. Ce MCP n'envoie pas `prUrl`.
-- Un SHA complet n'est pas envoyé dans `startingRef`. L'appelant pousse le commit sur une branche et passe le nom de cette branche dans `starting_ref` (l'ancien alias `starting_sha` est retiré le 5 octobre 2026). Ce contrôle de format ne prouve pas que la branche existe. C'est un contournement daté de l'observation du 1er octobre 2026 : la documentation REST et le bridge SDK v1.0.36 annoncent qu'une référence peut inclure un SHA. Il ne sera retiré qu'après un test réel explicitement autorisé.
-- Une continuation exige `workOnCurrentBranch` explicitement `false` et un statut d'agent connu. Le schéma autorise l'absence de ce champ ; ce MCP la traite comme un refus, pas comme une autorisation. Une lecture conserve au contraire un état inconnu tel quel.
-- Une coupure après l'envoi d'une mutation — en-têtes reçus ou non, pendant la lecture, le décodage ou la fermeture du corps — donne `MUTATION_OUTCOME_UNKNOWN` avec les identifiants, le statut HTTP et le request id connus. Aucune mutation n'est rejouée. Une erreur de fermeture après un corps complet (selon `Content-Length`) n'écrase pas le résultat.
-- Aucun champ du schéma ne choisit la taille CPU, RAM ou GPU d'une VM Cursor. `env.type` `pool` ou `machine` vise un worker auto-hébergé.
-- `CreateRunRequest` n'a pas de champ `model` dans l'OpenAPI consulté, mais l'API réelle l'accepte et le valide (test du 5 octobre 2026 ci-dessous). Ce MCP le transmet quand `model_id` est fourni.
+- Creations are specified as `201`. A `200` with the same JSON is accepted, because success is judged on the schema, not on a neighboring status.
+- Per-tool budget: a single absolute deadline per MCP call, passed as remaining time to each request, re-read and pause (45 seconds by default, 95 for creation, follow-up runs and the repository list, 45 for cancellation, `max_wait_seconds` for the stream, `wait_seconds` (at least 45) for waiting on a run). A mutation is not sent if less than 5 seconds remain, or less than half of its own timeout.
+- Per-request deadline, within this budget: 40 seconds per call, 90 seconds for `POST /v1/agents` and `POST /v1/agents/{id}/runs` (a real creation exceeded 40 seconds before succeeding), 90 seconds for `GET /v1/repositories`, because the official contract warns that this call can take tens of seconds. `cursor_get_run` with `wait_seconds` chains reads within a deadline of at most 60 seconds. `cursor_read_run_events` bounds its wait to 50 seconds.
+- `IDLE` is not in the agent's OpenAPI enum, but the endpoints page defines it. It is not rejected.
+- The SSE stream is read once, with no internal reconnection. `410 stream_expired` becomes `STREAM_EXPIRED`.
+- Artifacts, archiving, unarchiving and deletion are exposed. `prUrl` serves as a read filter (`cursor_list_agents`), not for creation. Images, `mcpServers`, `customSubagents` and `POST /v1/sub-tokens` remain out of this MCP server.
+- `startingRef` is ignored by Cursor when `prUrl` is supplied. This MCP server does not send `prUrl`.
+- A full SHA is not sent in `startingRef`. The caller pushes the commit to a branch and passes that branch's name in `starting_ref` (the old `starting_sha` alias was removed on October 5, 2026). This format check does not prove that the branch exists. It is a workaround dated from the October 1, 2026 observation: the REST documentation and the SDK v1.0.36 bridge say a reference may include a SHA. It will be removed only after an explicitly authorized real test.
+- A follow-up run requires `workOnCurrentBranch` explicitly `false` and a known agent status. The schema allows this field to be absent; this MCP server treats its absence as a refusal, not as an authorization. A read, on the contrary, keeps an unknown state as is.
+- A cut after a mutation is sent — headers received or not, during the reading, decoding or closing of the body — yields `MUTATION_OUTCOME_UNKNOWN` with the known identifiers, HTTP status and request id. No mutation is replayed. A close error after a complete body (according to `Content-Length`) does not overwrite the result.
+- No schema field chooses the CPU, RAM or GPU size of a Cursor VM. `env.type` `pool` or `machine` targets a self-hosted worker.
+- `CreateRunRequest` has no `model` field in the consulted OpenAPI, but the real API accepts and validates it (test of October 5, 2026 below). This MCP server passes it when `model_id` is supplied.
 
-## Matrice de support
+## Support matrix
 
-Relue le 5 octobre 2026 contre le code du SDK Python officiel `cursor-sdk` 1.0.36 et de son bridge Node. Pour un agent cloud, le bridge appelle le même REST v1 (`https://api.cursor.com`, client `CloudApiClient`) que ce MCP : la colonne « SDK → REST » indique ce que le SDK envoie réellement à ce REST, même quand l'OpenAPI du 30 septembre ne le documente pas. « Bridge seul » signifie sans équivalent REST.
+Re-read on October 5, 2026 against the code of the official Python SDK `cursor-sdk` 1.0.36 and its Node bridge. For a cloud agent, the bridge calls the same REST v1 (`https://api.cursor.com`, `CloudApiClient` client) as this MCP server: the "SDK → REST" column shows what the SDK actually sends to this REST API, even when the September 30 OpenAPI does not document it. "Bridge only" means no REST equivalent.
 
-| Capacité | Ce MCP | OpenAPI du 30 septembre | SDK → REST | Vérifié en réel |
+| Capability | This MCP server | September 30 OpenAPI | SDK → REST | Verified live |
 |---|---|---|---|---|
-| Création, continuation, annulation, archivage, suppression | oui | oui | oui | oui (1er et 5 octobre 2026) |
-| `startingRef` en nom de branche | oui | oui | oui | oui |
-| `startingRef` en SHA complet | refusé localement | annoncé | annoncé | refusé (400) le 1er octobre 2026 |
-| Filtre `prUrl` de `GET /v1/agents` | oui (`pr_url`) | oui | oui | oui (5 octobre 2026) |
-| Coût brut / facturé (`cost`) | oui (`cursor_get_usage`) | non | oui | oui (5 octobre 2026) |
-| Erreur d'un run (`Run.error`) | oui, si présente | non | oui | jamais observée : absente des runs `ERROR` relus le 5 octobre 2026 |
-| `helpUrl`, `provider` des erreurs | oui | oui | oui | non |
-| Images dans le prompt | non | oui | oui | non |
-| Serveurs MCP distants (`mcpServers`) | non | oui | oui | non |
-| Sous-agents personnalisés | non | oui | oui | non |
-| Clé d'idempotence (`Idempotency-Key`, création et envoi) | non (`agentId` fixé avant l'envoi à la place) | non | oui (uuid4 par création) | **ignorée** (5 octobre 2026, voir ci-dessous) |
-| Modèle par envoi (`model` sur `POST .../runs`) | oui (`model_id` de `cursor_create_run`) | non | oui | **oui, et persistant** (5 octobre 2026, voir ci-dessous) |
-| Variables d'environnement limitées à un run | non | non | oui | non |
-| Métadonnées d'agent (`metadata`) | non | non | oui | non |
-| Conversation d'un run | non (flux SSE et `cursor_get_run`) | non | oui, reconstruite côté client depuis `interaction_update` | non |
-| Observation avec reprise par ordinal (`observe`) | non | non | bridge seul | non |
+| Creation, follow-up run, cancellation, archiving, deletion | yes | yes | yes | yes (October 1 and 5, 2026) |
+| `startingRef` as a branch name | yes | yes | yes | yes |
+| `startingRef` as a full SHA | refused locally | announced | announced | refused (400) on October 1, 2026 |
+| `prUrl` filter of `GET /v1/agents` | yes (`pr_url`) | yes | yes | yes (October 5, 2026) |
+| Raw / charged cost (`cost`) | yes (`cursor_get_usage`) | no | yes | yes (October 5, 2026) |
+| Run error (`Run.error`) | yes, if present | no | yes | never observed: absent from the `ERROR` runs re-read on October 5, 2026 |
+| `helpUrl`, `provider` of errors | yes | yes | yes | no |
+| Images in the prompt | no | yes | yes | no |
+| Remote MCP servers (`mcpServers`) | no | yes | yes | no |
+| Custom subagents | no | yes | yes | no |
+| Idempotency key (`Idempotency-Key`, creation and send) | no (`agentId` fixed before sending instead) | no | yes (uuid4 per creation) | **ignored** (October 5, 2026, see below) |
+| Model per send (`model` on `POST .../runs`) | yes (`model_id` of `cursor_create_run`) | no | yes | **yes, and persistent** (October 5, 2026, see below) |
+| Environment variables limited to one run | no | no | yes | no |
+| Agent metadata (`metadata`) | no | no | yes | no |
+| Conversation of a run | no (SSE stream and `cursor_get_run`) | no | yes, rebuilt client-side from `interaction_update` | no |
+| Observation with resume by ordinal (`observe`) | no | no | bridge only | no |
 
-### `Idempotency-Key` : test réel du 5 octobre 2026
+### `Idempotency-Key`: real test of October 5, 2026
 
-Test payant autorisé, `composer-2.5`, en-tête exactement tel que le SDK l'envoie (`Idempotency-Key: <uuid4>`), REST v1 direct :
+Authorized paid test, `composer-2.5`, header exactly as the SDK sends it (`Idempotency-Key: <uuid4>`), direct REST v1:
 
-- Création avec `envVars` et sans `agentId`, trois POST avec la même clé : trois `201`, **trois agents distincts**. Le troisième POST avait un corps différent : ni refus ni rejeu.
-- Création sans `envVars`, deux POST avec la même clé : deux `201`, **deux agents distincts**.
-- Continuation, deux POST avec la même clé, coup sur coup : le premier crée un run, le second reçoit `409 agent_busy`, pas le même run.
-- Aucun en-tête de réponse ne mentionne l'idempotence. Cinq agents créés, tous supprimés ; coût total relu : 4,26 centimes.
+- Creation with `envVars` and without `agentId`, three POSTs with the same key: three `201`, **three distinct agents**. The third POST had a different body: neither refusal nor replay.
+- Creation without `envVars`, two POSTs with the same key: two `201`, **two distinct agents**.
+- Follow-up run, two POSTs with the same key, back to back: the first creates a run, the second receives `409 agent_busy`, not the same run.
+- No response header mentions idempotency. Five agents created, all deleted; total cost re-read: 4.26 cents.
 
-Conclusion : l'API REST ignore cet en-tête. Ce MCP ne l'envoie pas. Le seul garde-fou contre une création en double reste `agentId`, fixé avant l'envoi ; avec `envVars`, que l'API refuse avec `agentId`, une issue inconnue se résout par `cursor_list_agents(name=...)`. Un rejeu de création reste donc interdit après `MUTATION_OUTCOME_UNKNOWN`.
+Conclusion: the REST API ignores this header. This MCP server does not send it. The only guard against a duplicate creation remains `agentId`, fixed before sending; with `envVars`, which the API refuses together with `agentId`, an unknown outcome is resolved by `cursor_list_agents(name=...)`. A creation replay therefore remains forbidden after `MUTATION_OUTCOME_UNKNOWN`.
 
-### Changement de modèle en cours de session : test réel du 5 octobre 2026
+### Model change mid-session: real test of October 5, 2026
 
-Test payant autorisé, REST v1 direct. Un agent sans dépôt, créé avec `composer-2.5`, reçoit trois fois la même question : nommer le modèle qu'il est.
+Authorized paid test, direct REST v1. An agent with no repository, created with `composer-2.5`, receives the same question three times: name the model it is.
 
-| Run | Envoi | Réponse | Indices |
+| Run | Send | Response | Clues |
 |---|---|---|---|
-| 1 | création, `composer-2.5` | « Composer 2.5 » | 48 s ; 13 662 jetons d'entrée ; 0,81 centime |
-| — | continuation, `model.id` inexistant | `400 validation_error` « Model '…' is not available or invalid » | le champ est lu et validé ; aucun run créé |
-| 2 | continuation, `model: {"id": "claude-haiku-4-5"}` | « Claude Haiku 4.5 » | 7 s ; 18 618 jetons écrits en cache ; 2,45 centimes |
-| 3 | continuation **sans** `model` | « Claude Haiku 4.5 » | relit exactement les 18 618 jetons mis en cache au run 2 ; 0,28 centime |
+| 1 | creation, `composer-2.5` | "Composer 2.5" | 48 s; 13,662 input tokens; 0.81 cents |
+| — | follow-up run, nonexistent `model.id` | `400 validation_error` "Model '…' is not available or invalid" | the field is read and validated; no run created |
+| 2 | follow-up run, `model: {"id": "claude-haiku-4-5"}` | "Claude Haiku 4.5" | 7 s; 18,618 tokens written to cache; 2.45 cents |
+| 3 | follow-up run **without** `model` | "Claude Haiku 4.5" | re-reads exactly the 18,618 tokens cached at run 2; 0.28 cents |
 
-Conclusion : `model` sur une continuation change le modèle, et le choix persiste pour les runs suivants. Ni l'agent, ni le run, ni le flux ne mentionnent le modèle actif : l'appelant doit retenir celui qu'il a choisi. Coût total : 3,54 centimes, agent supprimé.
+Conclusion: `model` on a follow-up run changes the model, and the choice persists for the following runs. Neither the agent, nor the run, nor the stream mentions the active model: the caller must remember the one it chose. Total cost: 3.54 cents, agent deleted.
