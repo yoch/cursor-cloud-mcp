@@ -11,8 +11,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
         with:
           version: "0.8.17"
       - name: Tag matches the package version
@@ -36,7 +36,7 @@ jobs:
           "$python_bin" -m venv /tmp/wheel-env
           /tmp/wheel-env/bin/pip install dist/*.whl
           cd /tmp && /tmp/wheel-env/bin/python "$GITHUB_WORKSPACE/scripts/wheel_smoke.py"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: dist
           path: dist/
@@ -51,7 +51,7 @@ jobs:
       # Trusted Publishing: PyPI accepts this workflow's OIDC token, no stored secret.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: dist
           path: dist/
