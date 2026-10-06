@@ -6,7 +6,7 @@ import sys
 
 from mcp import Client, StdioServerParameters
 
-EXPECTED_TOOLS = 16
+EXPECTED_TOOLS = 17
 
 
 async def main() -> None:

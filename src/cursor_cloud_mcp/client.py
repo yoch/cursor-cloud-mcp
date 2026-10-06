@@ -41,7 +41,7 @@ from cursor_cloud_mcp.models import (
     RemoteRunPage,
     RemoteUsage,
 )
-from cursor_cloud_mcp.validation import require_segment
+from cursor_cloud_mcp.validation import require_segment, same_id
 
 logger = logging.getLogger(__name__)
 
@@ -534,10 +534,9 @@ async def close_quietly(response: httpx.Response) -> None:
 def _require_same_id(received: str, expected: str, label: str) -> None:
     """Refuse a response that describes a different resource than the one requested.
 
-    Identifiers are prefixed UUIDs: the API accepts uppercase hexadecimal digits
-    and replies in lowercase form (verified on October 6, 2026). Case distinguishes nothing.
+    Prefixed UUIDs are compared without case (see ``same_id``), any other id exactly.
     """
-    if received.lower() != expected.lower():
+    if not same_id(received, expected):
         raise failure(
             ErrorCode.INCOMPATIBLE_RESPONSE,
             f"The Cursor response describes a different {label} than the one requested. Nothing was modified.",

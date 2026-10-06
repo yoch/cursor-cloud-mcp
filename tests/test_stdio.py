@@ -51,7 +51,7 @@ async def test_stdio_auto_and_legacy_negotiate_and_call_tools(tmp_path: Path) ->
     async with Client(params) as client:
         assert client.protocol_version == "2026-07-28"
         listed = await client.list_tools()
-        assert len(listed.tools) == 16
+        assert len(listed.tools) == 17
         assert all(tool.input_schema.get("type") == "object" for tool in listed.tools)
         account = await client.call_tool("cursor_get_account", {})
         assert account.is_error is False
@@ -107,7 +107,7 @@ async def test_stdio_auto_and_legacy_negotiate_and_call_tools(tmp_path: Path) ->
     async with Client(params, mode="legacy") as legacy:
         assert legacy.protocol_version == "2025-11-25"
         listed = await legacy.list_tools()
-        assert len(listed.tools) == 16
+        assert len(listed.tools) == 17
         account = await legacy.call_tool("cursor_get_account", {})
         assert account.is_error is False
 

@@ -16,9 +16,26 @@ _SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _AGENT_ID = re.compile(
     r"^bc-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+# Agent and run ids as the API returns them: a prefix and a UUID, hexadecimal, so case-insensitive.
+_PREFIXED_UUID = re.compile(
+    r"^(bc|run)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 _REPO_PIECE = re.compile(r"[A-Za-z0-9_.-]+")
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _MODES = {"agent", "plan"}
+
+
+def same_id(received: str, expected: str) -> bool:
+    """Whether a response names the requested resource.
+
+    The API accepts a prefixed UUID with uppercase hexadecimal digits and answers in lowercase
+    (verified on October 6, 2026): for that format only, case distinguishes nothing. Any other
+    id must match exactly.
+    """
+    if received == expected:
+        return True
+    both_uuids = _PREFIXED_UUID.match(received) is not None and _PREFIXED_UUID.match(expected) is not None
+    return both_uuids and received.lower() == expected.lower()
 
 
 def require_prompt(prompt: str) -> str:

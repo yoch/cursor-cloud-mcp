@@ -1,13 +1,22 @@
 """Creation, follow-up runs and lifecycle of a Cloud agent."""
 
+import asyncio
 import os
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Literal, Never
 
-from cursor_cloud_mcp import redaction
+from cursor_cloud_mcp import budget, redaction
 from cursor_cloud_mcp.catalog import resolve_model_selection
 from cursor_cloud_mcp.client import CursorCloudClient
-from cursor_cloud_mcp.config import ENV_MAX_COUNT, REPO_MAX_COUNT, Settings
+from cursor_cloud_mcp.config import (
+    CANCEL_REREAD_PAUSE_SECONDS,
+    CANCEL_REREADS,
+    ENV_MAX_COUNT,
+    REPO_MAX_COUNT,
+    TOOL_BUDGET_SECONDS,
+    Settings,
+)
 from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure
 from cursor_cloud_mcp.models import (
     ArchiveView,
@@ -17,6 +26,7 @@ from cursor_cloud_mcp.models import (
     ModelParam,
     RepositoryInput,
     agent_status_known,
+    run_terminal,
 )
 from cursor_cloud_mcp.present import (
     create_agent_view,
@@ -30,7 +40,9 @@ from cursor_cloud_mcp.validation import (
     require_env_value,
     require_mode,
     require_prompt,
+    require_segment,
     require_starting_ref,
+    same_id,
 )
 
 
@@ -106,12 +118,14 @@ async def perform_followup(
     model_id: str | None = None,
     model_params: list[ModelParam] | None = None,
     reasoning_level: str | None = None,
+    replace_active: bool = False,
 ) -> CreateRunView:
     checked_prompt = require_prompt(prompt)
     checked_mode = require_mode(mode)
     agent = await client.get_agent(agent_id)
     ensure_continuation_allowed(agent)
     # Verified against the real API on October 5, 2026: model on POST /runs changes the model, and the choice persists.
+    # Validated before anything is cancelled: a rejected model must not stop the current run.
     model_body = await _model_body(
         client,
         model_id=model_id,
@@ -123,11 +137,96 @@ async def perform_followup(
         body["mode"] = checked_mode
     if model_body is not None:
         body["model"] = model_body
-    remote = await client.create_run(agent_id, body, previous_latest_run_id=agent.latestRunId)
+    replaced: str | None = None
+    if replace_active and agent.latestRunId is not None:
+        # The API cannot steer a running cloud run (agent_busy): stop it, then follow up on the
+        # same agent, which keeps its conversation, so no full resume prompt is needed.
+        replaced = await _stop_active_run(client, agent_id, agent.latestRunId)
+    try:
+        remote = await client.create_run(agent_id, body, previous_latest_run_id=agent.latestRunId)
+    except CursorFailure as exc:
+        if replaced is None:
+            raise
+        note = f"Run {replaced} had already been cancelled before this failure."
+        recovery = f"{exc.body.recovery} {note}" if exc.body.recovery else note
+        raise CursorFailure(exc.body.model_copy(update={"recovery": recovery})) from None
     view = create_run_view(remote, previous_latest_run_id=agent.latestRunId, url=agent.url)
-    if model_body is None:
-        return view
-    return view.model_copy(update={"model_id": model_body["id"]})
+    updates: dict[str, object] = {}
+    if model_body is not None:
+        updates["model_id"] = model_body["id"]
+    if replaced is not None:
+        updates["replaced_run_id"] = replaced
+    return view.model_copy(update=updates) if updates else view
+
+
+async def cancel_and_observe(
+    client: CursorCloudClient,
+    agent_id: str,
+    run_id: str,
+    progress: Callable[[int, str], Awaitable[None]] | None = None,
+) -> tuple[str | None, str | None]:
+    """Cancel a run, then re-read it. Returns the last observed status and a re-read error, if any.
+
+    Cancellation is asynchronous: the run can stay RUNNING for a moment after acceptance,
+    or end otherwise during the race. Only a re-read CANCELLED confirms the cancellation.
+    """
+    require_segment(agent_id, label="agent_id")
+    require_segment(run_id, label="run_id")
+    cancelled = await client.cancel_run(agent_id, run_id)
+    if cancelled.id is not None and not same_id(cancelled.id, run_id):
+        raise failure(
+            ErrorCode.INCOMPATIBLE_RESPONSE,
+            "The identifier returned by the cancellation does not match the requested run.",
+        )
+    observed: str | None = None
+    reread_error: str | None = None
+    for attempt in range(CANCEL_REREADS):
+        try:
+            remote = await client.get_run(agent_id, run_id)
+        except CursorFailure as exc:
+            reread_error = exc.body.message
+            break
+        observed = remote.status
+        if progress is not None:
+            await progress(attempt + 1, f"Status re-read: {observed}")
+        if run_terminal(observed) is True or attempt == CANCEL_REREADS - 1:
+            break
+        # A pause only makes sense if there is time left to re-read afterwards.
+        if budget.remaining(TOOL_BUDGET_SECONDS) < CANCEL_REREAD_PAUSE_SECONDS + 1.0:
+            reread_error = "Tool budget exhausted before a terminal state."
+            break
+        await asyncio.sleep(CANCEL_REREAD_PAUSE_SECONDS)
+    return observed, reread_error
+
+
+async def _stop_active_run(client: CursorCloudClient, agent_id: str, run_id: str) -> str | None:
+    """Cancel the agent's current run if it is still going. Returns the id of the run it stopped.
+
+    Nothing is sent afterwards unless the run is re-read terminal: AGENT_BUSY otherwise.
+    """
+    current = await client.get_run(agent_id, run_id)
+    if run_terminal(current.status) is True:
+        return None
+    try:
+        observed, reread_error = await cancel_and_observe(client, agent_id, run_id)
+    except CursorFailure as exc:
+        if exc.body.code is not ErrorCode.CANCEL_NOT_POSSIBLE:
+            raise
+        # The run ended on its own during the race: nothing left to replace.
+        observed, reread_error = (await client.get_run(agent_id, run_id)).status, None
+        if run_terminal(observed) is True:
+            return None
+    if run_terminal(observed) is not True:
+        seen = observed or "unknown"
+        detail = f" ({reread_error})" if reread_error else ""
+        raise failure(
+            ErrorCode.AGENT_BUSY,
+            f"Run {run_id} was asked to cancel but is still {seen}{detail}. Nothing was sent: "
+            "re-read it with cursor_get_run, then send the follow-up again.",
+            agent_id=agent_id,
+            run_id=run_id,
+        )
+    return run_id
 
 
 async def perform_archive(

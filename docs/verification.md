@@ -1,5 +1,33 @@
 # Verification
 
+## Runner supervision, version 0.3.0 (October 6, 2026)
+
+Following the feedback of an agent that supervised about ten runners overnight with version 0.1. What belongs to the API and what this server does about it is in the README ("What the API does not tell you"); the raw observations are in `docs/api-contract.md` ("Stream replay and supervision").
+
+- New `cursor_supervise`; `activity` on `cursor_get_run`; `tail` on `cursor_read_run_events`; `replace_active` on `cursor_create_run`; errors returned as pure JSON. 17 tools.
+- `uv run pytest`: **110 passed** under Python 3.13 and 3.12, including the new `tests/test_supervision.py` (stream shapes recorded from a real run, anonymized). Ruff clean, `uv lock --check` OK, `scripts/wheel_smoke.py` OK on the built wheel.
+- Real API, read-only (8 active runners of the account):
+  - `cursor_supervise`: 8.4 s without `activity`, 44 s with it, all 8 walks `complete`. Idle times from 3 to 48 minutes (the API's `updated_at` stays at creation), 3 runs flagged `stale`, background tasks last seen running.
+  - `cursor_get_run(activity=true)`: 27 to 33 s on an idle run (until its first heartbeat), `complete: true`.
+  - `cursor_read_run_events(tail=…)`: last events of an 851 KB replay, `truncated: false`.
+- A first version ended a replay walk after 1.5 s, then 5 s, of silence. On the real API it stopped after 118 of 2,426 events: replays pause mid-way. The walk now stops only on deterministic signals (result, live event, heartbeat), as measured above.
+- Review fixes (two `/code-review` passes, 11 distinct findings, all valid):
+  - `limit` exact with a resumable cursor;
+  - finished runs included in the activity of `cursor_supervise`;
+  - statuses read before the replays;
+  - only complete replays feed `stale`/`unfinished_after_end`, with `incomplete` added;
+  - running tasks counted over all tasks;
+  - each event parsed once, ignored kinds never;
+  - shared payload helpers;
+  - `activity` three-state with a cache for terminal runs;
+  - budgets capped at 95 s;
+  - case-insensitive ids only for prefixed UUIDs;
+  - `cursor_create_run` annotated destructive.
+
+  Each fix has a test: the 12 new tests and the updated overview test all fail on `4865aff`. `uv run pytest`: **123 passed** under Python 3.13 and 3.12 (including one more test: expired streams are not counted as incomplete).
+- Not run: `replace_active` against the real API (paid; covered by tests: one cancel, exactly one follow-up after `CANCELLED`, none if the run does not stop, model validated before anything is cancelled).
+
+
 ## Consolidation of October 6, 2026 (re-audit of `23aba59`)
 
 Four re-audit gaps fixed, each with a test that fails on `23aba59`: multiline secret masked before normalization; response describing a different agent or run refused (no POST); SSE deadline covering the opening and the error body, `Content-Type` checked; last observation returned with `reread_error` after a transient error. Version 0.2.0, migration documented, `scripts/wheel_smoke.py` in CI. Confirmed live on October 6, 2026 on `258ec02`, with explicit authorization:

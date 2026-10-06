@@ -1,4 +1,4 @@
-"""Real, PAID smoke test of the sixteen tools, on the real stdio server.
+"""Real, PAID smoke test of the seventeen tools, on the real stdio server.
 
 Opt-in: `SMOKE_PAID=1`. Two `composer-2.5` agents, a few very short runs,
 and both agents are deleted at the end, except with `SMOKE_KEEP=1`, which
@@ -154,7 +154,7 @@ async def main() -> int:
 
 async def run_all(client: Client, report: Report, created: list[str]) -> None:
     listed = await client.list_tools()
-    report.check("tools/list", len(listed.tools) == 16, f"tools={len(listed.tools)}")
+    report.check("tools/list", len(listed.tools) == 17, f"tools={len(listed.tools)}")
 
     ok, data = await call(client, "cursor_get_account")
     report.check("cursor_get_account", ok, f"key_name_present={'api_key_name' in data}")

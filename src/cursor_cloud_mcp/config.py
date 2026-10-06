@@ -26,6 +26,24 @@ ARTIFACT_MAX_BYTES = 5_000_000
 EVENT_TEXT_MAX_CHARS = 500
 # Consecutive text fragments merged into one event, up to this size.
 EVENT_MERGED_MAX_CHARS = 4000
+# Full replay read to reach the end of a stream: the API has no way to start from the end.
+# Bytes are walked, not kept (a 7 h run replayed 839 KB on 2026-10-06).
+TAIL_MAX_BYTES = 16_000_000
+ACTIVITY_TEXT_MAX_CHARS = 1000
+# Time allowed to walk a stream for an activity summary, on top of the tool's own budget. An idle
+# run is only known to be fully replayed at its first heartbeat, 30 to 36 s after connecting.
+ACTIVITY_MAX_SECONDS = 45.0
+# Agent scans (name search, supervision): the API filters by neither name nor status.
+AGENT_SCAN_MAX_PAGES = 5
+AGENT_SCAN_DEFAULT_MATCHES = 20
+AGENT_SCAN_MIN_SECONDS = 8.0
+SUPERVISE_DEFAULT_AGENTS = 50
+# Two waves of stream replays (8 in parallel, about 35 s each when idle) fit, under the
+# 100 s client timeout of the examples.
+SUPERVISE_ACTIVITY_BUDGET_SECONDS = 90.0
+# No tool budget goes above this: the example clients give up after 100 s.
+CLIENT_SAFE_BUDGET_SECONDS = 95.0
+TAIL_DEFAULT_WAIT_SECONDS = 45
 ENV_MAX_COUNT = 50
 ENV_NAME_MAX_BYTES = 255
 ENV_VALUE_MAX_BYTES = 4096
@@ -87,3 +105,7 @@ def _interpret_key(raw: str | None) -> tuple[str | None, str | None]:
     if _UNEXPANDED.match(value) or "${" in value or "{env:" in value:
         return None, "CURSOR_API_KEY is not interpolated. The server does not load a .env file."
     return value, None
+
+# Cancellation is asynchronous: re-read the run this many times, this far apart.
+CANCEL_REREADS = 4
+CANCEL_REREAD_PAUSE_SECONDS = 2.0

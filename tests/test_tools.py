@@ -122,6 +122,7 @@ async def test_listing_tools_does_not_call_cursor() -> None:
         "cursor_list_models",
         "cursor_list_repositories",
         "cursor_list_agents",
+        "cursor_supervise",
         "cursor_get_agent",
         "cursor_create_agent",
         "cursor_create_run",
@@ -141,6 +142,7 @@ async def test_listing_tools_does_not_call_cursor() -> None:
         "cursor_list_models",
         "cursor_list_repositories",
         "cursor_list_agents",
+        "cursor_supervise",
         "cursor_get_agent",
         "cursor_list_runs",
         "cursor_get_run",
@@ -509,7 +511,7 @@ async def test_follow_up_run_refuses_archived_or_current_branch_and_returns_busy
 
 
 async def test_cancel_confirms_only_a_terminal_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("cursor_cloud_mcp.server.CANCEL_REREAD_PAUSE_SECONDS", 0)
+    monkeypatch.setattr("cursor_cloud_mcp.sessions.CANCEL_REREAD_PAUSE_SECONDS", 0)
     reads = {"n": 0}
 
     def settles(request: httpx.Request) -> httpx.Response:
