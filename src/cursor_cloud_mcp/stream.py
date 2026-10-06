@@ -101,12 +101,13 @@ async def read_run_events(
     path = client.run_stream_path(agent_id, run_id)
     # A single deadline for opening and collecting.
     deadline_at = budget.deadline_at(max_wait_seconds)
+    collected: RunEventsView | None = None
     try:
         # Global guard: opening, error body and closing. Collection has its own
         # timer at deadline_at, which expires before this one and returns the partial events.
         async with asyncio.timeout_at(deadline_at + _OUTER_GRACE_SECONDS):
             async with _open_stream(client, path, headers, deadline_at) as response:
-                return await _collect(
+                collected = await _collect(
                     response,
                     agent_id=agent_id,
                     run_id=run_id,
@@ -117,7 +118,11 @@ async def read_run_events(
                     retention_seconds=_retention(response),
                 )
     except TimeoutError:
+        if collected is not None:
+            # Only closing the connection overran: the events are read and the cursor advanced.
+            return collected
         raise failure(ErrorCode.TIMEOUT, "Timed out before the end of the stream response.") from None
+    return collected
 
 
 @dataclass
@@ -162,10 +167,11 @@ async def walk_replay(
     require_segment(run_id, label="run_id")
     path = client.run_stream_path(agent_id, run_id)
     deadline_at = budget.deadline_at(max_wait_seconds)
+    walked: Replay | None = None
     try:
         async with asyncio.timeout_at(deadline_at + _OUTER_GRACE_SECONDS):
             async with _open_stream(client, path, {"Accept": "text/event-stream"}, deadline_at) as response:
-                return await _walk(
+                walked = await _walk(
                     response,
                     deadline_at=deadline_at,
                     keep=keep,
@@ -173,7 +179,11 @@ async def walk_replay(
                     retention_seconds=_retention(response),
                 )
     except TimeoutError:
+        if walked is not None:
+            # Only closing the connection overran: the replay has been read.
+            return walked
         raise failure(ErrorCode.TIMEOUT, "Timed out before the end of the stream response.") from None
+    return walked
 
 
 async def _walk(

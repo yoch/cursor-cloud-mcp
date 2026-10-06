@@ -724,3 +724,38 @@ async def test_expired_streams_are_not_counted_as_incomplete() -> None:
         await client.__aexit__(None, None, None)
     assert view["items"][0]["activity_error"].startswith("STREAM_EXPIRED")
     assert "incomplete" not in view["summary"]
+
+
+
+class _SlowClose(httpx.AsyncByteStream):
+    """Delivers its events, then takes longer to close than the 0.5 s grace allows."""
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            yield chunk
+        await asyncio.sleep(3600)
+
+    async def aclose(self) -> None:
+        await asyncio.sleep(2)
+
+
+async def test_a_slow_close_does_not_lose_the_events_already_read() -> None:
+    chunks = _background_run(end=None)
+
+    def responder(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=_SlowClose(chunks))
+
+    client, _ = await _session(Router(responder))
+    try:
+        view = _data(
+            await client.call_tool("cursor_read_run_events", {"agent_id": _AGENT, "run_id": _RUN, "max_wait_seconds": 2})
+        )
+    finally:
+        await client.__aexit__(None, None, None)
+    # The read stopped at its deadline on a live stream; closing overran, the events are still returned.
+    assert view["truncated"] is True
+    assert [event["kind"] for event in view["events"]][:2] == ["status", "assistant"]
+    assert view["last_event_id"] == f"{_T0 + 900_500}-0"

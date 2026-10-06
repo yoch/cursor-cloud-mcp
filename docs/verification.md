@@ -1,5 +1,26 @@
 # Verification
 
+## Paid smoke extended to the supervision tools (October 6, 2026)
+
+`scripts/smoke_live.py` now checks the 0.3 tools, mostly for free, on the runs it already pays for. Only `replace_active` adds two short `composer-2.5` runs.
+
+- **Free checks**, all PASS on the real API:
+  - tool annotations (`cursor_create_run` destructive, `cursor_supervise` read-only);
+  - error returned as pure JSON (`NOT_FOUND`);
+  - `tail` on a finished run;
+  - `activity`: complete, then served from the cache (1.8 s, then 0.7 s), and `activity=false`;
+  - `cursor_supervise`: statuses, exact `limit` with its cursor (1 + 1 rows), and `activity` with every replay complete.
+- **`replace_active`**, first real run, PASS:
+  - a run that started `sleep 600` in the background and then waited on `sleep 120` was replaced (`replaced_run_id` = that run), and the one-word replacement finished;
+  - the replaced run, `CANCELLED` without a result, got its activity summary on its own, with the background task detected (`last_state: running`).
+- **Result: 47 of 48 PASS, one WARN** (artifacts, a known API limit). The one FAIL was the existing check `cursor_read_run_events` (cursor mode, right after creation), which returned an error. The script did not print the error code, and the server log is deleted at the end of the run.
+- **Diagnosis attempts**: two throwaway agents (about 2 cents) read right after creation, and three reads that stopped at their deadline on a live stream. All of them were `ok`, so the failure was not reproduced.
+- **Changes after that run**:
+  - the check now prints the error code and message;
+  - one plausible cause is closed: if closing the connection overran the 0.5 s grace after the events were read, the call failed with `TIMEOUT` and lost them. It now returns them. A test covers it, and that test fails on `ab6f053`.
+- `uv run pytest`: **124 passed** under Python 3.13 and 3.12.
+
+
 ## Runner supervision, version 0.3.0 (October 6, 2026)
 
 Following the feedback of an agent that supervised about ten runners overnight with version 0.1. What belongs to the API and what this server does about it is in the README ("What the API does not tell you"); the raw observations are in `docs/api-contract.md` ("Stream replay and supervision").

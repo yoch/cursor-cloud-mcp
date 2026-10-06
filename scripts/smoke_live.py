@@ -306,8 +306,10 @@ async def smoke_repo_agent(
     report.check(
         "cursor_read_run_events",
         ok,
-        f"events={len(data.get('events', []))} types={kinds}",
-    )  # type: ignore[arg-type]
+        f"events={len(data.get('events', []))} types={kinds}"  # type: ignore[arg-type]
+        if ok
+        else f"code={code_of(data)} message={str(data.get('message', ''))[:160]}",
+    )
 
     data = await wait_terminal(client, agent_id, run_id)
     report.check(
