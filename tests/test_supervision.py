@@ -311,6 +311,8 @@ def _fleet_router() -> Router:
         if path.endswith("/stream"):
             if "/run-a/" in path:
                 return _stream_response([*_background_run(end=None), _HEARTBEAT], hang=True)
+            if "/run-b/" in path:
+                return _stream_response(_background_run(end="FINISHED"))
             return _stream_response(_background_run(end="ERROR"))
         run_id = path.rsplit("/", 1)[-1]
         if run_id == "run-d":
@@ -334,17 +336,19 @@ async def test_supervise_reports_each_runner_and_isolates_failures() -> None:
     assert rows["runner-a"]["activity"]["unfinished_background_tasks"] == 1
     assert rows["runner-a"]["activity"]["last_tool_call"] == {"name": "await", "status": "completed"}
     assert "background_tasks" not in rows["runner-a"]["activity"]  # overview: signals, not texts
-    assert "activity" not in rows["runner-b"]  # finished with a result: no stream read
+    # The headline case: FINISHED with a result, yet its background job was last seen running.
+    assert rows["runner-b"]["status"] == "FINISHED" and rows["runner-b"]["activity"]["unfinished_background_tasks"] == 1
     assert rows["runner-c"]["status"] == "ERROR" and rows["runner-c"]["activity"]["run_terminal"] is True
     assert rows["runner-d"]["read_error"].startswith("UPSTREAM")
     summary = view["summary"]
     assert summary["agents"] == 4
     assert summary["by_status"] == {"RUNNING": 1, "FINISHED": 1, "ERROR": 1, "UNREAD": 1}
     assert summary["stale"] == [_A_RUNNING]  # its last event dates from the recorded stream
-    assert summary["unfinished_after_end"] == [_C_ERROR]
+    assert summary["unfinished_after_end"] == [_B_FINISHED, _C_ERROR]
+    assert "incomplete" not in summary
     assert summary["read_errors"] == 1
     streams = [call[1] for call in router.calls if call[1].endswith("/stream")]
-    assert len(streams) == 2
+    assert len(streams) == 3  # a, b and c; d could not be read
 
 
 async def test_supervise_keeps_active_agents_by_default() -> None:
@@ -496,3 +500,227 @@ async def test_replace_active_validates_the_model_before_cancelling() -> None:
         await client.__aexit__(None, None, None)
     assert _error_payload(refused)["code"] == "VALIDATION"
     assert _posts(router) == []  # the running run was not stopped for a rejected request
+
+
+# --- Review fixes ---------------------------------------------------------------------------
+
+
+def _paged_agents(count: int, *, status: str = "ACTIVE") -> Router:
+    """Agents served 100 per page, with real cursors; each agent's run is RUNNING without result."""
+    agents = [
+        _agent(f"bc-cccccccc-0000-0000-0000-{index:012d}", name=f"runner-{index}", status=status, latestRunId=f"run-{index}")
+        for index in range(count)
+    ]
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/agents":
+            assert request.url.params["limit"] == "100"
+            start = int(request.url.params.get("cursor", "0"))
+            payload: dict[str, object] = {"items": agents[start : start + 100]}
+            if start + 100 < count:
+                payload["nextCursor"] = str(start + 100)
+            return httpx.Response(200, json=payload)
+        run_id = request.url.path.rsplit("/", 1)[-1]
+        agent_id = request.url.path.split("/")[3]
+        return httpx.Response(200, json=_run(id=run_id, agentId=agent_id, status="RUNNING", result=None))
+
+    return Router(responder)
+
+
+async def test_supervise_limit_is_exact_and_the_cursor_loses_nothing() -> None:
+    client, _ = await _session(_paged_agents(12))
+    seen: list[str] = []
+    try:
+        cursor = None
+        for _round in range(4):
+            args: dict[str, object] = {"limit": 5}
+            if cursor is not None:
+                args["cursor"] = cursor
+            view = _data(await client.call_tool("cursor_supervise", args))
+            assert len(view["items"]) <= 5
+            seen += [row["name"] for row in view["items"]]
+            cursor = view.get("next_cursor")
+            if cursor is None:
+                break
+    finally:
+        await client.__aexit__(None, None, None)
+    assert seen == [f"runner-{index}" for index in range(12)]  # every match, once, in order
+
+
+async def test_supervise_default_limit_is_enforced() -> None:
+    client, _ = await _session(_paged_agents(120))
+    try:
+        view = _data(await client.call_tool("cursor_supervise", {}))
+    finally:
+        await client.__aexit__(None, None, None)
+    assert len(view["items"]) == 50
+    assert view["has_more"] is True and view["next_cursor"].startswith("mcp~50~")
+
+
+async def test_a_malformed_scan_cursor_is_refused() -> None:
+    client, router = await _session(_paged_agents(3))
+    try:
+        refused = await client.call_tool("cursor_supervise", {"cursor": "mcp~abc~0"})
+    finally:
+        await client.__aexit__(None, None, None)
+    assert _error_payload(refused)["code"] == "VALIDATION"
+    assert router.calls == []
+
+
+async def test_name_search_resumes_inside_a_page() -> None:
+    client, _ = await _session(_paged_agents(12, status="IDLE"))
+    try:
+        first = _data(await client.call_tool("cursor_list_agents", {"name": "runner", "limit": 4}))
+        second = _data(
+            await client.call_tool("cursor_list_agents", {"name": "runner", "limit": 4, "cursor": first["next_cursor"]})
+        )
+    finally:
+        await client.__aexit__(None, None, None)
+    assert [item["name"] for item in first["items"]] == [f"runner-{index}" for index in range(4)]
+    assert [item["name"] for item in second["items"]] == [f"runner-{index}" for index in range(4, 8)]
+
+
+def test_get_run_budget_stays_under_the_client_timeout() -> None:
+    from cursor_cloud_mcp.server import get_run_budget
+
+    assert get_run_budget(0) == 90.0
+    assert get_run_budget(60) == 95.0  # 60 + 45 would exceed the 100 s of the example clients
+
+
+async def test_activity_false_never_reads_the_stream() -> None:
+    client, router = await _session(_router(_run(status="ERROR", result=None), _background_run(end="ERROR")))
+    try:
+        view = _data(await client.call_tool("cursor_get_run", {"agent_id": _AGENT, "run_id": _RUN, "activity": False}))
+    finally:
+        await client.__aexit__(None, None, None)
+    assert "activity" not in view
+    assert not any(call[1].endswith("/stream") for call in router.calls)
+
+
+async def test_terminal_activity_is_cached_with_a_current_idle_time() -> None:
+    client, router = await _session(_router(_run(status="ERROR", result=None), _background_run(end="ERROR")))
+    try:
+        first = _data(await client.call_tool("cursor_get_run", {"agent_id": _AGENT, "run_id": _RUN}))
+        await asyncio.sleep(1.1)
+        second = _data(await client.call_tool("cursor_get_run", {"agent_id": _AGENT, "run_id": _RUN}))
+    finally:
+        await client.__aexit__(None, None, None)
+    assert sum(1 for call in router.calls if call[1].endswith("/stream")) == 1
+    assert second["activity"]["unfinished_background_tasks"] == 1
+    assert second["activity"]["idle_seconds"] > first["activity"]["idle_seconds"]
+
+
+async def test_statuses_survive_replays_that_do_not_finish(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("cursor_cloud_mcp.server.SUPERVISE_ACTIVITY_BUDGET_SECONDS", 4.0)
+    monkeypatch.setattr("cursor_cloud_mcp.supervision.SUPERVISE_ACTIVITY_BUDGET_SECONDS", 4.0)
+    agents = [
+        _agent(f"bc-dddddddd-0000-0000-0000-{index:012d}", status="ACTIVE", latestRunId=f"run-{index}")
+        for index in range(20)
+    ]
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/agents":
+            return httpx.Response(200, json={"items": agents})
+        if request.url.path.endswith("/stream"):
+            # Old events, no heartbeat, no result: the walk can never prove it reached the end.
+            return _stream_response(_background_run(end=None), hang=True)
+        run_id = request.url.path.rsplit("/", 1)[-1]
+        agent_id = request.url.path.split("/")[3]
+        return httpx.Response(200, json=_run(id=run_id, agentId=agent_id, status="RUNNING", result=None))
+
+    client, _ = await _session(Router(responder))
+    try:
+        view = _data(await client.call_tool("cursor_supervise", {"activity": True}))
+    finally:
+        await client.__aexit__(None, None, None)
+    assert all(row["status"] == "RUNNING" for row in view["items"])  # status reads never starved
+    assert len(view["summary"]["incomplete"]) == 20
+    assert "stale" not in view["summary"]  # partial walks are not conclusive
+
+
+def test_unfinished_tasks_are_counted_beyond_the_listed_twenty() -> None:
+    from cursor_cloud_mcp.activity import ActivityTracker
+    from cursor_cloud_mcp.models import RunEventView
+
+    tracker = ActivityTracker()
+    for task in range(25):
+        payload = {
+            "name": "run_terminal_cmd",
+            "status": "completed",
+            "args": {"isBackground": True},
+            "result": {"success": {"shellId": task, "command": f"job {task}"}},
+        }
+        view = RunEventView(event_id=f"{_T0 + task}-0", kind="tool_call", tool_name="run_terminal_cmd", tool_status="completed")
+        tracker.feed(f"{_T0 + task}-0", "tool_call", payload, view)
+    for task in range(5, 25):  # the 20 newest are awaited to completion; the 5 oldest never are
+        payload = {"name": "await", "status": "completed", "result": {"success": {"complete": {"taskId": str(task), "runtimeMs": "1"}}}}
+        view = RunEventView(event_id=f"{_T0 + 100 + task}-0", kind="tool_call", tool_name="await", tool_status="completed")
+        tracker.feed(f"{_T0 + 100 + task}-0", "tool_call", payload, view)
+    summary = tracker.summary(run_terminal=True)
+    assert summary.unfinished_background_tasks == 5
+    assert summary.background_tasks_total == 25
+    assert summary.background_tasks is not None and len(summary.background_tasks) == 20
+
+
+async def test_ignored_events_are_not_parsed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cursor_cloud_mcp import stream
+
+    parsed: list[str] = []
+    original = stream._payload
+
+    def counting(data: str) -> object:
+        parsed.append(data)
+        return original(data)
+
+    monkeypatch.setattr(stream, "_payload", counting)
+    chunks = [
+        _sse("status", {"status": "RUNNING"}, _T0),
+        *[_sse("interaction_update", {"type": "token-delta"}, _T0 + 1 + index) for index in range(10)],
+        _HEARTBEAT,
+    ]
+    client, _ = await _session(_router(_run(status="RUNNING", result=None), chunks, hang=True))
+    try:
+        await client.call_tool("cursor_read_run_events", {"agent_id": _AGENT, "run_id": _RUN, "tail": 5})
+    finally:
+        await client.__aexit__(None, None, None)
+    assert len(parsed) == 1  # only the status event; ten updates and the heartbeat untouched
+
+
+def test_same_id_ignores_case_only_for_prefixed_uuids() -> None:
+    from cursor_cloud_mcp.validation import same_id
+
+    assert same_id("run-abcdef12-abcd-abcd-abcd-abcdef123456", "run-ABCDEF12-ABCD-ABCD-ABCD-ABCDEF123456")
+    assert same_id("bc-abcdef12-abcd-abcd-abcd-abcdef123456", "bc-ABCDEF12-abcd-ABCD-abcd-ABCDEF123456")
+    assert not same_id("run-Ab12", "run-aB12")  # not a UUID: case may matter
+    assert not same_id("run-abcdef12-abcd-abcd-abcd-abcdef123456", "run-abcdef12-abcd-abcd-abcd-abcdef123457")
+
+
+async def test_follow_up_is_annotated_destructive() -> None:
+    client, _ = await _session(Router(lambda _request: httpx.Response(500)))
+    try:
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+    finally:
+        await client.__aexit__(None, None, None)
+    follow_up = tools["cursor_create_run"].annotations
+    creation = tools["cursor_create_agent"].annotations
+    assert follow_up is not None and follow_up.destructive_hint is True  # replace_active cancels a run
+    assert creation is not None and creation.destructive_hint is False
+
+
+async def test_expired_streams_are_not_counted_as_incomplete() -> None:
+    agents = [_agent(_B_FINISHED, status="IDLE", latestRunId="run-b")]
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/agents":
+            return httpx.Response(200, json={"items": agents})
+        if request.url.path.endswith("/stream"):
+            return httpx.Response(410, json={"error": {"code": "stream_expired", "message": "gone"}})
+        return httpx.Response(200, json=_run(id="run-b", agentId=_B_FINISHED, status="FINISHED", result="done"))
+
+    client, _ = await _session(Router(responder))
+    try:
+        view = _data(await client.call_tool("cursor_supervise", {"status": "all", "activity": True}))
+    finally:
+        await client.__aexit__(None, None, None)
+    assert view["items"][0]["activity_error"].startswith("STREAM_EXPIRED")
+    assert "incomplete" not in view["summary"]

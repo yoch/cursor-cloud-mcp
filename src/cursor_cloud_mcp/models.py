@@ -410,6 +410,7 @@ class ActivityView(BaseModel):
     last_assistant_text: str | None = None
     last_tool_call: ToolCallSummaryView | None = None
     background_tasks: list[BackgroundTaskView] | None = None
+    background_tasks_total: int | None = None
     unfinished_background_tasks: int | None = None
     run_terminal: bool | None = None
     scanned_events: int
@@ -460,6 +461,7 @@ class SuperviseSummaryView(BaseModel):
     by_status: dict[str, int]
     stale: list[str] | None = None
     unfinished_after_end: list[str] | None = None
+    incomplete: list[str] | None = None
     read_errors: int | None = None
 
 

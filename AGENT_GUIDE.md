@@ -7,9 +7,9 @@ This server is local, over stdio. It exposes seventeen tools for the Cursor Clou
 ## Migration 0.2 → 0.3
 
 - New read-only tool `cursor_supervise`: every runner and the state of its latest run in one call (see "Supervising runners").
-- `cursor_get_run(activity=true)` adds what the stream shows: `last_event_at`, `idle_seconds`, last assistant text and tool call, background tasks. It is added automatically to a terminal run without a result.
+- `cursor_get_run(activity=true)` adds what the stream shows: `last_event_at`, `idle_seconds`, last assistant text and tool call, background tasks. With `activity` omitted, it is added only to a terminal run without a result; `activity=false` never reads the stream.
 - `cursor_read_run_events(tail=N)` returns the last N events, without manual paging.
-- `cursor_create_run(replace_active=true)` cancels the current run, waits until it is terminal, then sends the follow-up.
+- `cursor_create_run(replace_active=true)` cancels the current run, waits until it is terminal, then sends the follow-up. `cursor_create_run` is now annotated destructive.
 - Errors are pure JSON: the text of an `isError` result is the error object itself, with no "Error executing tool" prefix. Only a malformed argument, rejected by the MCP SDK before the tool runs, still returns plain text.
 
 ## Migration 0.1 → 0.2
@@ -211,11 +211,12 @@ cursor_read_run_events(..., tail=20)            the last 20 events
 cursor_create_run(..., replace_active=true)     redirect a runner: stop its run, then follow up
 ```
 
-- Liveness is `idle_seconds`: the time since the run's last stream event. `summary.stale` lists the runs idle for more than `stale_after_minutes`.
-- `background_tasks` lists the commands the agent started in the background, with their last observed state (`running` or `complete`) and when it was observed. It is the last thing the stream shows, not proof that the process is alive. `unfinished_background_tasks > 0` on a `FINISHED` run means a job was last seen running when the agent ended its turn: check its output before trusting the result. `summary.unfinished_after_end` lists those runs.
-- For an `ERROR` run, `cursor_get_run` adds the activity summary on its own: the last tool call is the best available hint of what was going on.
-- `activity` and `tail` replay the whole stream, because the API cannot start from its end. They stop at the run's result, at the first live event, or at the server's first heartbeat, which can take about 35 s on an idle run. `complete: false` or `truncated: true` means that point was not reached.
+- Liveness is `idle_seconds`: the time since the run's last stream event. `summary.stale` lists the runs idle for more than `stale_after_minutes`. It only counts complete replays: `summary.incomplete` names the rows whose replay did not finish, which are not conclusive either way.
+- `background_tasks` lists the commands the agent started in the background, with their last observed state (`running` or `complete`) and when it was observed. It is the last thing the stream shows, not proof that the process is alive. `unfinished_background_tasks > 0` on a `FINISHED` run means a job was last seen running when the agent ended its turn: check its output before trusting the result. `summary.unfinished_after_end` lists those runs. `background_tasks` shows the last 20 tasks; `background_tasks_total` and `unfinished_background_tasks` count them all.
+- For an `ERROR` run, `cursor_get_run` adds the activity summary on its own: the last tool call is the best available hint of what was going on. It is cached once complete, so reading the same ended run again is instant. `activity=false` skips it.
+- `activity` and `tail` replay the whole stream, because the API cannot start from its end. They stop at the run's result, at the first live event, or at the server's first heartbeat, which can take about 35 s on an idle run. `complete: false` or `truncated: true` means that point was not reached. A call never takes more than 95 s, under the 100 s timeout of the example clients.
 - A follow-up on the same agent keeps the conversation: send only the new instruction, not a full resume prompt. `replace_active=true` cancels the current run first: its work in progress stops, pushed commits stay. Nothing is sent if the run does not end in time (`AGENT_BUSY`).
+- `limit` is exact in `cursor_supervise` and in `cursor_list_agents(name=…)`. Pass `next_cursor` back unchanged to get the next rows.
 - Scripts: keep one MCP session open for all calls. Starting the stdio server for every call costs a few seconds each time.
 
 Prompting long-running runners makes all of this easier:

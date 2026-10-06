@@ -3,7 +3,6 @@
 import asyncio
 import codecs
 import datetime as dt
-import json
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, MutableSequence
 from contextlib import asynccontextmanager
@@ -16,15 +15,17 @@ from cursor_cloud_mcp.activity import ActivityTracker, event_time
 from cursor_cloud_mcp.client import CursorCloudClient, ResponseTooLarge, read_bounded
 from cursor_cloud_mcp.config import (
     EVENT_MERGED_MAX_CHARS,
-    EVENT_TEXT_MAX_CHARS,
     STREAM_MAX_BYTES,
     TAIL_MAX_BYTES,
 )
 from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure
 from cursor_cloud_mcp.models import RunEventsView, RunEventView, RunView
 from cursor_cloud_mcp.present import run_view
+from cursor_cloud_mcp.shapes import clip, parse_payload, tool_payload
 from cursor_cloud_mcp.validation import require_event_id, require_segment
 
+# Marks an event whose payload has not been parsed yet.
+_UNPARSED = object()
 _KEEP = {"status", "assistant", "tool_call", "thinking", "result", "error", "done"}
 _IGNORE = {"heartbeat", "interaction_update"}
 _POLL_SECONDS = 5.0
@@ -204,11 +205,14 @@ async def _walk(
                 if total > TAIL_MAX_BYTES:
                     break
                 for raw_event in parser.feed(decoder.decode(chunk)):
-                    payload = _payload(raw_event.data)
                     view: RunEventView | None = None
+                    payload: object = None
                     wanted = raw_event.event in _KEEP and (raw_event.event != "thinking" or include_thinking)
                     if wanted:
-                        view = _simplify(raw_event)
+                        # Parsed once, and only when used: interaction_update and heartbeat make up
+                        # most of a replay and are never read.
+                        payload = _payload(raw_event.data)
+                        view = _simplify(raw_event, payload)
                         if view.status is not None and view.kind in {"status", "result"}:
                             run_status = view.status
                         if keep > 0:
@@ -387,16 +391,15 @@ async def _collect(
     )
 
 
-def _simplify(event: SseEvent) -> RunEventView:
-    payload = _payload(event.data)
+def _simplify(event: SseEvent, payload: object = _UNPARSED) -> RunEventView:
+    if payload is _UNPARSED:
+        payload = _payload(event.data)
     status = _string_field(payload, "status")
     if event.event == "tool_call":
-        # The Cursor SDK also reads the nested form under data.
-        if isinstance(payload, dict) and "name" not in payload and isinstance(payload.get("data"), dict):
-            payload = payload["data"]
-            status = _string_field(payload, "status")
-        args, args_clipped = _clip(payload.get("args") if isinstance(payload, dict) else None)
-        result, result_clipped = _clip(payload.get("result") if isinstance(payload, dict) else None)
+        payload = tool_payload(payload)
+        status = _string_field(payload, "status")
+        args, args_clipped = _clip(payload.get("args"))
+        result, result_clipped = _clip(payload.get("result"))
         return RunEventView(
             event_id=event.event_id,
             kind="tool_call",
@@ -448,13 +451,8 @@ def _completes(previous: RunEventView, view: RunEventView) -> bool:
     return previous.tool_name == view.tool_name and previous.tool_args == view.tool_args
 
 
-def _payload(data: str) -> object:
-    if not data:
-        return None
-    try:
-        return json.loads(data)
-    except ValueError:
-        return data
+_payload = parse_payload
+_clip = clip
 
 
 def _text_of(payload: object, raw: str) -> tuple[str | None, bool]:
@@ -487,19 +485,6 @@ def _string_field(payload: object, key: str) -> str | None:
         if isinstance(value, str):
             return value
     return None
-
-
-def _clip(value: object) -> tuple[str | None, bool]:
-    """Bounded text and truncation flag."""
-    if value is None:
-        return None, False
-    if isinstance(value, str):
-        text = value
-    else:
-        text = json.dumps(value, ensure_ascii=False)
-    if len(text) > EVENT_TEXT_MAX_CHARS:
-        return text[:EVENT_TEXT_MAX_CHARS] + "…", True
-    return text, False
 
 
 def _retention(response: httpx.Response) -> int | None:

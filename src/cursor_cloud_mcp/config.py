@@ -41,6 +41,8 @@ SUPERVISE_DEFAULT_AGENTS = 50
 # Two waves of stream replays (8 in parallel, about 35 s each when idle) fit, under the
 # 100 s client timeout of the examples.
 SUPERVISE_ACTIVITY_BUDGET_SECONDS = 90.0
+# No tool budget goes above this: the example clients give up after 100 s.
+CLIENT_SAFE_BUDGET_SECONDS = 95.0
 TAIL_DEFAULT_WAIT_SECONDS = 45
 ENV_MAX_COUNT = 50
 ENV_NAME_MAX_BYTES = 255

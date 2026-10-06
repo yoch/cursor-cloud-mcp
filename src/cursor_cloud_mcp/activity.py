@@ -8,12 +8,12 @@ command and the background tasks the agent started and awaited. Everything here 
 """
 
 import datetime as dt
-import json
 import re
 from typing import Any
 
-from cursor_cloud_mcp.config import ACTIVITY_TEXT_MAX_CHARS, EVENT_TEXT_MAX_CHARS
+from cursor_cloud_mcp.config import ACTIVITY_TEXT_MAX_CHARS
 from cursor_cloud_mcp.models import ActivityView, BackgroundTaskView, RunEventView, ToolCallSummaryView
+from cursor_cloud_mcp.shapes import clip, tool_payload
 
 # Stream ids look like Redis stream ids: "<milliseconds>-<sequence>" (checked 2026-10-06).
 _EVENT_ID = re.compile(r"^(\d{12,14})-\d+$")
@@ -72,13 +72,15 @@ class ActivityTracker:
             self._close_assistant()
         if kind == "tool_call" and view is not None:
             self._last_tool = view
-            self._track_task(event_id, _tool_payload(payload))
+            self._track_task(event_id, tool_payload(payload))
 
     def summary(self, *, run_terminal: bool | None, now: dt.datetime | None = None) -> ActivityView:
         if self._assistant_open:
             self._close_assistant()
         now = now or dt.datetime.now(dt.UTC)
         last_at = event_time(self.last_event_id)
+        # Counted over every task: the oldest one may be the job still running.
+        running = sum(1 for task in self._tasks.values() if task.get("state") == "running")
         tasks = [
             BackgroundTaskView(
                 task_id=task_id,
@@ -89,7 +91,6 @@ class ActivityTracker:
             )
             for task_id, task in list(self._tasks.items())[-_MAX_TASKS:]
         ]
-        running = sum(1 for task in tasks if task.last_state == "running")
         tool = self._last_tool
         return ActivityView(
             last_event_id=self.last_event_id,
@@ -105,7 +106,8 @@ class ActivityTracker:
                 result=tool.tool_result,
             ),
             background_tasks=tasks or None,
-            unfinished_background_tasks=running if tasks else None,
+            background_tasks_total=len(self._tasks) or None,
+            unfinished_background_tasks=running if self._tasks else None,
             run_terminal=run_terminal,
             scanned_events=self.scanned,
         )
@@ -131,7 +133,7 @@ class ActivityTracker:
                 return
             command = success.get("command") or args.get("command")
             self._tasks[str(task_id)] = {
-                "command": _short(command),
+                "command": clip(command)[0],
                 "state": "running",
                 "runtime_ms": None,
                 "event_id": event_id,
@@ -147,22 +149,6 @@ class ActivityTracker:
                     # Keep insertion order meaningful: the most recently observed task comes last.
                     self._tasks[task_id] = self._tasks.pop(task_id)
                     return
-
-
-def _tool_payload(payload: object) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        return {}
-    if "name" not in payload and isinstance(payload.get("data"), dict):
-        return payload["data"]
-    return payload
-
-
-def _short(value: object) -> str | None:
-    if value is None:
-        return None
-    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-    text = " ".join(text.split())
-    return text if len(text) <= EVENT_TEXT_MAX_CHARS else text[:EVENT_TEXT_MAX_CHARS] + "…"
 
 
 def _int(value: object) -> int | None:

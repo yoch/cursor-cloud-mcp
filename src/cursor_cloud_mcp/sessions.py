@@ -42,6 +42,7 @@ from cursor_cloud_mcp.validation import (
     require_prompt,
     require_segment,
     require_starting_ref,
+    same_id,
 )
 
 
@@ -172,7 +173,7 @@ async def cancel_and_observe(
     require_segment(agent_id, label="agent_id")
     require_segment(run_id, label="run_id")
     cancelled = await client.cancel_run(agent_id, run_id)
-    if cancelled.id is not None and cancelled.id.lower() != run_id.lower():
+    if cancelled.id is not None and not same_id(cancelled.id, run_id):
         raise failure(
             ErrorCode.INCOMPATIBLE_RESPONSE,
             "The identifier returned by the cancellation does not match the requested run.",

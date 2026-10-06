@@ -25,6 +25,7 @@ from cursor_cloud_mcp.config import (
     ACTIVITY_MAX_SECONDS,
     AGENT_SCAN_DEFAULT_MATCHES,
     CANCEL_TOOL_BUDGET_SECONDS,
+    CLIENT_SAFE_BUDGET_SECONDS,
     CREATE_TOOL_BUDGET_SECONDS,
     NAME_MAX_CHARS,
     PROMPT_MAX_CHARS,
@@ -82,7 +83,14 @@ from cursor_cloud_mcp.sessions import (
     perform_followup,
 )
 from cursor_cloud_mcp.stream import read_run_events, wait_run, walk_replay
-from cursor_cloud_mcp.supervision import name_filter, scan_agents, supervise, tail_view, with_activity
+from cursor_cloud_mcp.supervision import (
+    is_scan_cursor,
+    name_filter,
+    scan_agents,
+    supervise,
+    tail_view,
+    with_activity,
+)
 from cursor_cloud_mcp.validation import require_agent_id
 
 logger = logging.getLogger(__name__)
@@ -110,6 +118,13 @@ _READ = ToolAnnotations(read_only_hint=True, open_world_hint=True)
 _CREATE = ToolAnnotations(
     read_only_hint=False,
     destructive_hint=False,
+    idempotent_hint=False,
+    open_world_hint=True,
+)
+# A follow-up can cancel the current run (replace_active): destructive, unlike a creation.
+_FOLLOW_UP = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
     idempotent_hint=False,
     open_world_hint=True,
 )
@@ -245,8 +260,6 @@ activity=true also reads each unfinished run's stream (or a terminal run without
                 keep=keep,
                 wanted=limit or SUPERVISE_DEFAULT_AGENTS,
             )
-            if limit is not None:
-                page = page.model_copy(update={"items": page.items[:limit]})
             return await supervise(client, page, activity=activity, stale_after_minutes=stale_after_minutes)
 
         return await _run(
@@ -312,7 +325,7 @@ workOnCurrentBranch is always false."""
             budget_seconds=CREATE_TOOL_BUDGET_SECONDS,
         )
 
-    @tool("cursor_create_run", _CREATE)
+    @tool("cursor_create_run", _FOLLOW_UP)
     async def cursor_create_run(
         ctx: Context[AppContext],
         agent_id: str,
@@ -360,10 +373,10 @@ The API cannot send a message to a run in progress (AGENT_BUSY). replace_active=
         wait_seconds: int = Field(default=0, ge=0, le=60),
         result_offset: int = Field(default=0, ge=0),
         result_limit: int = Field(default=RESULT_DEFAULT_LIMIT, ge=1, le=RESULT_MAX_LIMIT),
-        activity: bool = False,
+        activity: bool | None = None,
     ) -> RunView:
         """State, final result and branches of a run. Read-only. wait_seconds (up to 60) re-reads every five seconds until a terminal state; timed_out true means the run is still going: call again. If a re-read fails after a first read, the previous observation is returned with reread_error: it is no guarantee about the current state. A long result is read in windows with result_offset = next_result_offset. git describes the agent's current state, not a frozen SHA.
-activity=true adds what the stream shows (one full stream read): last_event_at and idle_seconds (the API's updated_at stays frozen while a run is RUNNING), the last assistant text and tool call, and background_tasks with their last observed state. FINISHED only means the agent ended its turn: unfinished_background_tasks > 0 means jobs it started were last seen running. The summary is added automatically for a terminal run without a result, since the API gives no error cause."""
+activity=true adds what the stream shows (one full stream read): last_event_at and idle_seconds (the API's updated_at stays frozen while a run is RUNNING), the last assistant text and tool call, and background_tasks with their last observed state. FINISHED only means the agent ended its turn: unfinished_background_tasks > 0 means jobs it started were last seen running. By default (activity omitted) the summary is added only to a terminal run without a result, since the API gives no error cause; activity=false never reads the stream. A terminal run's complete summary is cached. complete false means the stream walk did not reach its end within the call's budget (95 s at most, wait included)."""
 
         async def action(app: AppContext) -> RunView:
             client = _client(app)
@@ -385,7 +398,7 @@ activity=true adds what the stream shows (one full stream read): last_event_at a
             "cursor_get_run",
             ctx,
             action,
-            budget_seconds=max(float(wait_seconds), TOOL_BUDGET_SECONDS) + ACTIVITY_MAX_SECONDS,
+            budget_seconds=get_run_budget(wait_seconds),
         )
 
     @tool("cursor_read_run_events", _READ)
@@ -650,7 +663,7 @@ async def _agents(
 ) -> AgentPageView:
     _optional_cursor(cursor)
     client = _client(app)
-    if name is None:
+    if name is None and not is_scan_cursor(cursor):
         return agent_page_view(
             await client.list_agents(limit=limit, cursor=cursor, include_archived=include_archived, pr_url=pr_url)
         )
@@ -660,7 +673,7 @@ async def _agents(
         cursor=cursor,
         include_archived=include_archived,
         pr_url=pr_url,
-        keep=name_filter(name),
+        keep=name_filter(name) if name is not None else lambda _agent: True,
         wanted=limit or AGENT_SCAN_DEFAULT_MATCHES,
     )
 
@@ -750,6 +763,11 @@ async def _tail(
 
 async def _refuse(message: str) -> Never:
     raise failure(ErrorCode.VALIDATION, message)
+
+
+def get_run_budget(wait_seconds: int) -> float:
+    """Wait, then room for an activity read, never above what MCP clients wait for (100 s in the examples)."""
+    return min(max(float(wait_seconds), TOOL_BUDGET_SECONDS) + ACTIVITY_MAX_SECONDS, CLIENT_SAFE_BUDGET_SECONDS)
 
 
 def _optional_cursor(cursor: str | None) -> None:

@@ -11,6 +11,20 @@ Following the feedback of an agent that supervised about ten runners overnight w
   - `cursor_get_run(activity=true)`: 27 to 33 s on an idle run (until its first heartbeat), `complete: true`.
   - `cursor_read_run_events(tail=…)`: last events of an 851 KB replay, `truncated: false`.
 - A first version ended a replay walk after 1.5 s, then 5 s, of silence. On the real API it stopped after 118 of 2,426 events: replays pause mid-way. The walk now stops only on deterministic signals (result, live event, heartbeat), as measured above.
+- Review fixes (two `/code-review` passes, 11 distinct findings, all valid):
+  - `limit` exact with a resumable cursor;
+  - finished runs included in the activity of `cursor_supervise`;
+  - statuses read before the replays;
+  - only complete replays feed `stale`/`unfinished_after_end`, with `incomplete` added;
+  - running tasks counted over all tasks;
+  - each event parsed once, ignored kinds never;
+  - shared payload helpers;
+  - `activity` three-state with a cache for terminal runs;
+  - budgets capped at 95 s;
+  - case-insensitive ids only for prefixed UUIDs;
+  - `cursor_create_run` annotated destructive.
+
+  Each fix has a test: the 12 new tests and the updated overview test all fail on `4865aff`. `uv run pytest`: **123 passed** under Python 3.13 and 3.12 (including one more test: expired streams are not counted as incomplete).
 - Not run: `replace_active` against the real API (paid; covered by tests: one cancel, exactly one follow-up after `CANCELLED`, none if the run does not stop, model validated before anything is cancelled).
 
 
