@@ -610,6 +610,29 @@ async def test_terminal_activity_is_cached_with_a_current_idle_time() -> None:
     assert second["activity"]["idle_seconds"] > first["activity"]["idle_seconds"]
 
 
+async def test_a_stream_error_is_neither_a_complete_summary_nor_cached() -> None:
+    errored = [*_background_run(end=None)[:4], _sse("error", {"message": "stream failed"}, _T0 + 5)]
+    streams = iter([errored, _background_run(end="ERROR")])
+    run = _run(status="ERROR", result=None)
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/stream"):
+            return _stream_response(next(streams))
+        return httpx.Response(200, json=run)
+
+    client, router = await _session(Router(responder))
+    try:
+        first = _data(await client.call_tool("cursor_get_run", {"agent_id": _AGENT, "run_id": _RUN}))
+        second = _data(await client.call_tool("cursor_get_run", {"agent_id": _AGENT, "run_id": _RUN}))
+    finally:
+        await client.__aexit__(None, None, None)
+    assert "activity" not in first
+    assert first["activity_error"].startswith("UPSTREAM")
+    assert sum(1 for call in router.calls if call[1].endswith("/stream")) == 2  # retried, not cached
+    assert second["activity"]["complete"] is True
+    assert second["activity"]["unfinished_background_tasks"] == 1
+
+
 async def test_statuses_survive_replays_that_do_not_finish(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("cursor_cloud_mcp.server.SUPERVISE_ACTIVITY_BUDGET_SECONDS", 4.0)
     monkeypatch.setattr("cursor_cloud_mcp.supervision.SUPERVISE_ACTIVITY_BUDGET_SECONDS", 4.0)
