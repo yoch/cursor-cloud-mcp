@@ -1,5 +1,9 @@
 # Vérification
 
+## Consolidation du 6 octobre 2026 (ré-audit de `23aba59`)
+
+Quatre écarts du ré-audit corrigés, chacun avec un test qui échoue sur `23aba59` : secret multiligne masqué avant normalisation ; réponse décrivant un autre agent ou run refusée (aucun POST) ; échéance SSE couvrant ouverture et corps d'erreur, `Content-Type` contrôlé ; dernière observation rendue avec `reread_error` après une erreur transitoire. Version 0.2.0, migration documentée, `scripts/wheel_smoke.py` en CI. Aucun appel Cursor réel : le contrôle d'identité suppose que l'API renvoie l'`id` demandé, à confirmer par `scripts/smoke_live.py` sur autorisation explicite.
+
 ## Smoke réel de la PR #2 et livraison interface du 5 octobre 2026
 
 ### Smoke réel de la PR #2 (`9db67c7`), avant toute modification

@@ -19,7 +19,7 @@ from mcp.server.mcpserver.tools import Tool
 from mcp.types import ToolAnnotations
 from pydantic import Field
 
-from cursor_cloud_mcp import budget, redaction
+from cursor_cloud_mcp import __version__, budget, redaction
 from cursor_cloud_mcp.artifacts import list_artifacts, read_artifact
 from cursor_cloud_mcp.client import CursorCloudClient
 from cursor_cloud_mcp.compat import strict_tool
@@ -241,7 +241,7 @@ def build_server(
 Dépôt : repository + starting_ref (nom de branche, pas un SHA), ou repositories (jusqu'à 20, pool nommé requis) ; sans dépôt, session de calcul seule.
 Modèle : model_id (id ou alias non ambigu), reasoning_level (valeur du reasoning_param du catalogue), model_params pour les autres paramètres ; tout est vérifié contre le catalogue avant l'envoi.
 Environnement : env_type cloud (VM Cursor, taille non choisie), pool ou machine (workers de l'utilisateur), avec env_name.
-agent_id est facultatif : le serveur en génère un et le renvoie, même dans MUTATION_OUTCOME_UNKNOWN. Avec env_vars ou forward_env, l'API refuse agent_id : name est alors obligatoire et sert à retrouver l'agent.
+agent_id est facultatif : le serveur en génère un, que tu ne connais que si une réponse t'arrive (même MUTATION_OUTCOME_UNKNOWN). Pour une création sensible, fournis et garde ton propre agent_id avant l'appel. Avec env_vars ou forward_env, l'API refuse agent_id : name est alors obligatoire et sert à retrouver l'agent.
 workOnCurrentBranch est toujours false."""
         return await _run(
             "cursor_create_agent",
@@ -315,7 +315,7 @@ workOnCurrentBranch est toujours false."""
         result_offset: int = Field(default=0, ge=0),
         result_limit: int = Field(default=RESULT_DEFAULT_LIMIT, ge=1, le=RESULT_MAX_LIMIT),
     ) -> RunView:
-        """État, résultat final et branches d'un run. Lecture seule. wait_seconds (jusqu'à 60) relit toutes les cinq secondes jusqu'à un état terminal ; timed_out vrai signifie que le run continue : rappeler. Un résultat long se lit par fenêtres avec result_offset = next_result_offset. git décrit l'état courant de l'agent, pas un SHA figé."""
+        """État, résultat final et branches d'un run. Lecture seule. wait_seconds (jusqu'à 60) relit toutes les cinq secondes jusqu'à un état terminal ; timed_out vrai signifie que le run continue : rappeler. Si une relecture échoue après une première lecture, l'observation précédente est rendue avec reread_error : ce n'est pas une garantie sur l'état courant. Un résultat long se lit par fenêtres avec result_offset = next_result_offset. git décrit l'état courant de l'agent, pas un SHA figé."""
         if wait_seconds == 0:
             return await _run(
                 "cursor_get_run",
@@ -450,6 +450,7 @@ workOnCurrentBranch est toujours false."""
         tools=tools,
         # Catalogue statique, usage requête/réponse : aucun abonnement à servir.
         subscriptions=False,
+        version=__version__,
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

@@ -11,7 +11,7 @@ import httpx
 from cursor_cloud_mcp import budget
 from cursor_cloud_mcp.client import CursorCloudClient, ResponseTooLarge, read_bounded
 from cursor_cloud_mcp.config import EVENT_MERGED_MAX_CHARS, EVENT_TEXT_MAX_CHARS, STREAM_MAX_BYTES
-from cursor_cloud_mcp.errors import ErrorCode, failure
+from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure
 from cursor_cloud_mcp.models import RunEventsView, RunEventView, RunView
 from cursor_cloud_mcp.present import run_view
 from cursor_cloud_mcp.validation import require_event_id, require_segment
@@ -19,6 +19,8 @@ from cursor_cloud_mcp.validation import require_event_id, require_segment
 _KEEP = {"status", "assistant", "tool_call", "thinking", "result", "error", "done"}
 _IGNORE = {"heartbeat", "interaction_update"}
 _POLL_SECONDS = 5.0
+_OUTER_GRACE_SECONDS = 0.5
+_TRANSIENT = {ErrorCode.TIMEOUT, ErrorCode.UPSTREAM, ErrorCode.QUOTA}
 
 
 @dataclass
@@ -90,23 +92,33 @@ async def read_run_events(
     # Une seule échéance pour l'ouverture et la collecte.
     deadline_at = budget.deadline_at(max_wait_seconds)
     loop = asyncio.get_running_loop()
-    async with client.stream_get(path, headers=headers, deadline=max(0.1, deadline_at - loop.time())) as response:
-        if response.status_code in {301, 302, 303, 307, 308}:
-            raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "Redirection du flux refusée.")
-        if response.status_code != 200:
-            raw = await _read_error_body(response)
-            raise client.error_from_response(response, raw)
-        retention = _retention(response)
-        return await _collect(
-            response,
-            agent_id=agent_id,
-            run_id=run_id,
-            deadline_at=deadline_at,
-            after_event_id=after_event_id,
-            max_events=max_events,
-            include_thinking=include_thinking,
-            retention_seconds=retention,
-        )
+    try:
+        # Garde-fou global : ouverture, corps d'erreur et fermeture. La collecte a son propre
+        # timer à deadline_at, qui expire avant celui-ci et rend les événements partiels.
+        async with asyncio.timeout_at(deadline_at + _OUTER_GRACE_SECONDS):
+            async with client.stream_get(
+                path, headers=headers, deadline=max(0.1, deadline_at - loop.time())
+            ) as response:
+                if response.status_code in {301, 302, 303, 307, 308}:
+                    raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "Redirection du flux refusée.")
+                if response.status_code != 200:
+                    raw = await _read_error_body(response)
+                    raise client.error_from_response(response, raw)
+                content_type = response.headers.get("content-type")
+                if content_type and "text/event-stream" not in content_type.lower():
+                    raise failure(ErrorCode.INCOMPATIBLE_RESPONSE, "Le flux n'est pas du text/event-stream.")
+                return await _collect(
+                    response,
+                    agent_id=agent_id,
+                    run_id=run_id,
+                    deadline_at=deadline_at,
+                    after_event_id=after_event_id,
+                    max_events=max_events,
+                    include_thinking=include_thinking,
+                    retention_seconds=_retention(response),
+                )
+    except TimeoutError:
+        raise failure(ErrorCode.TIMEOUT, "Délai dépassé avant la fin de la réponse du flux.") from None
 
 
 async def wait_run(
@@ -132,7 +144,13 @@ async def wait_run(
             if last is None:
                 raise failure(ErrorCode.TIMEOUT, "Délai d'attente dépassé avant la première lecture.")
             return last.model_copy(update={"timed_out": True})
-        remote = await client.get_run(agent_id, run_id, deadline=min(client.deadline_seconds, remaining))
+        try:
+            remote = await client.get_run(agent_id, run_id, deadline=min(client.deadline_seconds, remaining))
+        except CursorFailure as exc:
+            if last is None or exc.body.code not in _TRANSIENT:
+                raise
+            # Observation antérieure, pas une garantie sur l'état courant.
+            return last.model_copy(update={"timed_out": True, "reread_error": exc.body.message})
         view = run_view(remote, offset=offset, limit=limit)
         last = view.model_copy(update={"timed_out": False})
         reads += 1

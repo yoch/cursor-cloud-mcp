@@ -173,11 +173,13 @@ class CursorCloudClient:
 
     async def get_agent(self, agent_id: str) -> RemoteAgent:
         segment = require_segment(agent_id, label="agent_id")
-        return await self._get_model(
+        agent = await self._get_model(
             f"/v1/agents/{quote(segment, safe='')}",
             RemoteAgent,
             deadline=self._deadline,
         )
+        _require_same_id(agent.id, segment, "agent")
+        return agent
 
     async def create_agent(
         self,
@@ -214,11 +216,14 @@ class CursorCloudClient:
     async def get_run(self, agent_id: str, run_id: str, *, deadline: float | None = None) -> RemoteRun:
         agent = require_segment(agent_id, label="agent_id")
         run = require_segment(run_id, label="run_id")
-        return await self._get_model(
+        remote = await self._get_model(
             f"/v1/agents/{quote(agent, safe='')}/runs/{quote(run, safe='')}",
             RemoteRun,
             deadline=self._deadline if deadline is None else deadline,
         )
+        _require_same_id(remote.id, run, "run")
+        _require_same_id(remote.agentId, agent, "agent du run")
+        return remote
 
     def run_stream_path(self, agent_id: str, run_id: str) -> str:
         agent = require_segment(agent_id, label="agent_id")
@@ -524,6 +529,15 @@ async def close_quietly(response: httpx.Response) -> None:
         await response.aclose()
     except (httpx.HTTPError, OSError) as exc:
         logger.debug("http close_error=%s", type(exc).__name__)
+
+
+def _require_same_id(received: str, expected: str, label: str) -> None:
+    """Refuse une réponse qui décrit une autre ressource que celle demandée."""
+    if received != expected:
+        raise failure(
+            ErrorCode.INCOMPATIBLE_RESPONSE,
+            f"La réponse Cursor décrit un autre {label} que celui demandé. Rien n'a été modifié.",
+        )
 
 
 def _page_query(limit: int | None, cursor: str | None) -> dict[str, str]:
@@ -857,8 +871,11 @@ def _remote_help(raw: bytes) -> tuple[str | None, str | None]:
 
 
 def _clean(message: str) -> str:
-    """Message distant compacté, borné et débarrassé de tout secret connu du processus."""
-    compact = redaction.redact(" ".join(message.split()))
+    """Message distant masqué, puis compacté, puis borné.
+
+    L'ordre compte : compacter d'abord casserait la correspondance avec un secret multiligne.
+    """
+    compact = " ".join(redaction.redact(message).split())
     if len(compact) > 300:
         return compact[:300] + "…"
     return compact

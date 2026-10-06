@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from tests.test_tools import (
+    _AGENT,
     Router,
     _agent,
     _data,
@@ -16,7 +17,6 @@ from tests.test_tools import (
 
 pytestmark = pytest.mark.anyio
 
-_AGENT = "bc-11111111-1111-1111-1111-111111111111"
 _RUN = "run-00000000-0000-0000-0000-000000000001"
 
 

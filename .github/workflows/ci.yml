@@ -32,4 +32,4 @@ jobs:
           python_bin="$(uv python find ${{ matrix.python }})"
           "$python_bin" -m venv /tmp/wheel-env
           /tmp/wheel-env/bin/pip install dist/*.whl
-          /tmp/wheel-env/bin/python -c "from cursor_cloud_mcp.server import build_server; from cursor_cloud_mcp.config import load_settings; build_server(load_settings())"
+          cd /tmp && /tmp/wheel-env/bin/python "$GITHUB_WORKSPACE/scripts/wheel_smoke.py"
