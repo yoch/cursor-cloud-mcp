@@ -154,6 +154,9 @@ async def read_activity(
         )
     except CursorFailure as exc:
         return None, f"{exc.body.code.value}: {exc.body.message}"
+    if replay.stream_error:
+        # A partial summary would pass for a conclusive one: report the error, cache nothing.
+        return None, f"{ErrorCode.UPSTREAM.value}: the stream reported an error before the end of the replay."
     summary = replay.tracker.summary(run_terminal=run_terminal).model_copy(update={"complete": replay.complete})
     if run_terminal is True and replay.complete:
         _terminal_cache[key] = summary

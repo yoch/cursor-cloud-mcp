@@ -161,7 +161,7 @@ async def walk_replay(
       connection. On 2026-10-06 the first heartbeat came 30 to 36 s after connecting, always after
       the replay, while replays paused up to 1.3 s mid-way.
 
-    Reaching the deadline or TAIL_MAX_BYTES first leaves ``complete`` false.
+    Reaching the deadline or TAIL_MAX_BYTES first, or a stream ``error``, leaves ``complete`` false.
     """
     require_segment(agent_id, label="agent_id")
     require_segment(run_id, label="run_id")
@@ -205,7 +205,7 @@ async def _walk(
     chunks = response.aiter_bytes().__aiter__()
     try:
         async with asyncio.timeout_at(deadline_at):
-            while not complete:
+            while not (complete or stream_error):
                 try:
                     chunk = await anext(chunks)
                 except StopAsyncIteration:
@@ -229,8 +229,10 @@ async def _walk(
                             _append(tail, view)
                     tracker.feed(raw_event.event_id, raw_event.event, payload, view)
                     if raw_event.event == "error":
-                        stream_error = complete = True
-                    elif raw_event.event in {"result", "done"}:
+                        # Ends the walk, but proves nothing about the rest of the replay.
+                        stream_error = True
+                        break
+                    if raw_event.event in {"result", "done"}:
                         finished = complete = True
                     if raw_event.event == "heartbeat":
                         # Sent only once nothing is queued: the whole replay is behind it.
