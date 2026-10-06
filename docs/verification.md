@@ -2,7 +2,11 @@
 
 ## Consolidation du 6 octobre 2026 (ré-audit de `23aba59`)
 
-Quatre écarts du ré-audit corrigés, chacun avec un test qui échoue sur `23aba59` : secret multiligne masqué avant normalisation ; réponse décrivant un autre agent ou run refusée (aucun POST) ; échéance SSE couvrant ouverture et corps d'erreur, `Content-Type` contrôlé ; dernière observation rendue avec `reread_error` après une erreur transitoire. Version 0.2.0, migration documentée, `scripts/wheel_smoke.py` en CI. Aucun appel Cursor réel : le contrôle d'identité suppose que l'API renvoie l'`id` demandé, à confirmer par `scripts/smoke_live.py` sur autorisation explicite.
+Quatre écarts du ré-audit corrigés, chacun avec un test qui échoue sur `23aba59` : secret multiligne masqué avant normalisation ; réponse décrivant un autre agent ou run refusée (aucun POST) ; échéance SSE couvrant ouverture et corps d'erreur, `Content-Type` contrôlé ; dernière observation rendue avec `reread_error` après une erreur transitoire. Version 0.2.0, migration documentée, `scripts/wheel_smoke.py` en CI. Confirmé en réel le 6 octobre 2026 sur `258ec02`, sur autorisation explicite :
+
+- `scripts/live_read.py` : toutes les lectures PASS (compte, 43 modèles, agents, 76 dépôts, artefacts, flux).
+- `scripts/smoke_live.py` : **34 sur 34 PASS**, un `WARN` (liste d'artefacts vide, limite connue). Aucun `INCOMPATIBLE_RESPONSE` : `cursor_get_agent`, `cursor_get_run` (avec et sans `wait_seconds`), les relectures d'annulation et d'archivage et la continuation acceptent les réponses de l'API. Coût relu : 0,78 centime pour l'agent avec dépôt ; les deux agents de test sont supprimés (404 relu).
+- Relecture par GET : l'API accepte un identifiant d'agent ou de run dont les chiffres hexadécimaux sont en majuscules, et répond avec la forme minuscule. Le contrôle d'identité comparait à l'octet près et aurait refusé cette requête légitime, alors que la validation locale accepte les majuscules. Il compare désormais sans tenir compte de la casse ; un test le couvre (il échoue sur `258ec02`). `uv run pytest` : **92 passed** sous 3.13 et 3.12.
 
 ## Smoke réel de la PR #2 et livraison interface du 5 octobre 2026
 

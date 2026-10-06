@@ -416,6 +416,28 @@ async def test_run_read_refuses_another_run_or_agent() -> None:
     assert _error_payload(other_agent)["code"] == "INCOMPATIBLE_RESPONSE"
 
 
+async def test_identity_check_ignores_hex_case() -> None:
+    """L'API accepte un UUID en majuscules et répond en minuscules : ce n'est pas une autre ressource."""
+    agent = "bc-abcdef12-abcd-abcd-abcd-abcdef123456"
+    run = "run-abcdef12-abcd-abcd-abcd-abcdef123456"
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/runs/" + run.upper().replace("RUN-", "run-")):
+            return httpx.Response(200, json=_run(id=run, agentId=agent))
+        return httpx.Response(200, json=_agent(agent))
+
+    upper_agent = "bc-" + agent[3:].upper()
+    upper_run = "run-" + run[4:].upper()
+    client, _router = await _session(Router(responder))
+    try:
+        read_agent = await client.call_tool("cursor_get_agent", {"agent_id": upper_agent})
+        read_run = await client.call_tool("cursor_get_run", {"agent_id": upper_agent, "run_id": upper_run})
+    finally:
+        await client.__aexit__(None, None, None)
+    assert read_agent.is_error is False
+    assert read_run.is_error is False
+
+
 async def test_stream_error_body_respects_the_budget() -> None:
     """Scénario de l'audit : 503 aux en-têtes lents et au corps lent, budget d'une seconde."""
 

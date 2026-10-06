@@ -532,8 +532,12 @@ async def close_quietly(response: httpx.Response) -> None:
 
 
 def _require_same_id(received: str, expected: str, label: str) -> None:
-    """Refuse une réponse qui décrit une autre ressource que celle demandée."""
-    if received != expected:
+    """Refuse une réponse qui décrit une autre ressource que celle demandée.
+
+    Les identifiants sont des UUID préfixés : l'API accepte des chiffres hexadécimaux en majuscules
+    et répond avec la forme minuscule (vérifié le 6 octobre 2026). La casse ne distingue rien.
+    """
+    if received.lower() != expected.lower():
         raise failure(
             ErrorCode.INCOMPATIBLE_RESPONSE,
             f"La réponse Cursor décrit un autre {label} que celui demandé. Rien n'a été modifié.",
