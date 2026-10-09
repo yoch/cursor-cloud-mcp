@@ -368,6 +368,8 @@ class RunSummaryView(BaseModel):
     created_at: str
     updated_at: str
     duration_ms: int | None = None
+    # The agent's current pushed state, not the run's checkout: scope says so.
+    git: GitView | None = None
 
 
 class RunPageView(BaseModel):
@@ -385,6 +387,9 @@ class ToolCallSummaryView(BaseModel):
     status: str | None = None
     args: str | None = None
     result: str | None = None
+    # Upstream said it omitted this field from the stream because of its size; never set locally.
+    tool_args_omitted: bool | None = None
+    tool_result_omitted: bool | None = None
 
 
 class BackgroundTaskView(BaseModel):
@@ -399,6 +404,25 @@ class BackgroundTaskView(BaseModel):
     observed_at: str | None = None
 
 
+class RunEventView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str | None = None
+    kind: Literal["status", "assistant", "tool_call", "thinking", "result", "error", "done"]
+    text: str | None = None
+    status: str | None = None
+    call_id: str | None = None
+    tool_name: str | None = None
+    tool_status: str | None = None
+    tool_args: str | None = None
+    tool_result: str | None = None
+    clipped: bool | None = None
+    # The upstream API explicitly reported that this field was omitted from the stream
+    # because of its size. Present only when true; a local clip never sets it.
+    tool_args_omitted: bool | None = None
+    tool_result_omitted: bool | None = None
+
+
 class ActivityView(BaseModel):
     """What the stream shows about a run: liveness, last action, background tasks."""
 
@@ -409,12 +433,17 @@ class ActivityView(BaseModel):
     idle_seconds: int | None = None
     last_assistant_text: str | None = None
     last_tool_call: ToolCallSummaryView | None = None
+    # Last events observed during this read. They are the true end of the stream only when
+    # ``complete`` is true; a stream error or a deadline leaves the walk earlier.
+    last_events: list[RunEventView] | None = None
     background_tasks: list[BackgroundTaskView] | None = None
     background_tasks_total: int | None = None
     unfinished_background_tasks: int | None = None
     run_terminal: bool | None = None
     scanned_events: int
     complete: bool = True
+    # The walk stopped on a stream error event: the summary is partial and is never cached.
+    stream_error: bool | None = None
 
 
 class RunView(RunSummaryView):
@@ -426,7 +455,6 @@ class RunView(RunSummaryView):
     result_truncated: bool | None = None
     next_result_offset: int | None = None
     error: str | None = None
-    git: GitView | None = None
     timed_out: bool | None = None
     reread_error: str | None = None
     activity: ActivityView | None = None
@@ -449,6 +477,7 @@ class SupervisedAgentView(BaseModel):
     duration_ms: int | None = None
     result_present: bool | None = None
     error: str | None = None
+    git: GitView | None = None
     read_error: str | None = None
     activity: ActivityView | None = None
     activity_error: str | None = None
@@ -479,12 +508,14 @@ class CreateAgentView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     agent_id: str
-    run_id: str
+    # Absent on a reused creation: no new run was sent, the existing agent is returned as observed.
+    run_id: str | None = None
     agent_status: str
-    run_status: str
+    run_status: str | None = None
     url: str | None = None
     name: str | None = None
     latest_run_id: str | None = None
+    reused: bool | None = None
     next_step: str
 
 
@@ -551,21 +582,6 @@ class UsageView(BaseModel):
     total_usage: TokenUsageView
     total_cost: CostView | None = None
     runs: list[RunUsageView]
-
-
-class RunEventView(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    event_id: str | None = None
-    kind: Literal["status", "assistant", "tool_call", "thinking", "result", "error", "done"]
-    text: str | None = None
-    status: str | None = None
-    call_id: str | None = None
-    tool_name: str | None = None
-    tool_status: str | None = None
-    tool_args: str | None = None
-    tool_result: str | None = None
-    clipped: bool | None = None
 
 
 class RunEventsView(BaseModel):

@@ -32,6 +32,7 @@ from cursor_cloud_mcp.present import (
     create_agent_view,
     create_run_view,
     ensure_continuation_allowed,
+    reused_agent_view,
 )
 from cursor_cloud_mcp.validation import (
     normalize_repository,
@@ -65,9 +66,18 @@ async def perform_create(
     env_name: str | None,
     env_vars: dict[str, str] | None,
     forward_env: list[str] | None,
+    on_conflict: str = "error",
 ) -> CreateAgentView:
     checked_prompt = require_prompt(prompt)
     checked_mode = require_mode(mode)
+    if on_conflict not in {"error", "reuse"}:
+        raise failure(ErrorCode.VALIDATION, "on_conflict must be error or reuse.")
+    if on_conflict == "reuse" and agent_id is None:
+        raise failure(
+            ErrorCode.VALIDATION,
+            "on_conflict=reuse requires a caller-supplied agent_id: the conflict is on that identifier. "
+            "With env_vars or forward_env the API forbids agent_id; recover by name with cursor_list_agents.",
+        )
     if name is not None and name.strip() == "":
         raise failure(ErrorCode.VALIDATION, "name is empty.")
     repos = _repositories(repository, starting_ref, repositories)
@@ -105,8 +115,34 @@ async def perform_create(
         body["mode"] = checked_mode
     if merged is not None:
         body["envVars"] = merged
-    remote = await client.create_agent(body, agent_id=chosen_id, lookup_name=lookup_name)
+    try:
+        remote = await client.create_agent(body, agent_id=chosen_id, lookup_name=lookup_name)
+    except CursorFailure as exc:
+        if on_conflict != "reuse" or chosen_id is None or exc.body.code is not ErrorCode.AGENT_ID_CONFLICT:
+            raise
+        return await _reused_agent(client, chosen_id, exc)
     return create_agent_view(remote)
+
+
+async def _reused_agent(client: CursorCloudClient, agent_id: str, conflict: CursorFailure) -> CreateAgentView:
+    """on_conflict=reuse: the identifier exists, return the agent as observed. No POST is replayed."""
+    try:
+        remote = await client.get_agent(agent_id)
+    except CursorFailure as exc:
+        # The conflict proves the agent exists; the re-read could not confirm it. Retrying this
+        # same call is safe (reuse is idempotent); a different identifier is not.
+        recovery = (
+            "The identifier exists (409 agent_id_conflict) but it could not be re-read: "
+            f"{exc.body.message} Retry this same call (reuse is idempotent) or read it with "
+            "cursor_get_agent. Do not change the identifier."
+        )
+        raise CursorFailure(conflict.body.model_copy(update={"recovery": recovery})) from None
+    if not same_id(remote.id, agent_id):
+        raise failure(
+            ErrorCode.INCOMPATIBLE_RESPONSE,
+            "The agent re-read after the conflict does not match the requested identifier.",
+        )
+    return reused_agent_view(remote)
 
 
 async def perform_followup(

@@ -24,12 +24,23 @@ MAX_RESPONSE_BYTES = 8_000_000
 STREAM_MAX_BYTES = 1_000_000
 ARTIFACT_MAX_BYTES = 5_000_000
 EVENT_TEXT_MAX_CHARS = 500
+# cursor_read_run_events: the caller may widen the tool args/result text, within this bound.
+TOOL_OUTPUT_MAX_CHARS = 4000
+# Total tool text rendered by one cursor_read_run_events call; reaching it sets truncated and
+# leaves the cursor on the last event actually returned.
+TOOL_TEXT_TOTAL_MAX_CHARS = 256_000
 # Consecutive text fragments merged into one event, up to this size.
 EVENT_MERGED_MAX_CHARS = 4000
 # Full replay read to reach the end of a stream: the API has no way to start from the end.
 # Bytes are walked, not kept (a 7 h run replayed 839 KB on 2026-10-06).
 TAIL_MAX_BYTES = 16_000_000
 ACTIVITY_TEXT_MAX_CHARS = 1000
+# Tool args/result in an activity summary: wider than a plain stream excerpt, for diagnosis.
+# Applied during the walk (the tracker stores the simplified view), not when the summary is built.
+ACTIVITY_TOOL_TEXT_MAX_CHARS = 2000
+# Last events kept in the activity summary: the diagnosis tail. The walk is already paid for
+# by the summary, so keeping them costs nothing more.
+ACTIVITY_LAST_EVENTS = 10
 # Time allowed to walk a stream for an activity summary, on top of the tool's own budget. An idle
 # run is only known to be fully replayed at its first heartbeat, 30 to 36 s after connecting.
 ACTIVITY_MAX_SECONDS = 45.0

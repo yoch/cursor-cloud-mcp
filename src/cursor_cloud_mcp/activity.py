@@ -104,6 +104,8 @@ class ActivityTracker:
                 status=tool.tool_status,
                 args=tool.tool_args,
                 result=tool.tool_result,
+                tool_args_omitted=tool.tool_args_omitted,
+                tool_result_omitted=tool.tool_result_omitted,
             ),
             background_tasks=tasks or None,
             background_tasks_total=len(self._tasks) or None,

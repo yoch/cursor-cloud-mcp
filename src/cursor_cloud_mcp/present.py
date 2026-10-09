@@ -24,6 +24,7 @@ from cursor_cloud_mcp.models import (
     RemoteCost,
     RemoteCreateAgent,
     RemoteCreateRun,
+    RemoteGit,
     RemoteModel,
     RemoteModelList,
     RemoteRepositoryList,
@@ -46,6 +47,10 @@ from cursor_cloud_mcp.models import (
 from cursor_cloud_mcp.slicing import slice_text
 
 _NEXT_POLL = "Follow with cursor_get_run (wait_seconds) or cursor_read_run_events. Do not create another agent."
+_REUSED_NEXT_STEP = (
+    "reused=true: this agent already existed, no new run was sent and the prompt was not applied. "
+    "Inspect latest_run_id with cursor_get_run if it is present."
+)
 
 
 def account_view(remote: RemoteAccount) -> AccountView:
@@ -159,6 +164,7 @@ def run_page_view(remote: RemoteRunPage) -> RunPageView:
             created_at=item.createdAt,
             updated_at=item.updatedAt,
             duration_ms=item.durationMs,
+            git=_git_view(item.git),
         )
         for item in remote.items
     ]
@@ -167,14 +173,6 @@ def run_page_view(remote: RemoteRunPage) -> RunPageView:
 
 def run_view(remote: RemoteRun, *, offset: int, limit: int) -> RunView:
     _bounds(offset, limit)
-    git = None
-    if remote.git is not None:
-        git = GitView(
-            branches=[
-                GitBranchView(repo_url=branch.repoUrl, branch=branch.branch, pr_url=branch.prUrl)
-                for branch in remote.git.branches
-            ]
-        )
     terminal = run_terminal(remote.status)
     common = {
         "run_id": remote.id,
@@ -185,7 +183,7 @@ def run_view(remote: RemoteRun, *, offset: int, limit: int) -> RunView:
         "created_at": remote.createdAt,
         "updated_at": remote.updatedAt,
         "duration_ms": remote.durationMs,
-        "git": git,
+        "git": _git_view(remote.git),
         "error": _run_error(remote.error),
     }
     if remote.result is None:
@@ -215,6 +213,19 @@ def create_agent_view(remote: RemoteCreateAgent) -> CreateAgentView:
         name=remote.agent.name,
         latest_run_id=remote.agent.latestRunId,
         next_step=_NEXT_POLL,
+    )
+
+
+def reused_agent_view(remote: RemoteAgent) -> CreateAgentView:
+    """A creation whose identifier already existed: the agent is returned as observed, no run sent."""
+    return CreateAgentView(
+        agent_id=remote.id,
+        agent_status=remote.status,
+        url=remote.url,
+        name=remote.name,
+        latest_run_id=remote.latestRunId,
+        reused=True,
+        next_step=_REUSED_NEXT_STEP,
     )
 
 
@@ -279,6 +290,18 @@ def _cost(remote: RemoteCost | None) -> CostView | None:
     if remote is None:
         return None
     return CostView(raw_cents=round(remote.rawCostCents, 4), charged_cents=round(remote.chargedCents, 4))
+
+
+def _git_view(remote: RemoteGit | None) -> GitView | None:
+    """The agent's current pushed state (scope says so), never a run's frozen checkout."""
+    if remote is None:
+        return None
+    return GitView(
+        branches=[
+            GitBranchView(repo_url=branch.repoUrl, branch=branch.branch, pr_url=branch.prUrl)
+            for branch in remote.branches
+        ]
+    )
 
 
 def _run_error(value: object) -> str | None:

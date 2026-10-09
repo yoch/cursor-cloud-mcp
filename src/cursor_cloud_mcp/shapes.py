@@ -33,3 +33,26 @@ def clip(value: object, limit: int = EVENT_TEXT_MAX_CHARS) -> tuple[str | None, 
     if len(text) > limit:
         return text[:limit] + "…", True
     return text, False
+
+
+# Explicit cut marker of the head + tail form. Counted in the limit.
+CLIP_MARKER = "…[clipped]…"
+
+
+def clip_edges(value: object, limit: int = EVENT_TEXT_MAX_CHARS) -> tuple[str | None, bool]:
+    """Bounded text keeping both edges: half head, half tail, an explicit marker between.
+
+    Tool args and results only: the end of an output (a traceback) matters as much as its
+    start. The total length, marker included, never exceeds ``limit``; a value that fits is
+    returned intact. A limit too small for the marker falls back to the head-only form.
+    """
+    if value is None:
+        return None, False
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if len(text) <= limit:
+        return text, False
+    budget = limit - len(CLIP_MARKER)
+    if budget < 2:
+        return text[:limit], True
+    head = budget // 2
+    return text[:head] + CLIP_MARKER + text[-(budget - head):], True

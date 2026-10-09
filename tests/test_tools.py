@@ -261,6 +261,8 @@ async def test_read_tools_map_the_contract() -> None:
     assert agent["status_known"] is True
     assert agent["work_on_current_branch"] is False
     assert runs["has_more"] is False
+    assert runs["items"][0]["git"]["scope"] == "agent_current_state"
+    assert runs["items"][0]["git"]["branches"][0]["branch"] == "cursor/demo"
     assert "cost" not in usage
     assert usage["total_usage"]["total_tokens"] == 7
 
@@ -378,6 +380,7 @@ async def test_create_agent_sends_exact_rest_fields() -> None:
         await client.__aexit__(None, None, None)
     assert created["agent_id"] == _AGENT
     assert created["run_id"] == _RUN
+    assert "reused" not in created  # the normal path's JSON is unchanged
     assert [call[0] for call in router.calls] == ["GET", "POST"]
     assert router.calls[1][1] == "/v1/agents"
 
@@ -456,6 +459,57 @@ async def test_create_conflict_returns_the_same_agent_id() -> None:
     assert payload["agent_id"] == _AGENT
     assert payload["safe_to_retry_automatically"] is False
     assert len(router.calls) == 1
+
+
+async def test_create_conflict_reuse_returns_the_existing_agent() -> None:
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == f"/v1/agents/{_AGENT}":
+            return httpx.Response(200, json=_agent(status="IDLE", latestRunId="run-latest"))
+        return httpx.Response(409, json={"error": {"code": "agent_id_conflict", "message": "exists"}})
+
+    router = Router(responder)
+    client, _router = await _session(router)
+    try:
+        reused = _data(
+            await client.call_tool("cursor_create_agent", {"prompt": "x", "agent_id": _AGENT, "on_conflict": "reuse"})
+        )
+    finally:
+        await client.__aexit__(None, None, None)
+    assert reused["agent_id"] == _AGENT and reused["reused"] is True
+    assert reused["agent_status"] == "IDLE" and reused["latest_run_id"] == "run-latest"
+    assert "run_id" not in reused and "run_status" not in reused
+    assert "latest_run_id" in reused["next_step"]
+    assert [call[0] for call in router.calls] == ["POST", "GET"]  # the creation is not replayed
+
+
+async def test_reuse_requires_a_caller_supplied_agent_id() -> None:
+    router = Router(lambda _request: (_ for _ in ()).throw(AssertionError("network")))
+    client, _router = await _session(router)
+    try:
+        refused = await client.call_tool("cursor_create_agent", {"prompt": "x", "on_conflict": "reuse"})
+    finally:
+        await client.__aexit__(None, None, None)
+    assert _error_payload(refused)["code"] == "VALIDATION"
+    assert router.calls == []
+
+
+async def test_reuse_reports_an_unconfirmed_recovery_when_the_re_read_fails() -> None:
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(500, json={"error": {"code": "internal_error", "message": "boom"}})
+        return httpx.Response(409, json={"error": {"code": "agent_id_conflict", "message": "exists"}})
+
+    client, _router = await _session(Router(responder))
+    try:
+        failed = await client.call_tool(
+            "cursor_create_agent", {"prompt": "x", "agent_id": _AGENT, "on_conflict": "reuse"}
+        )
+    finally:
+        await client.__aexit__(None, None, None)
+    payload = _error_payload(failed)
+    assert payload["code"] == "AGENT_ID_CONFLICT" and payload["agent_id"] == _AGENT
+    assert "Retry this same call" in str(payload["recovery"])
+    assert payload["safe_to_retry_automatically"] is False
 
 
 async def test_follow_up_run_refuses_archived_or_current_branch_and_returns_busy() -> None:

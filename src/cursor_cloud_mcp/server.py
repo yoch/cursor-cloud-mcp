@@ -27,6 +27,7 @@ from cursor_cloud_mcp.config import (
     CANCEL_TOOL_BUDGET_SECONDS,
     CLIENT_SAFE_BUDGET_SECONDS,
     CREATE_TOOL_BUDGET_SECONDS,
+    EVENT_TEXT_MAX_CHARS,
     NAME_MAX_CHARS,
     PROMPT_MAX_CHARS,
     REPOSITORIES_DEADLINE_SECONDS,
@@ -37,6 +38,7 @@ from cursor_cloud_mcp.config import (
     SUPERVISE_DEFAULT_AGENTS,
     TAIL_DEFAULT_WAIT_SECONDS,
     TOOL_BUDGET_SECONDS,
+    TOOL_OUTPUT_MAX_CHARS,
     Settings,
     load_settings,
 )
@@ -241,8 +243,8 @@ def build_server(
         limit: int | None = Field(default=None, ge=1, le=100),
         cursor: str | None = None,
     ) -> SuperviseView:
-        """Overview of a fleet of runners in one call: each agent with its latest run's status, read in parallel. Read-only. status=active keeps agents with a run in progress; all keeps every agent (combine with name to follow runners that just finished). A failed read only marks its row (read_error).
-activity=true also reads each unfinished run's stream (or a terminal run without a result): last_event_at, idle_seconds, unfinished_background_tasks, last tool call. Slower: the API has no tail, so each stream is replayed, about 30 s for an idle run, 8 in parallel. summary.stale lists runs idle for stale_after_minutes; summary.unfinished_after_end lists ended runs whose background tasks were last seen running. Detail: cursor_get_run(activity=true)."""
+        """Overview of a fleet of runners in one call: each agent with its latest run's status, read in parallel. Read-only. status=active keeps agents with a run in progress; all keeps every agent (combine with name to follow runners that just finished). A failed read only marks its row (read_error). Each row carries the latest run's git (the agent's current pushed state, scope=agent_current_state).
+activity=true also reads each unfinished run's stream (or a terminal run without a result): last_event_at, idle_seconds, unfinished_background_tasks, last tool call. Slower: the API has no tail, so each stream is replayed, about 30 s for an idle run, 8 in parallel. The rows keep signals, not texts: last_events and the other heavy fields are stripped; stream_error and complete remain on the activity. summary.stale lists runs idle for stale_after_minutes; summary.unfinished_after_end lists ended runs whose background tasks were last seen running. Detail: cursor_get_run(activity=true)."""
 
         async def action(app: AppContext) -> SuperviseView:
             client = _client(app)
@@ -292,12 +294,14 @@ activity=true also reads each unfinished run's stream (or a terminal run without
         env_name: str | None = None,
         env_vars: dict[str, str] | None = None,
         forward_env: list[str] | None = None,
+        on_conflict: Literal["error", "reuse"] = "error",
     ) -> CreateAgentView:
         """Creates an agent and starts its first run. PAID. Returns agent_id, run_id and url without waiting for the run to finish.
 Repository: repository + starting_ref (branch name, not a SHA), or repositories (up to 20, named pool required); without a repository, a compute-only session.
 Model: model_id (id or unambiguous alias), reasoning_level (value of the catalog's reasoning_param), model_params for the other parameters; everything is checked against the catalog before sending.
 Environment: env_type cloud (Cursor VM, size not selectable), pool or machine (the user's workers), with env_name.
 agent_id is optional: the server generates one, which you only learn if a response reaches you (even MUTATION_OUTCOME_UNKNOWN). For a sensitive creation, provide and keep your own agent_id before the call. With env_vars or forward_env, the API rejects agent_id: name is then required and is used to find the agent again.
+on_conflict=reuse (requires your own agent_id): if that identifier already exists (409 agent_id_conflict), the existing agent is returned unchanged with reused=true and its observed latest_run_id; no run is sent and the prompt is not applied. Default error keeps the conflict as an error.
 workOnCurrentBranch is always false."""
         return await _run(
             "cursor_create_agent",
@@ -320,6 +324,7 @@ workOnCurrentBranch is always false."""
                 env_name=env_name,
                 env_vars=env_vars,
                 forward_env=forward_env,
+                on_conflict=on_conflict,
             ),
             mutation=True,
             budget_seconds=CREATE_TOOL_BUDGET_SECONDS,
@@ -376,7 +381,7 @@ The API cannot send a message to a run in progress (AGENT_BUSY). replace_active=
         activity: bool | None = None,
     ) -> RunView:
         """State, final result and branches of a run. Read-only. wait_seconds (up to 60) re-reads every five seconds until a terminal state; timed_out true means the run is still going: call again. If a re-read fails after a first read, the previous observation is returned with reread_error: it is no guarantee about the current state. A long result is read in windows with result_offset = next_result_offset. git describes the agent's current state, not a frozen SHA.
-activity=true adds what the stream shows (one full stream read): last_event_at and idle_seconds (the API's updated_at stays frozen while a run is RUNNING), the last assistant text and tool call, and background_tasks with their last observed state. FINISHED only means the agent ended its turn: unfinished_background_tasks > 0 means jobs it started were last seen running. By default (activity omitted) the summary is added only to a terminal run without a result, since the API gives no error cause; activity=false never reads the stream. A terminal run's complete summary is cached. complete false means the stream walk did not reach its end within the call's budget (95 s at most, wait included)."""
+activity=true adds what the stream shows (one full stream read): last_event_at and idle_seconds (the API's updated_at stays frozen while a run is RUNNING), the last observed events (last_events, the true end of the stream only when complete), the last assistant text and tool call (wider clip), and background_tasks with their last observed state. FINISHED only means the agent ended its turn: unfinished_background_tasks > 0 means jobs it started were last seen running. By default (activity omitted) the summary is added only to a terminal run without a result, since the API gives no error cause; activity=false never reads the stream. A stream ending on an error event returns a partial summary with stream_error true, never cached. A terminal run's complete summary is cached. complete false means the stream walk did not reach its end within the call's budget (95 s at most, wait included)."""
 
         async def action(app: AppContext) -> RunView:
             client = _client(app)
@@ -410,10 +415,12 @@ activity=true adds what the stream shows (one full stream read): last_event_at a
         max_wait_seconds: int | None = Field(default=None, ge=1, le=50),
         max_events: int = Field(default=50, ge=1, le=200),
         include_thinking: bool = False,
+        tool_output_limit: int = Field(default=EVENT_TEXT_MAX_CHARS, ge=1, le=TOOL_OUTPUT_MAX_CHARS),
         tail: int | None = Field(default=None, ge=1, le=200),
     ) -> RunEventsView:
         """Excerpt of the stream of a run (messages, tool calls, status), to follow its progress. Read-only. Resume with after_event_id = last_event_id. finished: the run has returned its result; stream_error: stream error, not the end of the run; interrupted: cut off, partial events returned. Texts are bounded (clipped): the full result is in cursor_get_run. STREAM_EXPIRED: use cursor_get_run.
 max_wait_seconds defaults to 20.
+tool_output_limit (default 500, max 4000) widens the tool args/result text of the returned events: clipped head + tail with an explicit marker, the total staying within the limit. tool_args_omitted/tool_result_omitted mean Cursor itself omitted that field upstream because of its size: raising the limit cannot recover it. A global cap on rendered tool text sets truncated; last_event_id stays on the last event returned, so a resume gives back the following events.
 tail=N returns the last N events instead, with last_event_at. The API can neither start a stream from its end nor mark the end of its replay: the whole replay is read (not kept) until the run's result, a live event, or the server's first heartbeat, which can take about 35 s on an idle run (max_wait_seconds defaults to 45 here). truncated true means that point was not reached. Not combinable with after_event_id."""
         if tail is not None and after_event_id is not None:
             return await _run(
@@ -426,7 +433,7 @@ tail=N returns the last N events instead, with last_event_at. The API can neithe
             return await _run(
                 "cursor_read_run_events",
                 ctx,
-                lambda app: _tail(app, agent_id, run_id, tail, include_thinking, tail_wait),
+                lambda app: _tail(app, agent_id, run_id, tail, include_thinking, tail_wait, tool_output_limit),
                 budget_seconds=tail_wait,
             )
         wait = float(max_wait_seconds or 20)
@@ -441,6 +448,7 @@ tail=N returns the last N events instead, with last_event_at. The API can neithe
                 max_wait_seconds=wait,
                 max_events=max_events,
                 include_thinking=include_thinking,
+                tool_output_limit=tool_output_limit,
             ),
             budget_seconds=wait,
         )
@@ -749,6 +757,7 @@ async def _tail(
     keep: int,
     include_thinking: bool,
     max_wait_seconds: float,
+    tool_text_limit: int,
 ) -> RunEventsView:
     replay = await walk_replay(
         _client(app),
@@ -757,6 +766,7 @@ async def _tail(
         keep=keep,
         include_thinking=include_thinking,
         max_wait_seconds=max_wait_seconds,
+        tool_text_limit=tool_text_limit,
     )
     return tail_view(agent_id, run_id, replay)
 
