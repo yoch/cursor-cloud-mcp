@@ -31,7 +31,7 @@ Gap: `tool_call` events carry `tool_args`/`tool_result` clipped at 500 chars (`E
 - **Two distinct truncations.** The MCP may clip what it received (own limit); Cursor may omit a field upstream because of its size (verified live on 2026-10-09: `truncated.result` with `result` absent). The second is not recoverable by raising the MCP limit.
   - Parse the upstream signal; expose `tool_args_omitted` / `tool_result_omitted` (booleans, present only when true) on `RunEventView` and `ToolCallSummaryView`.
   - Definition to document: *the upstream API explicitly reported that this field was omitted from the stream because of its size*. Only the upstream signal sets them: an absent value, a local clip, or a field stripped in `cursor_supervise` never does.
-- Explicit global cap on rendered tool text per call. On reaching it: `truncated: true`, `last_event_id` = last event actually returned, resume with `after_event_id` for the following events.
+- Explicit global cap on rendered tool text per call. On reaching it: `truncated: true`, `last_event_id` = last event actually returned, resume with `after_event_id` for the following events. In `tail` mode the same cap bounds the returned window from its oldest side (the newest events are kept) and still sets `truncated`; the walk itself always runs to its usual stop criterion.
 - Contract: events are paged, outputs are bounded; no intra-`tool_result` resume, no promise of full recovery of an output (local cap or upstream omission). The agent-side convention "ask the runner to tail its log" is out of scope.
 
 ## C. Creation recovery by `agent_id`: `on_conflict="reuse"` (small)

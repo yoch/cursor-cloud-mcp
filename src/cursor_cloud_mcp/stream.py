@@ -376,13 +376,12 @@ async def _collect(
                         last_event_id = raw_event.event_id or last_event_id
                         continue
                     view = _simplify(raw_event, tool_limit=tool_text_limit)
-                    if view.kind == "tool_call":
-                        cost = len(view.tool_args or "") + len(view.tool_result or "")
-                        if events and tool_text_total + cost > TOOL_TEXT_TOTAL_MAX_CHARS:
-                            # Not returned: the cursor stays on the last returned event.
-                            truncated = True
-                            break
-                        tool_text_total += cost
+                    cost = tool_text_cost(view)
+                    if events and tool_text_total + cost > TOOL_TEXT_TOTAL_MAX_CHARS:
+                        # Not returned: the cursor stays on the last returned event.
+                        truncated = True
+                        break
+                    tool_text_total += cost
                     last_event_id = raw_event.event_id or last_event_id
                     if view.status is not None and view.kind in {"status", "result"}:
                         run_status = view.status
@@ -458,6 +457,13 @@ def _simplify(
         return RunEventView(event_id=event.event_id, kind=kind, text=text, status=status, clipped=clipped or None)
     text, clipped = _text_of(payload, event.data)
     return RunEventView(event_id=event.event_id, kind=kind, text=text, status=status, clipped=clipped or None)
+
+
+def tool_text_cost(view: RunEventView) -> int:
+    """Rendered tool text of one event: the unit of the global cap."""
+    if view.kind != "tool_call":
+        return 0
+    return len(view.tool_args or "") + len(view.tool_result or "")
 
 
 def _append(events: MutableSequence[RunEventView], view: RunEventView) -> None:

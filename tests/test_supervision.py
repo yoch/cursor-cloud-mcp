@@ -497,6 +497,50 @@ async def test_supervise_reports_each_runner_and_isolates_failures() -> None:
     assert len(streams) == 3  # a, b and c; d could not be read
 
 
+async def test_tail_applies_the_global_tool_text_cap_to_the_returned_window() -> None:
+    # The audited scenario: 50 tool calls, args + result clipped at 4000 each (8000 per event),
+    # well above the 256 000 production cap; tail must bound the window, not the walk.
+    padding = "w" * 5000
+    chunks = [_sse("status", {"status": "RUNNING"}, _T0)]
+    for index in range(50):
+        chunks.append(
+            _sse(
+                "tool_call",
+                {
+                    "callId": f"c{index}",
+                    "name": "shell",
+                    "status": "completed",
+                    "args": {"command": padding, "note": str(index)},
+                    "result": {"output": padding, "note": str(index)},
+                },
+                _T0 + 1 + index,
+            )
+        )
+    chunks.append(_sse("done", {}, _T0 + 100))
+
+    client, _ = await _session(_router(_run(status="RUNNING", result=None), chunks))
+    try:
+        view = _data(
+            await client.call_tool(
+                "cursor_read_run_events",
+                {"agent_id": _AGENT, "run_id": _RUN, "tail": 50, "tool_output_limit": 4000, "max_wait_seconds": 3},
+            )
+        )
+    finally:
+        await client.__aexit__(None, None, None)
+    events = view["events"]
+    # The newest events stay: the cap drops the oldest of the window, never the end.
+    assert events[-1]["kind"] == "done"
+    assert events[-2]["call_id"] == "c49"
+    calls = [event for event in events if event["kind"] == "tool_call"]
+    assert calls[0]["call_id"] == "c18" and len(calls) == 32
+    total = sum(len(event.get("tool_args") or "") + len(event.get("tool_result") or "") for event in events)
+    assert total == 256_000
+    assert view["truncated"] is True
+    assert view["last_event_id"] == f"{_T0 + 100}-0"  # still the last event of the replay
+    assert view["scanned_events"] == 52  # the whole replay was walked
+
+
 async def test_supervise_keeps_stream_error_rows_partial_and_incomplete() -> None:
     agent = _agent(_B_FINISHED, status="IDLE", latestRunId="run-b")
     errored = [*_background_run(end=None)[:4], _sse("error", {"message": "stream failed"}, _T0 + 5)]

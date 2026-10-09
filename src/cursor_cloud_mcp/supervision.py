@@ -17,6 +17,7 @@ from cursor_cloud_mcp.config import (
     AGENT_SCAN_MIN_SECONDS,
     SUPERVISE_ACTIVITY_BUDGET_SECONDS,
     TOOL_BUDGET_SECONDS,
+    TOOL_TEXT_TOTAL_MAX_CHARS,
 )
 from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure
 from cursor_cloud_mcp.models import (
@@ -25,6 +26,7 @@ from cursor_cloud_mcp.models import (
     AgentSummaryView,
     RemoteAgentSummary,
     RunEventsView,
+    RunEventView,
     RunView,
     SupervisedAgentView,
     SuperviseSummaryView,
@@ -32,7 +34,7 @@ from cursor_cloud_mcp.models import (
     summary_from,
 )
 from cursor_cloud_mcp.present import next_page, run_view
-from cursor_cloud_mcp.stream import Replay, walk_replay
+from cursor_cloud_mcp.stream import Replay, tool_text_cost, walk_replay
 
 # Below this, a stream walk cannot reasonably complete inside the tool budget.
 _MIN_WALK_SECONDS = 2.0
@@ -195,21 +197,42 @@ async def with_activity(client: CursorCloudClient, view: RunView, *, requested: 
 
 
 def tail_view(agent_id: str, run_id: str, replay: Replay) -> RunEventsView:
+    events, capped = _cap_tail_tool_text(replay.events)
     last_event_id = replay.tracker.last_event_id
     return RunEventsView(
         agent_id=agent_id,
         run_id=run_id,
-        events=replay.events,
+        events=events,
         last_event_id=last_event_id,
         finished=replay.finished,
         stream_error=replay.stream_error,
         interrupted=replay.interrupted,
         run_status=replay.run_status,
         retention_seconds=replay.retention_seconds,
-        truncated=not replay.complete,
+        # The walk did not reach its stop criterion, or the tool-text cap dropped the
+        # oldest events of the returned window.
+        truncated=not replay.complete or capped,
         last_event_at=iso(event_time(last_event_id)),
         scanned_events=replay.tracker.scanned,
     )
+
+
+def _cap_tail_tool_text(events: list[RunEventView]) -> tuple[list[RunEventView], bool]:
+    """Bound the returned window by the global tool-text cap, dropping the oldest events.
+
+    The replay walk always runs to its usual stop criterion: the newest events are the
+    point of ``tail``. The cap trims the window from the old side, keeping it contiguous
+    and ending on the same event, so ``last_event_id`` stays coherent.
+    """
+    total = 0
+    start = len(events)
+    while start > 0:
+        cost = tool_text_cost(events[start - 1])
+        if start < len(events) and total + cost > TOOL_TEXT_TOTAL_MAX_CHARS:
+            break
+        total += cost
+        start -= 1
+    return events[start:], start > 0
 
 
 async def supervise(
