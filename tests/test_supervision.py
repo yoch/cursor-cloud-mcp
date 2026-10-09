@@ -165,6 +165,148 @@ async def test_error_run_without_result_gets_its_context_automatically() -> None
     assert view["activity"]["unfinished_background_tasks"] == 1
 
 
+async def test_activity_keeps_the_last_observed_events_and_widens_the_last_tool_call() -> None:
+    long_result = "y" * 3000
+    chunks = [
+        _sse("status", {"status": "RUNNING"}, _T0),
+        _sse(
+            "tool_call",
+            {"callId": "c1", "name": "shell", "status": "completed", "args": {"cmd": "run"}, "result": {"output": long_result}},
+            _T0 + 1,
+        ),
+        _sse("result", {"status": "FINISHED"}, _T0 + 2),
+        _sse("done", {}, _T0 + 3),
+    ]
+    client, _ = await _session(_router(_run(), chunks))
+    try:
+        view = _data(await client.call_tool("cursor_get_run", {"agent_id": _AGENT, "run_id": _RUN, "activity": True}))
+    finally:
+        await client.__aexit__(None, None, None)
+    activity = view["activity"]
+    assert [event["kind"] for event in activity["last_events"]] == ["status", "tool_call", "result"]
+    assert activity["complete"] is True and "stream_error" not in activity
+    tool_event = activity["last_events"][1]
+    assert len(tool_event["tool_result"]) == 2000  # ACTIVITY_TOOL_TEXT_MAX_CHARS, marker included
+    assert "…[clipped]…" in tool_event["tool_result"] and tool_event["clipped"] is True
+    summary_tool = activity["last_tool_call"]
+    assert summary_tool["name"] == "shell" and len(summary_tool["result"]) == 2000
+
+
+async def test_tool_output_limit_widens_the_head_tail_clip_of_events() -> None:
+    long_result = "z" * 3000
+    chunks = [
+        _sse("status", {"status": "RUNNING"}, _T0),
+        _sse(
+            "tool_call",
+            {"callId": "c1", "name": "shell", "status": "completed", "args": {"cmd": "run"}, "result": {"output": long_result}},
+            _T0 + 1,
+        ),
+        _sse("done", {}, _T0 + 2),
+    ]
+    client, _ = await _session(_router(_run(status="RUNNING", result=None), chunks))
+    try:
+        default = _data(
+            await client.call_tool("cursor_read_run_events", {"agent_id": _AGENT, "run_id": _RUN, "max_wait_seconds": 2})
+        )
+        widened = _data(
+            await client.call_tool(
+                "cursor_read_run_events",
+                {"agent_id": _AGENT, "run_id": _RUN, "max_wait_seconds": 2, "tool_output_limit": 2000},
+            )
+        )
+    finally:
+        await client.__aexit__(None, None, None)
+    short = default["events"][1]["tool_result"]
+    long = widened["events"][1]["tool_result"]
+    assert len(short) == 500 and "…[clipped]…" in short
+    assert len(long) == 2000 and "…[clipped]…" in long
+    assert long[:200] == short[:200]  # same head, only the window widens
+
+
+async def test_upstream_omitted_tool_fields_are_reported() -> None:
+    # Recorded live on 2026-10-09: an 8 MB terminal output was omitted with truncated: {result: true}.
+    chunks = [
+        _sse("tool_call", {"callId": "c1", "name": "read", "status": "completed", "result": "short"}, _T0),
+        _sse(
+            "tool_call",
+            {
+                "callId": "c2",
+                "name": "run_terminal_cmd",
+                "status": "completed",
+                "args": {"command": "python3 -c \"print('A' * 8000000)\""},
+                "truncated": {"result": True},
+            },
+            _T0 + 1,
+        ),
+        _sse(
+            "tool_call",
+            {"callId": "c3", "name": "read_file", "status": "completed", "truncated": {"args": True}},
+            _T0 + 2,
+        ),
+    ]
+    client, _ = await _session(_router(_run(), chunks))
+    try:
+        events = _data(
+            await client.call_tool("cursor_read_run_events", {"agent_id": _AGENT, "run_id": _RUN, "max_wait_seconds": 2})
+        )
+        view = _data(await client.call_tool("cursor_get_run", {"agent_id": _AGENT, "run_id": _RUN, "activity": True}))
+    finally:
+        await client.__aexit__(None, None, None)
+    first, second, third = events["events"]
+    assert first["tool_result"] == "short" and "tool_result_omitted" not in first
+    assert "tool_result" not in second and second["tool_result_omitted"] is True
+    assert "tool_args_omitted" not in second  # args were present: only the result was omitted
+    assert "clipped" not in second  # an upstream omission is not a local clip
+    assert third["tool_args_omitted"] is True and "tool_args" not in third
+    activity_tool = view["activity"]["last_tool_call"]
+    assert activity_tool["name"] == "read_file" and activity_tool["tool_args_omitted"] is True
+
+
+async def test_the_global_tool_text_cap_truncates_and_the_cursor_resumes(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("cursor_cloud_mcp.stream.TOOL_TEXT_TOTAL_MAX_CHARS", 2400)
+    padding = "w" * 1000
+    chunks = [_sse("status", {"status": "RUNNING"}, _T0)]
+    ids: list[str] = []
+    for index in range(5):
+        chunks.append(
+            _sse(
+                "tool_call",
+                {"callId": f"c{index}", "name": "shell", "status": "completed", "result": {"output": padding + str(index)}},
+                _T0 + 1 + index,
+            )
+        )
+        ids.append(f"{_T0 + 1 + index}-0")
+    chunks.append(_sse("done", {}, _T0 + 10))
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/stream"):
+            after = request.headers.get("last-event-id")
+            if after in ids:  # what the API does: send only the events after the cursor
+                return _stream_response(chunks[ids.index(after) + 2 :])
+            return _stream_response(chunks)
+        return httpx.Response(200, json=_run(status="RUNNING", result=None))
+
+    client, _ = await _session(Router(responder))
+    try:
+        first = _data(
+            await client.call_tool("cursor_read_run_events", {"agent_id": _AGENT, "run_id": _RUN, "max_wait_seconds": 2})
+        )
+        second = _data(
+            await client.call_tool(
+                "cursor_read_run_events",
+                {"agent_id": _AGENT, "run_id": _RUN, "max_wait_seconds": 2, "after_event_id": first["last_event_id"]},
+            )
+        )
+    finally:
+        await client.__aexit__(None, None, None)
+    # Each clipped result costs 500: four tool calls fit under 2400, the fifth is not returned.
+    assert [event["kind"] for event in first["events"]] == ["status", "tool_call", "tool_call", "tool_call", "tool_call"]
+    assert first["truncated"] is True
+    assert first["last_event_id"] == ids[3]
+    assert [event["kind"] for event in second["events"]] == ["tool_call", "done"]
+    assert second["finished"] is True
+
+
 async def test_activity_error_does_not_fail_the_read() -> None:
     def responder(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/stream"):
@@ -336,6 +478,10 @@ async def test_supervise_reports_each_runner_and_isolates_failures() -> None:
     assert rows["runner-a"]["activity"]["unfinished_background_tasks"] == 1
     assert rows["runner-a"]["activity"]["last_tool_call"] == {"name": "await", "status": "completed"}
     assert "background_tasks" not in rows["runner-a"]["activity"]  # overview: signals, not texts
+    assert "last_events" not in rows["runner-a"]["activity"]
+    assert rows["runner-a"]["activity"]["complete"] is True
+    assert rows["runner-b"]["git"]["scope"] == "agent_current_state"
+    assert rows["runner-b"]["git"]["branches"][0]["branch"] == "cursor/demo"
     # The headline case: FINISHED with a result, yet its background job was last seen running.
     assert rows["runner-b"]["status"] == "FINISHED" and rows["runner-b"]["activity"]["unfinished_background_tasks"] == 1
     assert rows["runner-c"]["status"] == "ERROR" and rows["runner-c"]["activity"]["run_terminal"] is True
@@ -349,6 +495,73 @@ async def test_supervise_reports_each_runner_and_isolates_failures() -> None:
     assert summary["read_errors"] == 1
     streams = [call[1] for call in router.calls if call[1].endswith("/stream")]
     assert len(streams) == 3  # a, b and c; d could not be read
+
+
+async def test_tail_applies_the_global_tool_text_cap_to_the_returned_window() -> None:
+    # The audited scenario: 50 tool calls, args + result clipped at 4000 each (8000 per event),
+    # well above the 256 000 production cap; tail must bound the window, not the walk.
+    padding = "w" * 5000
+    chunks = [_sse("status", {"status": "RUNNING"}, _T0)]
+    for index in range(50):
+        chunks.append(
+            _sse(
+                "tool_call",
+                {
+                    "callId": f"c{index}",
+                    "name": "shell",
+                    "status": "completed",
+                    "args": {"command": padding, "note": str(index)},
+                    "result": {"output": padding, "note": str(index)},
+                },
+                _T0 + 1 + index,
+            )
+        )
+    chunks.append(_sse("done", {}, _T0 + 100))
+
+    client, _ = await _session(_router(_run(status="RUNNING", result=None), chunks))
+    try:
+        view = _data(
+            await client.call_tool(
+                "cursor_read_run_events",
+                {"agent_id": _AGENT, "run_id": _RUN, "tail": 50, "tool_output_limit": 4000, "max_wait_seconds": 3},
+            )
+        )
+    finally:
+        await client.__aexit__(None, None, None)
+    events = view["events"]
+    # The newest events stay: the cap drops the oldest of the window, never the end.
+    assert events[-1]["kind"] == "done"
+    assert events[-2]["call_id"] == "c49"
+    calls = [event for event in events if event["kind"] == "tool_call"]
+    assert calls[0]["call_id"] == "c18" and len(calls) == 32
+    total = sum(len(event.get("tool_args") or "") + len(event.get("tool_result") or "") for event in events)
+    assert total == 256_000
+    assert view["truncated"] is True
+    assert view["last_event_id"] == f"{_T0 + 100}-0"  # still the last event of the replay
+    assert view["scanned_events"] == 52  # the whole replay was walked
+
+
+async def test_supervise_keeps_stream_error_rows_partial_and_incomplete() -> None:
+    agent = _agent(_B_FINISHED, status="IDLE", latestRunId="run-b")
+    errored = [*_background_run(end=None)[:4], _sse("error", {"message": "stream failed"}, _T0 + 5)]
+
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/agents":
+            return httpx.Response(200, json={"items": [agent]})
+        if request.url.path.endswith("/stream"):
+            return _stream_response(errored)
+        return httpx.Response(200, json=_run(id="run-b", agentId=_B_FINISHED, status="ERROR", result=None))
+
+    client, _ = await _session(Router(responder))
+    try:
+        view = _data(await client.call_tool("cursor_supervise", {"status": "all", "activity": True}))
+    finally:
+        await client.__aexit__(None, None, None)
+    row = view["items"][0]
+    assert row["activity"]["stream_error"] is True and row["activity"]["complete"] is False
+    assert "last_events" not in row["activity"]  # the overview stays light
+    assert view["summary"]["incomplete"] == [_B_FINISHED]
+    assert "stale" not in view["summary"]  # a partial summary is not conclusive
 
 
 async def test_supervise_keeps_active_agents_by_default() -> None:
@@ -610,7 +823,7 @@ async def test_terminal_activity_is_cached_with_a_current_idle_time() -> None:
     assert second["activity"]["idle_seconds"] > first["activity"]["idle_seconds"]
 
 
-async def test_a_stream_error_is_neither_a_complete_summary_nor_cached() -> None:
+async def test_a_stream_error_returns_a_partial_summary_and_is_not_cached() -> None:
     errored = [*_background_run(end=None)[:4], _sse("error", {"message": "stream failed"}, _T0 + 5)]
     streams = iter([errored, _background_run(end="ERROR")])
     run = _run(status="ERROR", result=None)
@@ -626,11 +839,17 @@ async def test_a_stream_error_is_neither_a_complete_summary_nor_cached() -> None
         second = _data(await client.call_tool("cursor_get_run", {"agent_id": _AGENT, "run_id": _RUN}))
     finally:
         await client.__aexit__(None, None, None)
-    assert "activity" not in first
-    assert first["activity_error"].startswith("UPSTREAM")
+    activity = first["activity"]
+    assert activity["stream_error"] is True and activity["complete"] is False
+    assert "activity_error" not in first
+    # The error event itself stays visible in the observed tail: the flag is not the only diagnosis.
+    assert activity["last_events"][-1]["kind"] == "error"
+    assert activity["last_events"][-1]["text"] == "stream failed"
+    assert activity["last_assistant_text"] == "Launching the job."
     assert sum(1 for call in router.calls if call[1].endswith("/stream")) == 2  # retried, not cached
     assert second["activity"]["complete"] is True
     assert second["activity"]["unfinished_background_tasks"] == 1
+    assert "stream_error" not in second["activity"]
 
 
 async def test_statuses_survive_replays_that_do_not_finish(monkeypatch: pytest.MonkeyPatch) -> None:

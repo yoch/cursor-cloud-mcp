@@ -10,11 +10,14 @@ from cursor_cloud_mcp import budget
 from cursor_cloud_mcp.activity import event_time, iso
 from cursor_cloud_mcp.client import CursorCloudClient
 from cursor_cloud_mcp.config import (
+    ACTIVITY_LAST_EVENTS,
     ACTIVITY_MAX_SECONDS,
+    ACTIVITY_TOOL_TEXT_MAX_CHARS,
     AGENT_SCAN_MAX_PAGES,
     AGENT_SCAN_MIN_SECONDS,
     SUPERVISE_ACTIVITY_BUDGET_SECONDS,
     TOOL_BUDGET_SECONDS,
+    TOOL_TEXT_TOTAL_MAX_CHARS,
 )
 from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure
 from cursor_cloud_mcp.models import (
@@ -23,6 +26,7 @@ from cursor_cloud_mcp.models import (
     AgentSummaryView,
     RemoteAgentSummary,
     RunEventsView,
+    RunEventView,
     RunView,
     SupervisedAgentView,
     SuperviseSummaryView,
@@ -30,7 +34,7 @@ from cursor_cloud_mcp.models import (
     summary_from,
 )
 from cursor_cloud_mcp.present import next_page, run_view
-from cursor_cloud_mcp.stream import Replay, walk_replay
+from cursor_cloud_mcp.stream import Replay, tool_text_cost, walk_replay
 
 # Below this, a stream walk cannot reasonably complete inside the tool budget.
 _MIN_WALK_SECONDS = 2.0
@@ -148,16 +152,23 @@ async def read_activity(
             client,
             agent_id=agent_id,
             run_id=run_id,
-            keep=0,
+            keep=ACTIVITY_LAST_EVENTS,
             include_thinking=False,
             max_wait_seconds=seconds,
+            tool_text_limit=ACTIVITY_TOOL_TEXT_MAX_CHARS,
         )
     except CursorFailure as exc:
         return None, f"{exc.body.code.value}: {exc.body.message}"
+    summary = replay.tracker.summary(run_terminal=run_terminal).model_copy(
+        update={
+            "complete": replay.complete,
+            "last_events": replay.events or None,
+        }
+    )
     if replay.stream_error:
-        # A partial summary would pass for a conclusive one: report the error, cache nothing.
-        return None, f"{ErrorCode.UPSTREAM.value}: the stream reported an error before the end of the replay."
-    summary = replay.tracker.summary(run_terminal=run_terminal).model_copy(update={"complete": replay.complete})
+        # The walk stopped on a stream error: the summary is partial, says so, and is never
+        # cached. The error event itself stays in last_events.
+        return summary.model_copy(update={"stream_error": True}), None
     if run_terminal is True and replay.complete:
         _terminal_cache[key] = summary
         while len(_terminal_cache) > _TERMINAL_CACHE_SIZE:
@@ -186,21 +197,42 @@ async def with_activity(client: CursorCloudClient, view: RunView, *, requested: 
 
 
 def tail_view(agent_id: str, run_id: str, replay: Replay) -> RunEventsView:
+    events, capped = _cap_tail_tool_text(replay.events)
     last_event_id = replay.tracker.last_event_id
     return RunEventsView(
         agent_id=agent_id,
         run_id=run_id,
-        events=replay.events,
+        events=events,
         last_event_id=last_event_id,
         finished=replay.finished,
         stream_error=replay.stream_error,
         interrupted=replay.interrupted,
         run_status=replay.run_status,
         retention_seconds=replay.retention_seconds,
-        truncated=not replay.complete,
+        # The walk did not reach its stop criterion, or the tool-text cap dropped the
+        # oldest events of the returned window.
+        truncated=not replay.complete or capped,
         last_event_at=iso(event_time(last_event_id)),
         scanned_events=replay.tracker.scanned,
     )
+
+
+def _cap_tail_tool_text(events: list[RunEventView]) -> tuple[list[RunEventView], bool]:
+    """Bound the returned window by the global tool-text cap, dropping the oldest events.
+
+    The replay walk always runs to its usual stop criterion: the newest events are the
+    point of ``tail``. The cap trims the window from the old side, keeping it contiguous
+    and ending on the same event, so ``last_event_id`` stays coherent.
+    """
+    total = 0
+    start = len(events)
+    while start > 0:
+        cost = tool_text_cost(events[start - 1])
+        if start < len(events) and total + cost > TOOL_TEXT_TOTAL_MAX_CHARS:
+            break
+        total += cost
+        start -= 1
+    return events[start:], start > 0
 
 
 async def supervise(
@@ -242,6 +274,7 @@ async def supervise(
                 "duration_ms": view.duration_ms,
                 "result_present": view.result_present,
                 "error": view.error,
+                "git": view.git,
             }
         )
 
@@ -265,6 +298,7 @@ async def supervise(
                 update={
                     "last_assistant_text": None,
                     "background_tasks": None,
+                    "last_events": None,
                     "last_tool_call": None if tool is None else tool.model_copy(update={"args": None, "result": None}),
                 }
             )

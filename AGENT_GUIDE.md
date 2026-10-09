@@ -2,7 +2,15 @@
 
 Instructions for an agent that must install or use this MCP server. Read this file in full before acting. The details of the API contract are in `docs/api-contract.md`. Extended troubleshooting is in `README.md`.
 
-This server is local, over stdio. It exposes seventeen tools for the Cursor Cloud Agents v1 REST API. It is used to create a Cloud session, choose the model and the reasoning level, send a command, read the result, then archive or delete the session. It is not an orchestration platform. The package is not on PyPI: it runs from a copy of this repository.
+This server is local, over stdio. It exposes seventeen tools for the Cursor Cloud Agents v1 REST API. It is used to create a Cloud session, choose the model and the reasoning level, send a command, read the result, then archive or delete the session. It is not an orchestration platform. The package is published on PyPI as `cursor-cloud-mcp`.
+
+## Migration 0.3 → 0.4
+
+- `cursor_get_run(activity)` returns the last events observed during the read (`activity.last_events`, the true end of the stream only when `complete` is true). A stream that ends on an `error` event no longer loses the summary: it is returned with `stream_error: true` and `complete: false` (the error event stays in `last_events`) and is never cached — previously the call returned `activity_error: UPSTREAM` and no summary.
+- The last tool call of the summary is clipped wider (2000 characters).
+- `cursor_read_run_events` takes `tool_output_limit` (default 500, max 4000): tool args/results are clipped head + tail with a `…[clipped]…` marker, the total staying within the limit. `tool_args_omitted` / `tool_result_omitted` report a field Cursor itself omitted upstream because of its size (not recoverable by raising the limit); a local clip never sets them. A global cap on rendered tool text sets `truncated`, and `last_event_id` stays on the last event actually returned. In `tail` mode the cap bounds the returned window from its oldest side (the newest events are kept) and still sets `truncated`.
+- `cursor_supervise` rows carry `git` (the agent's current pushed state, `scope=agent_current_state`) and stay light: `last_events` is stripped like the other heavy fields; `stream_error` and `complete` remain on the activity. `cursor_list_runs` items also carry `git`.
+- `cursor_create_agent(on_conflict="reuse")`, with a caller-supplied `agent_id`: on `409 agent_id_conflict`, the existing agent is returned with `reused: true` and its observed `latest_run_id` (`run_id` and `run_status` absent). No run is sent and the prompt is not applied. A failed re-read stays an `AGENT_ID_CONFLICT` error whose `recovery` says to retry the same call; the default `on_conflict="error"` is unchanged.
 
 ## Migration 0.2 → 0.3
 

@@ -15,13 +15,15 @@ from cursor_cloud_mcp.activity import ActivityTracker, event_time
 from cursor_cloud_mcp.client import CursorCloudClient, ResponseTooLarge, read_bounded
 from cursor_cloud_mcp.config import (
     EVENT_MERGED_MAX_CHARS,
+    EVENT_TEXT_MAX_CHARS,
     STREAM_MAX_BYTES,
     TAIL_MAX_BYTES,
+    TOOL_TEXT_TOTAL_MAX_CHARS,
 )
 from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure
 from cursor_cloud_mcp.models import RunEventsView, RunEventView, RunView
 from cursor_cloud_mcp.present import run_view
-from cursor_cloud_mcp.shapes import clip, parse_payload, tool_payload
+from cursor_cloud_mcp.shapes import clip, clip_edges, parse_payload, tool_payload
 from cursor_cloud_mcp.validation import require_event_id, require_segment
 
 # Marks an event whose payload has not been parsed yet.
@@ -90,6 +92,7 @@ async def read_run_events(
     max_wait_seconds: float,
     max_events: int,
     include_thinking: bool,
+    tool_output_limit: int = EVENT_TEXT_MAX_CHARS,
 ) -> RunEventsView:
     require_segment(agent_id, label="agent_id")
     require_segment(run_id, label="run_id")
@@ -116,6 +119,7 @@ async def read_run_events(
                     max_events=max_events,
                     include_thinking=include_thinking,
                     retention_seconds=_retention(response),
+                    tool_text_limit=tool_output_limit,
                 )
     except TimeoutError:
         if collected is not None:
@@ -147,6 +151,7 @@ async def walk_replay(
     keep: int,
     include_thinking: bool,
     max_wait_seconds: float,
+    tool_text_limit: int = EVENT_TEXT_MAX_CHARS,
 ) -> Replay:
     """Walk the whole replay of a run's stream, keeping only the last ``keep`` events.
 
@@ -177,6 +182,7 @@ async def walk_replay(
                     keep=keep,
                     include_thinking=include_thinking,
                     retention_seconds=_retention(response),
+                    tool_text_limit=tool_text_limit,
                 )
     except TimeoutError:
         if walked is not None:
@@ -193,6 +199,7 @@ async def _walk(
     keep: int,
     include_thinking: bool,
     retention_seconds: int | None,
+    tool_text_limit: int,
 ) -> Replay:
     parser = SseParser()
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -222,7 +229,7 @@ async def _walk(
                         # Parsed once, and only when used: interaction_update and heartbeat make up
                         # most of a replay and are never read.
                         payload = _payload(raw_event.data)
-                        view = _simplify(raw_event, payload)
+                        view = _simplify(raw_event, payload, tool_limit=tool_text_limit)
                         if view.status is not None and view.kind in {"status", "result"}:
                             run_status = view.status
                         if keep > 0:
@@ -336,12 +343,14 @@ async def _collect(
     max_events: int,
     include_thinking: bool,
     retention_seconds: int | None,
+    tool_text_limit: int,
 ) -> RunEventsView:
     parser = SseParser()
     # A UTF-8 character may be split between two network chunks: incremental decoding.
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     events: list[RunEventView] = []
-    # Without a new event, the provided cursor remains the right resume point.
+    # The cursor points at the last event *consumed*, never at one that was not returned:
+    # a resume after a cap gives back the events the caller did not get.
     last_event_id: str | None = after_event_id
     run_status: str | None = None
     finished = False
@@ -349,6 +358,7 @@ async def _collect(
     interrupted = False
     truncated = False
     total = 0
+    tool_text_total = 0
     try:
         async with asyncio.timeout_at(deadline_at):
             async for chunk in response.aiter_bytes():
@@ -359,15 +369,20 @@ async def _collect(
                     truncated = True
                     break
                 for raw_event in parser.feed(decoder.decode(chunk)):
-                    if raw_event.event_id:
-                        last_event_id = raw_event.event_id
-                    if raw_event.event in _IGNORE:
+                    if raw_event.event in _IGNORE or raw_event.event not in _KEEP:
+                        last_event_id = raw_event.event_id or last_event_id
                         continue
                     if raw_event.event == "thinking" and not include_thinking:
+                        last_event_id = raw_event.event_id or last_event_id
                         continue
-                    if raw_event.event not in _KEEP:
-                        continue
-                    view = _simplify(raw_event)
+                    view = _simplify(raw_event, tool_limit=tool_text_limit)
+                    cost = tool_text_cost(view)
+                    if events and tool_text_total + cost > TOOL_TEXT_TOTAL_MAX_CHARS:
+                        # Not returned: the cursor stays on the last returned event.
+                        truncated = True
+                        break
+                    tool_text_total += cost
+                    last_event_id = raw_event.event_id or last_event_id
                     if view.status is not None and view.kind in {"status", "result"}:
                         run_status = view.status
                     _append(events, view)
@@ -403,15 +418,26 @@ async def _collect(
     )
 
 
-def _simplify(event: SseEvent, payload: object = _UNPARSED) -> RunEventView:
+def _simplify(
+    event: SseEvent,
+    payload: object = _UNPARSED,
+    *,
+    tool_limit: int = EVENT_TEXT_MAX_CHARS,
+) -> RunEventView:
     if payload is _UNPARSED:
         payload = _payload(event.data)
     status = _string_field(payload, "status")
     if event.event == "tool_call":
         payload = tool_payload(payload)
         status = _string_field(payload, "status")
-        args, args_clipped = _clip(payload.get("args"))
-        result, result_clipped = _clip(payload.get("result"))
+        args, args_clipped = clip_edges(payload.get("args"), tool_limit)
+        result, result_clipped = clip_edges(payload.get("result"), tool_limit)
+        # Shape verified live on 2026-10-09 (an 8 MB terminal output produced
+        # truncated: {result: true} with result absent): the field is omitted from the
+        # stream because of its size, and the flag says so. Only this upstream signal
+        # sets the omitted flags; a local clip never does.
+        upstream = payload.get("truncated")
+        upstream = upstream if isinstance(upstream, dict) else {}
         return RunEventView(
             event_id=event.event_id,
             kind="tool_call",
@@ -421,6 +447,8 @@ def _simplify(event: SseEvent, payload: object = _UNPARSED) -> RunEventView:
             tool_args=args,
             tool_result=result,
             clipped=(args_clipped or result_clipped) or None,
+            tool_args_omitted=True if upstream.get("args") else None,
+            tool_result_omitted=True if upstream.get("result") else None,
         )
     kind = event.event if event.event in {"status", "thinking", "result", "error", "done"} else "assistant"
     if kind in {"status", "result", "done"}:
@@ -429,6 +457,13 @@ def _simplify(event: SseEvent, payload: object = _UNPARSED) -> RunEventView:
         return RunEventView(event_id=event.event_id, kind=kind, text=text, status=status, clipped=clipped or None)
     text, clipped = _text_of(payload, event.data)
     return RunEventView(event_id=event.event_id, kind=kind, text=text, status=status, clipped=clipped or None)
+
+
+def tool_text_cost(view: RunEventView) -> int:
+    """Rendered tool text of one event: the unit of the global cap."""
+    if view.kind != "tool_call":
+        return 0
+    return len(view.tool_args or "") + len(view.tool_result or "")
 
 
 def _append(events: MutableSequence[RunEventView], view: RunEventView) -> None:

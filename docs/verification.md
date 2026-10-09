@@ -1,5 +1,13 @@
 # Verification
 
+## Tool call truncation flags verified live (October 9, 2026)
+
+One-off paid check of the only contract point the 0.4.0 change had left unverified: the `truncated.args` / `truncated.result` flags of `tool_call` events.
+
+- `composer-2.5`, no repository, one prompt asking for an 8 MB terminal output (`python3 -c "print('A' * 8000000)"`) then a one-word reply. Run finished in 17.3 s; 7.62 cents charged; the agent was deleted.
+- Raw stream (6.3 KB): the completed `run_terminal_cmd` event carried `"truncated":{"result":true}` and **no** `result` field — the output was omitted, not sent. The `args` field was present and not flagged.
+- The captured payload fed through `read_run_events` yields `result_present: false`, `tool_result_omitted: true`, `clipped` absent: an upstream omission is not a local clip. The shape is frozen in `tests/test_supervision.py::test_upstream_omitted_tool_fields_are_reported` and in `docs/api-contract.md`.
+
 ## Paid smoke extended to the supervision tools (October 6, 2026)
 
 `scripts/smoke_live.py` now checks the 0.3 tools, mostly for free, on the runs it already pays for. Only `replace_active` adds two short `composer-2.5` runs.
