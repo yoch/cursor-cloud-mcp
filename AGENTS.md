@@ -1,11 +1,11 @@
 # AGENTS.md
 
-Dev repo for `cursor-cloud-mcp`: stdio MCP server (Python 3.12+) for Cursor Cloud Agents v1. `src/cursor_cloud_mcp/` is the server; `server.py` only wires the 17 tools, logic lives in `sessions.py` (mutations), `stream.py`/`supervision.py` (stream replay, activity), `catalog.py`+`validation.py` (model/repo checks), `client.py`, `present.py`/`models.py`/`shapes.py`, `artifacts.py`, `budget.py`, `config.py`, `errors.py`, `redaction.py`, `fixture.py`.
+Dev repo for `cursor-cloud-mcp`: stdio MCP server (Python 3.12+) for Cursor Cloud Agents v1. `src/cursor_cloud_mcp/` is the server; `server.py` only wires the 17 tools, logic lives in `sessions.py` (mutations), `stream.py`/`supervision.py` (stream replay, activity), `catalog.py`+`validation.py` (model/repo checks), `client.py`, `present.py`/`models.py`/`shapes.py`, `artifacts.py`, `budget.py`, `config.py`, `errors.py`, `redaction.py`, `fixture.py`. `skills/cursor-agents/` is the public agent skill (generic only: no user-specific models, names or paths; private notes go in its git-ignored `references/field-notes.md`); `tests/test_skill.py` checks its script and tool names.
 
 ## Commands (uv only)
 
 - `uv sync` then `uv run pytest` (CI uses `uv sync --locked --python 3.12|3.13` + `uv run --locked pytest`, `testpaths=["tests"]`, `-q`).
-- Lint: `uvx ruff@0.16.10 check src tests scripts` (line-length 120, target py312).
+- Lint: `uvx ruff@0.16.10 check src tests scripts skills` (line-length 120, target py312).
 - Run server: `uv run cursor-cloud-mcp` or `uv run python -m cursor_cloud_mcp`; binary is `.venv/bin/cursor-cloud-mcp`.
 - Wheel check (as CI): `uv build --wheel`, fresh venv, `pip install dist/*.whl`, then from `/tmp` run `python <repo>/scripts/wheel_smoke.py`.
 - A moved checkout breaks `.venv` (absolute shebangs): re-run `uv sync`, or launch via `uv run --directory <repo> cursor-cloud-mcp`.

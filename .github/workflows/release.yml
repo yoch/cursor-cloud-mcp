@@ -25,7 +25,7 @@ jobs:
       - name: Locked install
         run: uv sync --locked --python 3.12
       - name: Static check
-        run: uvx ruff@0.16.10 check src tests scripts
+        run: uvx ruff@0.16.10 check src tests scripts skills
       - name: Tests (no real Cursor call)
         run: uv run --locked pytest
       - name: Build
