@@ -12,3 +12,7 @@ htmlcov/
 docs/cloud-agents-openapi.yaml
 docs/openapi-headers.txt
 examples/resolved/
+
+# Private notes of a skill installed locally (models, caps, names): never in the public skill
+skills/*/references/field-notes.md
+.claude/skills/*/references/field-notes.md

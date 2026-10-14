@@ -49,7 +49,7 @@ path = "src/cursor_cloud_mcp/__init__.py"
 packages = ["src/cursor_cloud_mcp"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src", "tests", "README.md", "LICENSE", "pyproject.toml", "uv.lock"]
+include = ["src", "tests", "skills", "README.md", "LICENSE", "pyproject.toml", "uv.lock"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -168,6 +168,16 @@ Codex: `examples/codex.config.toml`. The key goes through `env_vars`, not throug
 
 OpenCode: `examples/opencode.json`. The key uses `{env:CURSOR_API_KEY}`. The public documentation describes `timeout` as the tool discovery timeout. On OpenCode 2.0.20, `opencode debug config` loads a single numeric `timeout` both as the catalog timeout and as the execution timeout. The example sets it to 100000 ms, above the 90-second timeout of the repository list. Check with `opencode debug config`, then a tool call in a session. `opencode mcp list` may not display a server that the project configuration does load.
 
+## Agent skill
+
+[`skills/cursor-agents/`](https://github.com/yoch/cursor-cloud-mcp/blob/main/skills/cursor-agents) is a Claude Code skill for driving Cursor agents through this server: fleets of compute workers (job design, launch, supervision, nudges, stop) and coding agents on their own branch. Install it by copying the directory to `~/.claude/skills/` (every project) or to a project's `.claude/skills/`.
+
+- `SKILL.md`: rules, the API facts behind each decision, launch, supervision, intervention and stop procedures.
+- `references/prompts.md`: agent prompt templates. `references/coordinator-pitfalls.md`: failures on the coordinating machine.
+- `scripts/ccm.py`: tool calls from scripts that must outlive a session, one server session per batch, each result written as soon as its call ends. Call it by its absolute path inside the installed skill. Writes stay off without `--allow-writes`, even if `CURSOR_MCP_ALLOW_WRITES=1` is inherited; deletion is never enabled.
+
+Your own conventions (default model, caps, naming, measured machines) go in `references/field-notes.md` next to `SKILL.md`: the skill reads it when present, and this repository ignores that file so private notes never reach the public skill. In another project's `.claude/skills/`, that file is committed with the project unless the project ignores it: keep private notes in the user-level copy (`~/.claude/skills/`), or add `.claude/skills/*/references/field-notes.md` to that project's `.gitignore`.
+
 ## Troubleshooting
 
 - The server lists its tools but every call says the key is missing: the MCP process environment does not contain `CURSOR_API_KEY`. A repository `.env` is not read.
