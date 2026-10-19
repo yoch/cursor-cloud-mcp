@@ -1,13 +1,27 @@
 [project]
 name = "cursor-cloud-mcp"
 dynamic = ["version"]
-description = "Minimal stdio MCP server for the Cursor Cloud Agents API v1"
+description = "MCP server for Cursor Cloud Agents (background agents): launch, follow up, supervise and cost Cursor agents from Claude Code, Codex CLI or OpenCode"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Yoch Melka" }]
 requires-python = ">=3.12"
-keywords = ["mcp", "model-context-protocol", "cursor", "cloud-agents"]
+keywords = [
+  "mcp",
+  "mcp-server",
+  "model-context-protocol",
+  "cursor",
+  "cursor-ai",
+  "cursor-cloud-agents",
+  "background-agents",
+  "cloud-agents",
+  "claude-code",
+  "codex",
+  "opencode",
+  "ai-agents",
+  "coding-agents",
+]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "Environment :: Console",
@@ -18,6 +32,8 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: Software Development",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
   "httpx>=0.28.1,<0.29",
