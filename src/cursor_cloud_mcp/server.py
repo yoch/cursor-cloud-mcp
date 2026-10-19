@@ -44,6 +44,7 @@ from cursor_cloud_mcp.config import (
 )
 from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure
 from cursor_cloud_mcp.fixture import FixtureTransport
+from cursor_cloud_mcp.journal import ModelJournal
 from cursor_cloud_mcp.models import (
     AccountView,
     AgentPageView,
@@ -75,7 +76,6 @@ from cursor_cloud_mcp.present import (
     repository_list_view,
     run_page_view,
     run_view,
-    usage_view,
 )
 from cursor_cloud_mcp.sessions import (
     cancel_and_observe,
@@ -93,6 +93,7 @@ from cursor_cloud_mcp.supervision import (
     tail_view,
     with_activity,
 )
+from cursor_cloud_mcp.usage import read_usage
 from cursor_cloud_mcp.validation import require_agent_id
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,8 @@ INSTRUCTIONS = (
     "Drives Cursor Cloud Agents through the REST API v1. "
     "Cost: cursor_create_agent and cursor_create_run start paid work; call them only on an explicit decision. "
     "Keep agent_id and run_id, and give the user the cursor.com/agents/... url of every agent created. "
+    "Name model_id and every cost parameter on each creation: catalog defaults can turn on fast mode; "
+    "warnings in the result names what the call left unchosen. "
     "Tracking: cursor_get_run with wait_seconds waits for a run to finish (60 s per call, repeat while timed_out). "
     "Abandoning a call does not cancel the run: only cursor_cancel_run does. "
     "After MUTATION_OUTCOME_UNKNOWN or AGENT_BUSY, re-read the state (cursor_get_agent, or cursor_list_agents with name): "
@@ -155,6 +158,7 @@ _Fn = TypeVar("_Fn", bound=Callable[..., Awaitable[object]])
 class AppContext:
     settings: Settings
     client: CursorCloudClient | None
+    journal: ModelJournal
 
 
 def build_server(
@@ -190,20 +194,25 @@ def build_server(
             )
             await client.open()
         try:
-            yield AppContext(settings=settings, client=client)
+            yield AppContext(settings=settings, client=client, journal=ModelJournal(settings.state_dir))
         finally:
             if client is not None:
                 await client.aclose()
 
     @tool("cursor_get_account", _READ)
     async def cursor_get_account(ctx: Context[AppContext]) -> AccountView:
-        """Checks the Cursor key (GET /v1/me) and reports the account. Read-only."""
+        """Checks the Cursor key (GET /v1/me) and reports the account. Read-only. The API exposes no quota, remaining budget or spend for the account: cost is per agent (cursor_get_usage), and cursor_supervise(usage=true) sums it over a fleet. QUOTA with remote_code usage_limit_exceeded means the spend limit is reached; only the account owner sees or raises it."""
         return await _run("cursor_get_account", ctx, _account)
 
     @tool("cursor_list_models", _READ)
-    async def cursor_list_models(ctx: Context[AppContext], model_id: str | None = None) -> ModelListView:
-        """Compact model catalog: params (possible values), defaults, reasoning_param (reasoning parameter). Read-only, cached for ten minutes. model_id (id or unambiguous alias) returns only that model, with its valid variants: useful when restricted_combinations is true."""
-        return await _run("cursor_list_models", ctx, lambda app: _models(app, model_id))
+    async def cursor_list_models(
+        ctx: Context[AppContext],
+        model_id: str | None = None,
+        brief: bool = False,
+        query: Annotated[str | None, Field(min_length=1, max_length=128)] = None,
+    ) -> ModelListView:
+        """Compact model catalog: params (possible values), defaults, reasoning_param (reasoning parameter). Read-only, cached for ten minutes. defaults is what a parameter left out of model_params becomes: it can turn on costly options (fast=true on several models). brief=true keeps id, aliases and defaults only; query filters by case-insensitive substring of id, name or alias. model_id (id or unambiguous alias) returns only that model, with its valid variants: useful when restricted_combinations is true."""
+        return await _run("cursor_list_models", ctx, lambda app: _models(app, model_id, brief, query))
 
     @tool("cursor_list_repositories", _READ)
     async def cursor_list_repositories(ctx: Context[AppContext], query: str | None = None) -> RepositoryListView:
@@ -242,8 +251,10 @@ def build_server(
         stale_after_minutes: int = Field(default=30, ge=1, le=1440),
         limit: int | None = Field(default=None, ge=1, le=100),
         cursor: str | None = None,
+        usage: bool = False,
     ) -> SuperviseView:
-        """Overview of a fleet of runners in one call: each agent with its latest run's status, read in parallel. Read-only. status=active keeps agents with a run in progress; all keeps every agent (combine with name to follow runners that just finished). A failed read only marks its row (read_error). Each row carries the latest run's git (the agent's current pushed state, scope=agent_current_state).
+        """Overview of a fleet of runners in one call: each agent with its latest run's status, read in parallel. Read-only. status=active keeps agents with a run in progress; all keeps every agent (combine with name to follow runners that just finished). A transient failure (UPSTREAM, TIMEOUT) is retried once; a failed read then only marks its row (read_error): a row without status is unread (UNREAD) or has no run (NO_RUN), never a reason to relaunch; re-read it with cursor_get_run. Each row carries the latest run's git (the agent's current pushed state, scope=agent_current_state) and model, the one this MCP recorded locally (absent if unknown).
+usage=true adds each agent's charged_cents (one usage read per agent) and summary.charged_cents_total: the fleet's spend as the API returns it.
 activity=true also reads each unfinished run's stream (or a terminal run without a result): last_event_at, idle_seconds, unfinished_background_tasks, last tool call. Slower: the API has no tail, so each stream is replayed, about 30 s for an idle run, 8 in parallel. The rows keep signals, not texts: last_events and the other heavy fields are stripped; stream_error and complete remain on the activity. summary.stale lists runs idle for stale_after_minutes; summary.unfinished_after_end lists ended runs whose background tasks were last seen running. Detail: cursor_get_run(activity=true)."""
 
         async def action(app: AppContext) -> SuperviseView:
@@ -262,7 +273,14 @@ activity=true also reads each unfinished run's stream (or a terminal run without
                 keep=keep,
                 wanted=limit or SUPERVISE_DEFAULT_AGENTS,
             )
-            return await supervise(client, page, activity=activity, stale_after_minutes=stale_after_minutes)
+            return await supervise(
+                client,
+                page,
+                activity=activity,
+                stale_after_minutes=stale_after_minutes,
+                usage=usage,
+                journal=app.journal,
+            )
 
         return await _run(
             "cursor_supervise",
@@ -273,7 +291,7 @@ activity=true also reads each unfinished run's stream (or a terminal run without
 
     @tool("cursor_get_agent", _READ)
     async def cursor_get_agent(ctx: Context[AppContext], agent_id: str) -> AgentView:
-        """Agent metadata: status, repositories, environment, latest_run_id, url. Read-only. Execution state is on the run (cursor_get_run)."""
+        """Agent metadata: status, repositories, environment, latest_run_id, url. Read-only. Execution state is on the run (cursor_get_run). model is the last model this MCP sent to the agent, from its local journal (source local_journal): the API cannot re-read it, so it is absent when not sent from here, and a change made elsewhere is not seen. unconfirmed true: that send ended in MUTATION_OUTCOME_UNKNOWN."""
         return await _run("cursor_get_agent", ctx, lambda app: _agent(app, agent_id))
 
     @tool("cursor_create_agent", _CREATE)
@@ -298,7 +316,7 @@ activity=true also reads each unfinished run's stream (or a terminal run without
     ) -> CreateAgentView:
         """Creates an agent and starts its first run. PAID. Returns agent_id, run_id and url without waiting for the run to finish.
 Repository: repository + starting_ref (branch name, not a SHA), or repositories (up to 20, named pool required); without a repository, a compute-only session.
-Model: model_id (id or unambiguous alias), reasoning_level (value of the catalog's reasoning_param), model_params for the other parameters; everything is checked against the catalog before sending.
+Model: model_id (id or unambiguous alias), reasoning_level (value of the catalog's reasoning_param), model_params for the other parameters; everything is checked against the catalog before sending. Without model_id, CURSOR_MCP_DEFAULT_MODEL applies if set (source server_default; model_params and reasoning_level override its parameters), else the account's default with a warning. model echoes the effective selection: defaulted names the parameters left to the catalog default (such as fast=true), unset those Cursor picks; warnings says so. The selection is recorded in the local journal, since the API never returns it.
 Environment: env_type cloud (Cursor VM, size not selectable), pool or machine (the user's workers), with env_name.
 agent_id is optional: the server generates one, which you only learn if a response reaches you (even MUTATION_OUTCOME_UNKNOWN). For a sensitive creation, provide and keep your own agent_id before the call. With env_vars or forward_env, the API rejects agent_id: name is then required and is used to find the agent again.
 on_conflict=reuse (requires your own agent_id): if that identifier already exists (409 agent_id_conflict), the existing agent is returned unchanged with reused=true and its observed latest_run_id; no run is sent and the prompt is not applied. Default error keeps the conflict as an error.
@@ -325,6 +343,7 @@ workOnCurrentBranch is always false."""
                 env_vars=env_vars,
                 forward_env=forward_env,
                 on_conflict=on_conflict,
+                journal=app.journal,
             ),
             mutation=True,
             budget_seconds=CREATE_TOOL_BUDGET_SECONDS,
@@ -341,8 +360,8 @@ workOnCurrentBranch is always false."""
         reasoning_level: str | None = None,
         replace_active: bool = False,
     ) -> CreateRunView:
-        """Sends a follow-up run to the same agent (new run). PAID. The agent keeps its conversation: a follow-up needs no full resume prompt. Without model_id, the agent keeps its current model. With model_id (and model_params, reasoning_level, checked against the catalog), the model changes for this run and the following ones; the API does not allow re-reading the active model. Refused if the agent is archived, if its status is unknown, or if workOnCurrentBranch is not false.
-The API cannot send a message to a run in progress (AGENT_BUSY). replace_active=true redirects the agent instead: it cancels the current run (its work in progress stops, pushed commits stay), waits until it is re-read terminal, then sends this follow-up; replaced_run_id names the stopped run. If the run is not terminal in time, nothing is sent (AGENT_BUSY)."""
+        """Sends a follow-up run to the same agent (new run). PAID. The agent keeps its conversation: a follow-up needs no full resume prompt. Without model_id, the agent keeps its current model (CURSOR_MCP_DEFAULT_MODEL does not apply here); model then shows the last one this MCP recorded for it, if any. With model_id (and model_params, reasoning_level, checked against the catalog), the model changes for this run and the following ones, and model echoes the effective selection (defaulted, unset, warnings as in cursor_create_agent); the API does not allow re-reading the active model. Refused if the agent is archived, if its status is unknown, or if workOnCurrentBranch is not false.
+The API cannot send a message to a run in progress (AGENT_BUSY). replace_active=true redirects the agent instead: it cancels the current run (its work in progress stops, pushed commits stay), waits until it is re-read terminal, then sends this follow-up; replaced_run_id names the stopped run. If the run is not terminal in time, nothing is sent (AGENT_BUSY). To nudge a worker without cancelling its run, have it end its turn after starting a detached (nohup) job: a follow-up then always goes through."""
         return await _run(
             "cursor_create_run",
             ctx,
@@ -355,6 +374,7 @@ The API cannot send a message to a run in progress (AGENT_BUSY). replace_active=
                 model_params=model_params,
                 reasoning_level=reasoning_level,
                 replace_active=replace_active,
+                journal=app.journal,
             ),
             mutation=True,
             budget_seconds=CREATE_TOOL_BUDGET_SECONDS,
@@ -380,7 +400,7 @@ The API cannot send a message to a run in progress (AGENT_BUSY). replace_active=
         result_limit: int = Field(default=RESULT_DEFAULT_LIMIT, ge=1, le=RESULT_MAX_LIMIT),
         activity: bool | None = None,
     ) -> RunView:
-        """State, final result and branches of a run. Read-only. wait_seconds (up to 60) re-reads every five seconds until a terminal state; timed_out true means the run is still going: call again. If a re-read fails after a first read, the previous observation is returned with reread_error: it is no guarantee about the current state. A long result is read in windows with result_offset = next_result_offset. git describes the agent's current state, not a frozen SHA.
+        """State, final result and branches of a run. Read-only. wait_seconds (up to 60) re-reads every five seconds until a terminal state; timed_out true means the run is still going: call again. If a re-read fails after a first read, the previous observation is returned with reread_error: it is no guarantee about the current state. A long result is read in windows with result_offset = next_result_offset. git describes the agent's current state, not a frozen SHA. model is the one this MCP recorded for the run (inherited true: the run was sent without one and keeps the agent's previous model), absent if unknown.
 activity=true adds what the stream shows (one full stream read): last_event_at and idle_seconds (the API's updated_at stays frozen while a run is RUNNING), the last observed events (last_events, the true end of the stream only when complete), the last assistant text and tool call (wider clip), and background_tasks with their last observed state. FINISHED only means the agent ended its turn: unfinished_background_tasks > 0 means jobs it started were last seen running. By default (activity omitted) the summary is added only to a terminal run without a result, since the API gives no error cause; activity=false never reads the stream. A stream ending on an error event returns a partial summary with stream_error true, never cached. A terminal run's complete summary is cached. complete false means the stream walk did not reach its end within the call's budget (95 s at most, wait included)."""
 
         async def action(app: AppContext) -> RunView:
@@ -397,6 +417,7 @@ activity=true adds what the stream shows (one full stream read): last_event_at a
                     limit=result_limit,
                     progress=_progress_reporter(ctx),
                 )
+            view = view.model_copy(update={"model": app.journal.for_run(agent_id, view.run_id, view.created_at)})
             return await with_activity(client, view, requested=activity)
 
         return await _run(
@@ -470,7 +491,7 @@ tail=N returns the last N events instead, with last_event_at. The API can neithe
         agent_id: str,
         run_id: str | None = None,
     ) -> UsageView:
-        """Tokens and cost (US cents, as the API returns them) of an agent, or of a single run with run_id. Read-only. Nothing is estimated: a cost missing from the API stays missing."""
+        """Tokens and cost (US cents, as the API returns them) of an agent, or of a single run with run_id. Read-only. Nothing is estimated: a cost missing from the API stays missing. charged_cents_per_million_tokens is the ratio of the returned numbers, not a price list. Each run row carries the model this MCP recorded for it (local journal), absent if unknown: the API names no model."""
         return await _run("cursor_get_usage", ctx, lambda app: _usage(app, agent_id, run_id))
 
     @tool("cursor_list_artifacts", _READ)
@@ -562,6 +583,8 @@ def _configure_logging(settings: Settings) -> None:
         handler.setFormatter(formatter)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    if settings.default_model_error:
+        logger.warning("%s Creations without model_id will be refused.", settings.default_model_error)
     if settings.fixture and settings.config_error:
         logger.warning("%s", settings.config_error)
     elif settings.fixture:
@@ -646,9 +669,9 @@ async def _account(app: AppContext) -> AccountView:
     return account_view(await _client(app).get_account())
 
 
-async def _models(app: AppContext, model_id: str | None) -> ModelListView:
+async def _models(app: AppContext, model_id: str | None, brief: bool, query: str | None) -> ModelListView:
     remote, _hit = await _client(app).cached_models()
-    return model_list_view(remote, model_id=model_id)
+    return model_list_view(remote, model_id=model_id, brief=brief, query=query)
 
 
 async def _repositories(app: AppContext, query: str | None) -> RepositoryListView:
@@ -687,7 +710,8 @@ async def _agents(
 
 
 async def _agent(app: AppContext, agent_id: str) -> AgentView:
-    return agent_view(await _client(app).get_agent(agent_id))
+    view = agent_view(await _client(app).get_agent(agent_id))
+    return view.model_copy(update={"model": app.journal.for_agent(view.agent_id)})
 
 
 async def _runs(app: AppContext, agent_id: str, limit: int | None, cursor: str | None) -> RunPageView:
@@ -722,7 +746,7 @@ async def _cancel(
 
 
 async def _usage(app: AppContext, agent_id: str, run_id: str | None) -> UsageView:
-    return usage_view(await _client(app).get_usage(agent_id, run_id=run_id))
+    return await read_usage(_client(app), app.journal, agent_id, run_id)
 
 
 async def _delete(app: AppContext, agent_id: str, confirm_agent_id: str) -> DeleteView:

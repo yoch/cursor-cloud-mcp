@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Dev repo for `cursor-cloud-mcp`: stdio MCP server (Python 3.12+) for Cursor Cloud Agents v1. `src/cursor_cloud_mcp/` is the server; `server.py` only wires the 17 tools, logic lives in `sessions.py` (mutations), `stream.py`/`supervision.py` (stream replay, activity), `catalog.py`+`validation.py` (model/repo checks), `client.py`, `present.py`/`models.py`/`shapes.py`, `artifacts.py`, `budget.py`, `config.py`, `errors.py`, `redaction.py`, `fixture.py`. `skills/cursor-agents/` is the public agent skill (generic only: no user-specific models, names or paths; private notes go in its git-ignored `references/field-notes.md`); `tests/test_skill.py` checks its script and tool names.
+Dev repo for `cursor-cloud-mcp`: stdio MCP server (Python 3.12+) for Cursor Cloud Agents v1. `src/cursor_cloud_mcp/` is the server; `server.py` only wires the 17 tools, logic lives in `sessions.py` (mutations), `stream.py`/`supervision.py` (stream replay, activity), `catalog.py`+`validation.py` (model/repo checks), `client.py`, `journal.py` (local model journal, the only disk state), `usage.py` (usage + journal models), `present.py`/`models.py`/`shapes.py`, `artifacts.py`, `budget.py`, `config.py`, `errors.py`, `redaction.py`, `fixture.py`. `skills/cursor-agents/` is the public agent skill (generic only: no user-specific models, names or paths; private notes go in its git-ignored `references/field-notes.md`); `tests/test_skill.py` checks its script and tool names.
 
 ## Commands (uv only)
 
@@ -13,7 +13,7 @@ Dev repo for `cursor-cloud-mcp`: stdio MCP server (Python 3.12+) for Cursor Clou
 ## Env / secrets
 
 - Server reads process env only, never `.env`. `.env` in repo root holds `CURSOR_API_KEY` for the smoke scripts only — never log/print/copy it.
-- `CURSOR_API_KEY` (absent = reads fail, server still lists tools), `CURSOR_MCP_ALLOW_WRITES=1` (mutations), `CURSOR_MCP_ALLOW_DELETE=1` + `confirm_agent_id` (delete), `CURSOR_MCP_FORWARD_ENV` (allowlist for `forward_env`), `CURSOR_MCP_LOG_LEVEL`, `CURSOR_MCP_FIXTURE=1` (simulated mode; refuses any real key). No tool flips these — change env and restart.
+- `CURSOR_API_KEY` (absent = reads fail, server still lists tools), `CURSOR_MCP_ALLOW_WRITES=1` (mutations), `CURSOR_MCP_ALLOW_DELETE=1` + `confirm_agent_id` (delete), `CURSOR_MCP_FORWARD_ENV` (allowlist for `forward_env`), `CURSOR_MCP_DEFAULT_MODEL` (`id[:param=value,...]`, creations without `model_id` only; malformed = only those creations refused, reads unaffected), `CURSOR_MCP_STATE_DIR` (model journal dir, `off` disables; default `~/.local/state/cursor-cloud-mcp`, off in fixture mode), `CURSOR_MCP_LOG_LEVEL`, `CURSOR_MCP_FIXTURE=1` (simulated mode; refuses any real key). No tool flips these — change env and restart.
 - stdout is the MCP channel: only stderr logging. Key/forwarded values are masked in logs and error JSON — don't bypass `redaction`.
 
 ## Gotchas that break work
@@ -26,5 +26,5 @@ Dev repo for `cursor-cloud-mcp`: stdio MCP server (Python 3.12+) for Cursor Clou
 ## Tests
 
 - `uv run pytest` never touches Cursor (MockTransport / `CURSOR_MCP_FIXTURE=1`). `tests/test_supervision.py` uses anonymized recorded streams.
-- Paid/real scripts — run only on explicit request: `SMOKE_PAID=1 uv run python scripts/smoke_live.py` (creates 2 agents + runs, deletes them unless `SMOKE_KEEP=1`; ~cents), `uv run python scripts/live_read.py` (read-only GETs). Both read `.env` themselves; the server still must get the key via process env.
+- Paid/real scripts — run only on explicit request: `SMOKE_PAID=1 uv run python scripts/smoke_live.py` (creates 2 agents + runs, deletes them unless `SMOKE_KEEP=1`; ~cents), `SMOKE_PAID=1 MEASURE_MODEL=<id:param=value> uv run python scripts/measure_idle_vm.py` (one agent, short checks at 15/60/180 min of what survives on an idle VM; hours of wall time, ~cents), `uv run python scripts/live_read.py` (read-only GETs). Both read `.env` themselves; the server still must get the key via process env.
 - `docs/api-contract.md` + `docs/verification.md` are dated observations/history. `README.md`/`AGENT_GUIDE.md` describe downstream MCP use, not this repo's dev workflow — trust `src/` + `config.py` + CI when they conflict.

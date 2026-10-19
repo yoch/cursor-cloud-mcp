@@ -4,6 +4,17 @@ Instructions for an agent that must install or use this MCP server. Read this fi
 
 This server is local, over stdio. It exposes seventeen tools for the Cursor Cloud Agents v1 REST API. It is used to create a Cloud session, choose the model and the reasoning level, send a command, read the result, then archive or delete the session. It is not an orchestration platform. The package is published on PyPI as `cursor-cloud-mcp`.
 
+## Migration 0.4 → 0.5
+
+- **Breaking**: `cursor_create_run` no longer returns `model_id`; it returns `model` (`id`, effective `params`, `defaulted`, `unset`, `source`) and `warnings`. `cursor_create_agent` returns them too.
+- The API never returns the model. The server now records each model it sends in a local journal (`$CURSOR_MCP_STATE_DIR/models.jsonl`, by default `~/.local/state/cursor-cloud-mcp/`; `off` disables it; simulated mode writes nothing unless the variable is set). `cursor_get_agent`, `cursor_get_run`, `cursor_supervise` rows and `cursor_get_usage` run rows carry `model` with `source: "local_journal"` (`inherited: true` for a run sent without a model, `unconfirmed: true` after `MUTATION_OUTCOME_UNKNOWN`). Absent means unknown: only what this server sent from this machine is known.
+- `CURSOR_MCP_DEFAULT_MODEL` (`id` or `id:param=value,...`) applies to `cursor_create_agent` without `model_id` (the call's `model_params` and `reasoning_level` override its parameters), never to a follow-up; a malformed value refuses only those creations. Without it, a creation without a model returns a warning: the account default may turn on costly options.
+- A parameter left to the catalog default is named in `model.defaulted` and in `warnings` (for example `fast=true`); one the catalog does not fix is in `model.unset`.
+- `cursor_list_models(brief=true)` keeps `id`, `aliases` and `defaults`; `query` filters by substring.
+- `cursor_supervise(usage=true)` adds each agent's `charged_cents` and `summary.charged_cents_total`. A transiently failed status read (`UPSTREAM`, `TIMEOUT`) is retried once before it marks the row.
+- `cursor_get_usage` adds `charged_cents_per_million_tokens` (the ratio of the returned numbers).
+- `QUOTA` with `remote_code: usage_limit_exceeded` now says the spend limit is reached (only the account owner can raise it); a rate limit says to wait and retry once.
+
 ## Migration 0.3 → 0.4
 
 - `cursor_get_run(activity)` returns the last events observed during the read (`activity.last_events`, the true end of the stream only when `complete` is true). A stream that ends on an `error` event no longer loses the summary: it is returned with `stream_error: true` and `complete: false` (the error event stays in `last_events`) and is never cached — previously the call returned `activity_error: UPSTREAM` and no summary.
@@ -206,7 +217,7 @@ Useful parameters of `cursor_create_agent`:
 - `env_type`: `cloud`, `pool` or `machine`. A named cloud environment cannot be combined with repositories.
 - `name`: required if you pass `env_vars` or `forward_env`, because the API then forbids `agentId`.
 
-`cursor_create_run` sends the next command to the same agent. Without `model_id`, the current model is kept. With `model_id` (and `model_params`, `reasoning_level`), the model changes for this run and the following ones; the API does not let you re-read the active model, so note the one you chose. Refused if the agent is archived, if its status is unknown, or if `workOnCurrentBranch` is not explicitly `false`. A busy agent is re-read, not worked around.
+`cursor_create_run` sends the next command to the same agent. Without `model_id`, the current model is kept. With `model_id` (and `model_params`, `reasoning_level`), the model changes for this run and the following ones; the API does not let you re-read the active model: the response's `model` and the local journal (`model` in `cursor_get_agent` and `cursor_get_run`) keep the one sent from this server. Refused if the agent is archived, if its status is unknown, or if `workOnCurrentBranch` is not explicitly `false`. A busy agent is re-read, not worked around.
 
 `cursor_get_run` with `wait_seconds` (up to 60) re-reads the state every five seconds until a terminal state. `timed_out` means the run continues: call it again. `cursor_read_run_events` reads an excerpt of the stream (20 seconds by default, 50 at most), with the assistant's text grouped; resume with `after_event_id` equal to the returned `last_event_id`.
 
@@ -278,7 +289,7 @@ Push the commit and check the branch head
 
 `cursor_archive_agent` is reversible (`unarchive=true`). An archived agent can still be read and no longer accepts follow-up runs. `cursor_delete_agent` is permanent: call it only on explicit request, with both variables set to `1` and `confirm_agent_id` equal to `agent_id`.
 
-`cursor_get_usage` copies the tokens and the cost returned (cents of a dollar, in total and per run). A missing cost stays missing.
+`cursor_get_usage` copies the tokens and the cost returned (cents of a dollar, in total and per run). A missing cost stays missing. `cursor_supervise(name=..., status="all", usage=true)` sums a fleet's cost. The API shows no quota and no remaining budget.
 
 ## If the call is cut off
 

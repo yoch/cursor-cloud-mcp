@@ -253,6 +253,9 @@ async def test_follow_up_run_can_switch_model_after_catalog_check() -> None:
     }
     assert posts[1] == {"prompt": {"text": "follow-up"}}
     assert len(posts) == 2
-    assert switched["model_id"] == "claude-haiku-4-5"
-    assert "model_id" not in kept
+    assert switched["model"] == {"id": "claude-haiku-4-5", "params": {"thinking": "false"}, "source": "request"}
+    assert "warnings" not in switched
+    # No journal in this server: the kept model is unknown, and said so.
+    assert "model" not in kept
+    assert "has not recorded" in kept["warnings"][0]
     assert _error_payload(refused)["code"] == "VALIDATION"

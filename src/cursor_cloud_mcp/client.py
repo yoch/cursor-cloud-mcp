@@ -779,7 +779,18 @@ def _status_from(
     if code is ErrorCode.AGENT_ID_CONFLICT:
         recovery = "Re-read this agent before any new creation. Do not change the identifier."
     if code is ErrorCode.AGENT_BUSY:
-        recovery = "Wait for the run to finish or cancel it. Do not create another agent."
+        recovery = (
+            "Wait for the run to finish, or send the follow-up with replace_active=true (it cancels the run). "
+            "Do not create another agent."
+        )
+    if remote_code == "usage_limit_exceeded":
+        message = f"Cursor usage limit reached: the account's spend limit is exhausted. {remote_message or ''}".strip()
+        recovery = (
+            "Only the account owner can see or raise this limit. Do not retry, relaunch or create agents "
+            "until they do: every paid call will be refused."
+        )
+    elif code is ErrorCode.QUOTA:
+        recovery = "Rate limit: wait retry_after_seconds (about a minute if absent), then retry once."
     if code is ErrorCode.STREAM_EXPIRED:
         recovery = "The stream can no longer be replayed. Read the result with cursor_get_run."
     if remote_code == "invalid_last_event_id":

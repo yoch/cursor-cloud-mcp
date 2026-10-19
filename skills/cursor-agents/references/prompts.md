@@ -9,7 +9,8 @@ Rules shared by all templates, and why:
   to the base branch.
 - Forbid reading or printing credentials: environment variables given at creation are visible to
   the agent and anything it prints lands in the run's stream.
-- Bound every wait: a run blocked for hours in one `await` tends to end in `ERROR`.
+- Bound every wait: a run blocked for hours in one `await` tends to end in `ERROR`. Better, do not
+  wait at all (templates 6 and 7): a run that waits pays tokens for every check.
 - Start commands append to the log (`>>`): `>` empties it before the job's lock is checked, so a
   refused double start would still wipe the running job's log and its RESULT line.
 - Never let a prompt kill a computation that is still running unless that is the explicit goal.
@@ -90,3 +91,39 @@ compiler flags for the baseline and the new code (`-march=native` changes both, 
 explicitly), alternate baseline and new code on the same VM, run each measurement at least three
 times, and report the CPU model, `nproc`, the load average before each measurement and every
 individual timing, not only the mean. Compare ratios measured on one VM, not across VMs.
+
+## 6. Detached start (the run ends its turn, the job goes on)
+
+The default for long jobs: no tokens spent while the job runs alone. The coordinator wakes the
+agent with template 7 when a branch stalls, the job should be done, or there is something to say.
+
+```
+Long job for this machine: worker <K> of the <tag> fleet. Do not read or print any credential.
+1. Record the machine: nproc; lscpu | grep -E 'Model name|Flags' | cut -c1-300; free -g.
+2. cd /workspace && git fetch origin <code-branch> <control-branch>
+   && git checkout -f <commit> -- <paths>
+3. Start: cd /workspace && nohup sh <worker-script> <K> >> ~/worker-<K>.log 2>&1 &
+   It pushes each chunk and STATUS.txt to <worker-branch>, resumes from the last pushed chunk and
+   refuses to start twice.
+4. Wait until the first chunk reached origin/<worker-branch> (at most <chunk length + 10> minutes,
+   no single wait longer than 30 minutes). If it did not, show the last 20 log lines.
+5. Then END YOUR TURN. Do not monitor: the job runs without you and you will be messaged.
+Push only to <worker-branch>. Never push to another branch, never open a PR.
+Final answer: DETACHED job=<K> pid=<pid> chunks=<n>, or the failure and the last log lines.
+```
+
+## 7. Check (short follow-up to a detached worker)
+
+Assumes nothing survived: the VM may have been released since the last run.
+
+```
+Check of job <K>. Do NOT kill a running job. Do not read or print any credential.
+1. pgrep -af '<job-pattern>'; tail -5 ~/worker-<K>.log 2>/dev/null; ls /workspace >/dev/null 2>&1.
+2. If the job runs: push what it produced (cd /workspace && git push -u origin <worker-branch>; on
+   failure show the error, git fetch origin, retry once). <Optional instruction from the coordinator.>
+3. If it does not run and the log has no RESULT line (or the files are gone): redo steps 2 and 3
+   of the start prompt (fetch, checkout, start); it resumes from its last pushed chunk.
+4. Then END YOUR TURN at once: no monitoring.
+Final answer: CHECK job=<K> running=<0|1> restarted=<0|1> chunks=<n>, the RESULT line if any,
+git log --oneline -1 origin/<worker-branch>.
+```

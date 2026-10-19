@@ -8,13 +8,13 @@ from cursor_cloud_mcp.models import (
     RemoteModelParameter,
 )
 
-_REASONING_IDS = ("effort", "reasoning_effort", "reasoning")
+REASONING_IDS = ("effort", "reasoning_effort", "reasoning")
 
 
 def reasoning_parameter(model: RemoteModel) -> RemoteModelParameter | None:
     """First exposed reasoning parameter, in the order effort, reasoning_effort, reasoning."""
     by_id = {parameter.id: parameter for parameter in model.parameters or []}
-    for name in _REASONING_IDS:
+    for name in REASONING_IDS:
         found = by_id.get(name)
         if found is not None:
             return found
@@ -49,6 +49,38 @@ def default_selection(model: RemoteModel) -> dict[str, str] | None:
             values = {item.id: item.value for item in variant.params if item.id in published}
             return values or None
     return None
+
+
+def effective_selection(
+    catalog: RemoteModelList, body: dict[str, object]
+) -> tuple[dict[str, str], list[str], list[str]]:
+    """What a resolved ``model`` body amounts to: (params, defaulted, unset).
+
+    A parameter left out is fixed when the default variant fits what was set (its value), or when
+    every published variant that fits agrees on one value. Otherwise the catalog does not say what
+    Cursor will pick: it is ``unset``.
+    """
+    model = find_model(catalog, str(body["id"]))
+    raw = body.get("params")
+    chosen = {str(item["id"]): str(item["value"]) for item in raw} if isinstance(raw, list) else {}
+    missing = [parameter.id for parameter in model.parameters or [] if parameter.id not in chosen]
+    fitting = [dict(combination) for combination in _published_combinations(model) if set(chosen.items()) <= combination]
+    default = default_selection(model)
+    fits = default is not None and set(chosen.items()) <= set(default.items())
+    params = dict(chosen)
+    defaulted: list[str] = []
+    unset: list[str] = []
+    for name in missing:
+        values = {combination.get(name) for combination in fitting}
+        if fits and default is not None and name in default:
+            params[name] = default[name]
+        elif len(values) == 1 and None not in values:
+            params[name] = str(values.pop())
+        else:
+            unset.append(name)
+            continue
+        defaulted.append(name)
+    return params, defaulted, unset
 
 
 def restricted(model: RemoteModel) -> bool:

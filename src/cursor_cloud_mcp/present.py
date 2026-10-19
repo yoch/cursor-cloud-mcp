@@ -1,6 +1,7 @@
 """Projection of Cursor payloads onto MCP views. Unknown fields are ignored."""
 
 import json
+import logging
 from typing import Literal
 
 from cursor_cloud_mcp.catalog import default_selection, find_model, reasoning_parameter, restricted
@@ -16,6 +17,7 @@ from cursor_cloud_mcp.models import (
     CreateRunView,
     GitBranchView,
     GitView,
+    ModelBriefView,
     ModelListView,
     ModelView,
     RemoteAccount,
@@ -46,6 +48,10 @@ from cursor_cloud_mcp.models import (
 )
 from cursor_cloud_mcp.slicing import slice_text
 
+logger = logging.getLogger(__name__)
+# Unknown run statuses already logged: once per value, to learn new ones without flooding.
+_unknown_statuses: set[str] = set()
+
 _NEXT_POLL = "Follow with cursor_get_run (wait_seconds) or cursor_read_run_events. Do not create another agent."
 _REUSED_NEXT_STEP = (
     "reused=true: this agent already existed, no new run was sent and the prompt was not applied. "
@@ -64,7 +70,13 @@ def account_view(remote: RemoteAccount) -> AccountView:
     )
 
 
-def model_list_view(remote: RemoteModelList, *, model_id: str | None = None) -> ModelListView:
+def model_list_view(
+    remote: RemoteModelList,
+    *,
+    model_id: str | None = None,
+    brief: bool = False,
+    query: str | None = None,
+) -> ModelListView:
     """Compact catalog. With model_id, a single model and its valid variants."""
     if model_id is not None:
         model = find_model(remote, model_id)
@@ -74,7 +86,22 @@ def model_list_view(remote: RemoteModelList, *, model_id: str | None = None) -> 
         ]
         unique = [item for index, item in enumerate(variants) if item and item not in variants[:index]]
         return ModelListView(items=[_model_view(model).model_copy(update={"variants": unique or None})])
-    return ModelListView(items=[_model_view(model) for model in remote.items])
+    models = remote.items
+    if query is not None:
+        needle = query.casefold()
+        models = [
+            model
+            for model in models
+            if any(needle in name.casefold() for name in [model.id, model.displayName, *(model.aliases or [])])
+        ]
+    if brief:
+        return ModelListView(
+            items=[
+                ModelBriefView(id=model.id, aliases=model.aliases or None, defaults=default_selection(model))
+                for model in models
+            ]
+        )
+    return ModelListView(items=[_model_view(model) for model in models])
 
 
 def _model_view(model: RemoteModel) -> ModelView:
@@ -128,6 +155,10 @@ def next_page(remote: RemoteAgentPage) -> tuple[str | None, bool]:
     return _cursor(remote.nextCursor)
 
 
+def next_run_page(remote: RemoteRunPage) -> tuple[str | None, bool]:
+    return _cursor(remote.nextCursor)
+
+
 def agent_view(remote: RemoteAgent) -> AgentView:
     summary = summary_from(remote)
     repos = None
@@ -154,6 +185,8 @@ def agent_view(remote: RemoteAgent) -> AgentView:
 
 def run_page_view(remote: RemoteRunPage) -> RunPageView:
     cursor, has_more = _cursor(remote.nextCursor)
+    for item in remote.items:
+        _note_status(item.status)
     items = [
         RunSummaryView(
             run_id=item.id,
@@ -174,6 +207,7 @@ def run_page_view(remote: RemoteRunPage) -> RunPageView:
 def run_view(remote: RemoteRun, *, offset: int, limit: int) -> RunView:
     _bounds(offset, limit)
     terminal = run_terminal(remote.status)
+    _note_status(remote.status)
     common = {
         "run_id": remote.id,
         "agent_id": remote.agentId,
@@ -274,16 +308,31 @@ def usage_view(remote: RemoteUsage) -> UsageView:
     return UsageView(
         total_usage=tokens_from(remote.totalUsage),
         total_cost=_cost(remote.cost),
+        charged_cents_per_million_tokens=_rate(remote.cost, remote.totalUsage.totalTokens),
         runs=[
             RunUsageView(
                 run_id=item.id,
                 usage_uuid=item.usageUuid,
                 usage=tokens_from(item.usage),
                 cost=_cost(item.cost),
+                charged_cents_per_million_tokens=_rate(item.cost, item.usage.totalTokens),
             )
             for item in remote.runs
         ],
     )
+
+
+def _rate(cost: RemoteCost | None, tokens: int) -> float | None:
+    """Observed ratio of two returned numbers; absent when either is missing or zero."""
+    if cost is None or tokens <= 0:
+        return None
+    return round(cost.chargedCents / tokens * 1_000_000, 2)
+
+
+def _note_status(status: str) -> None:
+    if run_terminal(status) is None and status not in _unknown_statuses:
+        _unknown_statuses.add(status)
+        logger.warning("unknown_run_status=%s", status[:64])
 
 
 def _cost(remote: RemoteCost | None) -> CostView | None:

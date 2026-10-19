@@ -78,6 +78,12 @@ class Settings:
     config_error: str | None
     allow_delete: bool = False
     forward_env: frozenset[str] = field(default_factory=frozenset)
+    # CURSOR_MCP_DEFAULT_MODEL: (model id, ((param, value), ...)), applied to a creation without model_id.
+    default_model: tuple[str, tuple[tuple[str, str], ...]] | None = None
+    # A malformed CURSOR_MCP_DEFAULT_MODEL refuses only the creations that would use it, not the reads.
+    default_model_error: str | None = None
+    # Directory of the local model journal; None disables it.
+    state_dir: str | None = None
 
 
 def load_settings() -> Settings:
@@ -89,6 +95,7 @@ def load_settings() -> Settings:
         config_error = _FIXTURE_WITH_KEY
     raw_level = os.environ.get("CURSOR_MCP_LOG_LEVEL", "INFO").upper()
     log_level = raw_level if raw_level in _LOG_LEVELS else "INFO"
+    default_model, model_error = parse_default_model(os.environ.get("CURSOR_MCP_DEFAULT_MODEL"))
     return Settings(
         api_key=api_key,
         allow_writes=os.environ.get("CURSOR_MCP_ALLOW_WRITES", "0") == "1",
@@ -97,7 +104,41 @@ def load_settings() -> Settings:
         config_error=config_error,
         allow_delete=os.environ.get("CURSOR_MCP_ALLOW_DELETE", "0") == "1",
         forward_env=_forward_allowlist(os.environ.get("CURSOR_MCP_FORWARD_ENV")),
+        default_model=default_model,
+        default_model_error=model_error,
+        state_dir=_state_dir(os.environ.get("CURSOR_MCP_STATE_DIR"), fixture=fixture),
     )
+
+
+def parse_default_model(
+    raw: str | None,
+) -> tuple[tuple[str, tuple[tuple[str, str], ...]] | None, str | None]:
+    """``id`` or ``id:param=value,param=value``. Checked against the catalog only when used."""
+    if raw is None or raw.strip() == "":
+        return None, None
+    model_id, _sep, rest = raw.strip().partition(":")
+    model_id = model_id.strip()
+    invalid = (None, "CURSOR_MCP_DEFAULT_MODEL must be id or id:param=value,param=value.")
+    if model_id == "" or len(model_id) > 128:
+        return invalid
+    params: list[tuple[str, str]] = []
+    for part in rest.split(",") if rest.strip() else []:
+        key, sep, value = part.partition("=")
+        if not sep or key.strip() == "" or value.strip() == "":
+            return invalid
+        params.append((key.strip(), value.strip()))
+    return (model_id, tuple(params)), None
+
+
+def _state_dir(raw: str | None, *, fixture: bool) -> str | None:
+    """Explicit directory, ``off``, or the XDG state default. Simulated mode writes nothing by default."""
+    if raw is not None and raw.strip() != "":
+        value = raw.strip()
+        return None if value.lower() == "off" else os.path.expanduser(value)
+    if fixture:
+        return None
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "cursor-cloud-mcp")
 
 
 def _forward_allowlist(raw: str | None) -> frozenset[str]:

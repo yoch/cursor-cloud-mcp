@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import Literal, Never
 
 from cursor_cloud_mcp import budget, redaction
-from cursor_cloud_mcp.catalog import resolve_model_selection
+from cursor_cloud_mcp.catalog import REASONING_IDS, effective_selection, resolve_model_selection
 from cursor_cloud_mcp.client import CursorCloudClient
 from cursor_cloud_mcp.config import (
     CANCEL_REREAD_PAUSE_SECONDS,
@@ -18,12 +18,14 @@ from cursor_cloud_mcp.config import (
     Settings,
 )
 from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure
+from cursor_cloud_mcp.journal import ModelJournal
 from cursor_cloud_mcp.models import (
     ArchiveView,
     CreateAgentView,
     CreateRunView,
     DeleteView,
     ModelParam,
+    ModelSelectionView,
     RepositoryInput,
     agent_status_known,
     run_terminal,
@@ -67,6 +69,7 @@ async def perform_create(
     env_vars: dict[str, str] | None,
     forward_env: list[str] | None,
     on_conflict: str = "error",
+    journal: ModelJournal | None = None,
 ) -> CreateAgentView:
     checked_prompt = require_prompt(prompt)
     checked_mode = require_mode(mode)
@@ -87,12 +90,20 @@ async def perform_create(
         # Per-call values: redacted from logs and errors from now on.
         redaction.register(*merged.values())
     chosen_id, lookup_name = _identity(agent_id, name, merged is not None)
-    model_body = await _model_body(
+    source: Literal["request", "server_default"] = "request"
+    if model_id is None:
+        model_id, model_params, applied = _server_default(settings, model_params, reasoning_level)
+        if applied:
+            source = "server_default"
+    model_body, selection, warnings = await _model_choice(
         client,
         model_id=model_id,
         model_params=model_params,
         reasoning_level=reasoning_level,
+        source=source,
     )
+    if model_body is None:
+        warnings.append(_NO_MODEL_WARNING)
     body: dict[str, object] = {
         "prompt": {"text": checked_prompt},
         "workOnCurrentBranch": False,
@@ -118,10 +129,16 @@ async def perform_create(
     try:
         remote = await client.create_agent(body, agent_id=chosen_id, lookup_name=lookup_name)
     except CursorFailure as exc:
+        _record_uncertain(journal, exc, agent_id=chosen_id, selection=selection)
         if on_conflict != "reuse" or chosen_id is None or exc.body.code is not ErrorCode.AGENT_ID_CONFLICT:
             raise
         return await _reused_agent(client, chosen_id, exc)
-    return create_agent_view(remote)
+    view = create_agent_view(remote)
+    if selection is not None and journal is not None:
+        journal.record(
+            agent_id=view.agent_id, run_id=view.run_id, run_created_at=remote.run.createdAt, model=selection
+        )
+    return view.model_copy(update={"model": selection, "warnings": warnings or None})
 
 
 async def _reused_agent(client: CursorCloudClient, agent_id: str, conflict: CursorFailure) -> CreateAgentView:
@@ -155,6 +172,7 @@ async def perform_followup(
     model_params: list[ModelParam] | None = None,
     reasoning_level: str | None = None,
     replace_active: bool = False,
+    journal: ModelJournal | None = None,
 ) -> CreateRunView:
     checked_prompt = require_prompt(prompt)
     checked_mode = require_mode(mode)
@@ -162,12 +180,17 @@ async def perform_followup(
     ensure_continuation_allowed(agent)
     # Verified against the real API on October 5, 2026: model on POST /runs changes the model, and the choice persists.
     # Validated before anything is cancelled: a rejected model must not stop the current run.
-    model_body = await _model_body(
+    model_body, selection, warnings = await _model_choice(
         client,
         model_id=model_id,
         model_params=model_params,
         reasoning_level=reasoning_level,
+        source="request",
     )
+    if model_body is None:
+        # No server default here: it would silently change the model of an existing agent.
+        selection = None if journal is None else journal.for_agent(agent_id)
+        warnings.append(_KEPT_MODEL_WARNING if selection is not None else _KEPT_UNKNOWN_MODEL_WARNING)
     body: dict[str, object] = {"prompt": {"text": checked_prompt}}
     if checked_mode is not None:
         body["mode"] = checked_mode
@@ -181,18 +204,20 @@ async def perform_followup(
     try:
         remote = await client.create_run(agent_id, body, previous_latest_run_id=agent.latestRunId)
     except CursorFailure as exc:
+        if model_body is not None:
+            _record_uncertain(journal, exc, agent_id=agent_id, selection=selection)
         if replaced is None:
             raise
         note = f"Run {replaced} had already been cancelled before this failure."
         recovery = f"{exc.body.recovery} {note}" if exc.body.recovery else note
         raise CursorFailure(exc.body.model_copy(update={"recovery": recovery})) from None
     view = create_run_view(remote, previous_latest_run_id=agent.latestRunId, url=agent.url)
-    updates: dict[str, object] = {}
-    if model_body is not None:
-        updates["model_id"] = model_body["id"]
+    if model_body is not None and selection is not None and journal is not None:
+        journal.record(agent_id=agent_id, run_id=view.run_id, run_created_at=remote.run.createdAt, model=selection)
+    updates: dict[str, object] = {"model": selection, "warnings": warnings or None}
     if replaced is not None:
         updates["replaced_run_id"] = replaced
-    return view.model_copy(update=updates) if updates else view
+    return view.model_copy(update=updates)
 
 
 async def cancel_and_observe(
@@ -309,13 +334,65 @@ async def perform_delete(client: CursorCloudClient, agent_id: str) -> DeleteView
     return DeleteView(agent_id=agent_id, deleted=True)
 
 
-async def _model_body(
+_NO_MODEL_WARNING = (
+    "No model_id and no CURSOR_MCP_DEFAULT_MODEL: the account's default model applies. "
+    "It cannot be re-read and may turn on costly options (such as fast). "
+    "Pass model_id and model_params explicitly."
+)
+_KEPT_MODEL_WARNING = (
+    "No model_id: the agent keeps its current model; model is the last one this MCP recorded for it."
+)
+_KEPT_UNKNOWN_MODEL_WARNING = (
+    "No model_id: the agent keeps its current model, which this MCP has not recorded "
+    "(the API cannot re-read it). Pass model_id to know it."
+)
+
+
+def _server_default(
+    settings: Settings,
+    model_params: list[ModelParam] | None,
+    reasoning_level: str | None,
+) -> tuple[str | None, list[ModelParam] | None, bool]:
+    """CURSOR_MCP_DEFAULT_MODEL for a creation without model_id; the call's own parameters win."""
+    if settings.default_model_error is not None:
+        raise failure(ErrorCode.VALIDATION, f"{settings.default_model_error} Nothing was sent.")
+    if settings.default_model is None:
+        return None, model_params, False
+    default_id, default_params = settings.default_model
+    given = {item.id for item in model_params or []}
+    kept = [
+        ModelParam(id=key, value=value)
+        for key, value in default_params
+        # reasoning_level replaces whichever reasoning parameter the default set.
+        if key not in given and not (reasoning_level is not None and key in REASONING_IDS)
+    ]
+    return default_id, [*kept, *(model_params or [])], True
+
+
+def _record_uncertain(
+    journal: ModelJournal | None,
+    exc: CursorFailure,
+    *,
+    agent_id: str | None,
+    selection: ModelSelectionView | None,
+) -> None:
+    """The POST may have gone through: keep its model, marked unconfirmed, rather than the previous one."""
+    if journal is None or selection is None or exc.body.code is not ErrorCode.MUTATION_OUTCOME_UNKNOWN:
+        return
+    target = exc.body.agent_id or agent_id
+    if target is not None:
+        journal.record(agent_id=target, run_id=exc.body.run_id, run_created_at=None, model=selection, confirmed=False)
+
+
+async def _model_choice(
     client: CursorCloudClient,
     *,
     model_id: str | None,
     model_params: list[ModelParam] | None,
     reasoning_level: str | None,
-) -> dict[str, object] | None:
+    source: Literal["request", "server_default"],
+) -> tuple[dict[str, object] | None, ModelSelectionView | None, list[str]]:
+    """The ``model`` body to send, what it amounts to in the catalog, and the warnings about it."""
     if model_id is None:
         if model_params or reasoning_level is not None:
             raise failure(
@@ -323,16 +400,43 @@ async def _model_body(
                 "model_id is required with model_params or reasoning_level. "
                 "No model identifier is invented.",
             )
-        return None
+        return None, None, []
     if model_id.strip() == "" or len(model_id) > 128:
         raise failure(ErrorCode.VALIDATION, "model_id is empty or too long.")
     catalog, _hit = await client.cached_models()
-    return resolve_model_selection(
-        catalog,
-        model_id=model_id,
-        model_params=model_params,
-        reasoning_level=reasoning_level,
+    try:
+        body = resolve_model_selection(
+            catalog,
+            model_id=model_id,
+            model_params=model_params,
+            reasoning_level=reasoning_level,
+        )
+    except CursorFailure as exc:
+        if source != "server_default":
+            raise
+        note = f"CURSOR_MCP_DEFAULT_MODEL is not valid in the catalog: {exc.body.message}"
+        raise CursorFailure(exc.body.model_copy(update={"message": note})) from None
+    params, defaulted, unset = effective_selection(catalog, body)
+    selection = ModelSelectionView(
+        id=str(body["id"]),
+        params=params or None,
+        defaulted=defaulted or None,
+        unset=unset or None,
+        source=source,
     )
+    warnings: list[str] = []
+    if defaulted:
+        values = ", ".join(f"{name}={params[name]}" for name in defaulted)
+        warnings.append(
+            f"Not chosen by this call, fixed by the catalog (default variant or only valid value): {values}. "
+            "Pass them in model_params to choose."
+        )
+    if unset:
+        warnings.append(
+            f"Not set and not fixed by the catalog: {', '.join(unset)}. Cursor picks the value; "
+            "pass them in model_params to know it."
+        )
+    return body, selection, warnings
 
 
 def _repositories(

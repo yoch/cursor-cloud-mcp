@@ -282,10 +282,41 @@ class ModelView(BaseModel):
     variants: list[dict[str, str]] | None = None
 
 
+class ModelBriefView(BaseModel):
+    """brief=true: enough to choose a model and see what its defaults turn on."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    aliases: list[str] | None = None
+    defaults: dict[str, str] | None = None
+
+
 class ModelListView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    items: list[ModelView]
+    items: list[ModelView | ModelBriefView]
+
+
+class ModelSelectionView(BaseModel):
+    """A model as this MCP sent it. The API never returns the model: this is the local record.
+
+    ``params`` is the effective selection: what the call set, plus the catalog defaults it left
+    (named in ``defaulted``). ``unset`` names parameters neither set nor fixed by the catalog.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    params: dict[str, str] | None = None
+    defaulted: list[str] | None = None
+    unset: list[str] | None = None
+    source: Literal["request", "server_default", "local_journal"]
+    # local_journal only: when it was recorded, and true when the run did not set it but inherits it.
+    recorded_at: str | None = None
+    inherited: bool | None = None
+    # The send ended in MUTATION_OUTCOME_UNKNOWN: Cursor may or may not have applied this model.
+    unconfirmed: bool | None = None
 
 
 class RepositoryListView(BaseModel):
@@ -340,6 +371,7 @@ class AgentView(AgentSummaryView):
     repo_count: int | None = None
     work_on_current_branch: bool | None = None
     auto_create_pr: bool | None = None
+    model: ModelSelectionView | None = None
 
 
 class GitBranchView(BaseModel):
@@ -459,6 +491,7 @@ class RunView(RunSummaryView):
     reread_error: str | None = None
     activity: ActivityView | None = None
     activity_error: str | None = None
+    model: ModelSelectionView | None = None
 
 
 class SupervisedAgentView(BaseModel):
@@ -481,6 +514,10 @@ class SupervisedAgentView(BaseModel):
     read_error: str | None = None
     activity: ActivityView | None = None
     activity_error: str | None = None
+    model: ModelSelectionView | None = None
+    # usage=true: the agent's total charged cost as the API returns it.
+    charged_cents: float | None = None
+    usage_error: str | None = None
 
 
 class SuperviseSummaryView(BaseModel):
@@ -492,6 +529,8 @@ class SuperviseSummaryView(BaseModel):
     unfinished_after_end: list[str] | None = None
     incomplete: list[str] | None = None
     read_errors: int | None = None
+    charged_cents_total: float | None = None
+    usage_errors: int | None = None
 
 
 class SuperviseView(BaseModel):
@@ -516,6 +555,8 @@ class CreateAgentView(BaseModel):
     name: str | None = None
     latest_run_id: str | None = None
     reused: bool | None = None
+    model: ModelSelectionView | None = None
+    warnings: list[str] | None = None
     next_step: str
 
 
@@ -527,8 +568,9 @@ class CreateRunView(BaseModel):
     status: str
     previous_latest_run_id: str | None = None
     url: str | None = None
-    model_id: str | None = None
+    model: ModelSelectionView | None = None
     replaced_run_id: str | None = None
+    warnings: list[str] | None = None
     next_step: str
 
 
@@ -572,6 +614,9 @@ class RunUsageView(BaseModel):
     usage_uuid: str | None = None
     usage: TokenUsageView
     cost: CostView | None = None
+    # Ratio of the two returned numbers, not a price list: charged_cents / total_tokens * 1e6.
+    charged_cents_per_million_tokens: float | None = None
+    model: ModelSelectionView | None = None
 
 
 class UsageView(BaseModel):
@@ -581,6 +626,7 @@ class UsageView(BaseModel):
 
     total_usage: TokenUsageView
     total_cost: CostView | None = None
+    charged_cents_per_million_tokens: float | None = None
     runs: list[RunUsageView]
 
 

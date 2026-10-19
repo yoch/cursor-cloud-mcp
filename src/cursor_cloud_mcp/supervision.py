@@ -20,6 +20,7 @@ from cursor_cloud_mcp.config import (
     TOOL_TEXT_TOTAL_MAX_CHARS,
 )
 from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure
+from cursor_cloud_mcp.journal import ModelJournal
 from cursor_cloud_mcp.models import (
     ActivityView,
     AgentPageView,
@@ -38,6 +39,10 @@ from cursor_cloud_mcp.stream import Replay, tool_text_cost, walk_replay
 
 # Below this, a stream walk cannot reasonably complete inside the tool budget.
 _MIN_WALK_SECONDS = 2.0
+# A status read that failed transiently is retried once, only if this much budget is left.
+_REREAD_MIN_SECONDS = 5.0
+# Worth a second try; 404, auth or quota errors would fail again (the client already retried 429/5xx once).
+_TRANSIENT = {ErrorCode.UPSTREAM, ErrorCode.TIMEOUT}
 # Parallel reads in one supervision pass: enough for a fleet of runners, gentle on the API.
 SUPERVISE_CONCURRENCY = 8
 # Agent pages are always read at the API maximum; a scan resumes inside a page with a skip.
@@ -241,14 +246,18 @@ async def supervise(
     *,
     activity: bool,
     stale_after_minutes: int,
+    usage: bool = False,
+    journal: ModelJournal | None = None,
 ) -> SuperviseView:
     """Latest run of each agent of ``page``; one failed read never fails the pass.
 
-    Two phases, each with its own concurrency limit: every status first (quick reads), then
-    the stream replays (about 30 s each when idle). Replays never delay a status read.
+    Phases, each with its own concurrency limit: every status first (quick reads), transient
+    failures retried once, then the usage reads and the stream replays (about 30 s each when
+    idle). Replays never delay a status read.
     """
     status_gate = asyncio.Semaphore(SUPERVISE_CONCURRENCY)
     walk_gate = asyncio.Semaphore(SUPERVISE_CONCURRENCY)
+    transient: set[str] = set()
 
     async def read_status(agent: AgentSummaryView) -> SupervisedAgentView:
         row = SupervisedAgentView(
@@ -264,10 +273,15 @@ async def supervise(
             try:
                 remote = await client.get_run(agent.agent_id, agent.latest_run_id)
             except CursorFailure as exc:
+                if exc.body.code in _TRANSIENT:
+                    transient.add(agent.agent_id)
                 return row.model_copy(update={"read_error": f"{exc.body.code.value}: {exc.body.message}"})
+        transient.discard(agent.agent_id)
         view = run_view(remote, offset=0, limit=1)
+        model = None if journal is None else journal.for_run(agent.agent_id, view.run_id, view.created_at)
         return row.model_copy(
             update={
+                "model": model,
                 "status": view.status,
                 "terminal": view.terminal,
                 "created_at": view.created_at,
@@ -304,7 +318,25 @@ async def supervise(
             )
         return row.model_copy(update={"activity": found, "activity_error": error})
 
+    async def add_usage(row: SupervisedAgentView) -> SupervisedAgentView:
+        async with status_gate:
+            try:
+                remote = await client.get_usage(row.agent_id, run_id=None)
+            except CursorFailure as exc:
+                return row.model_copy(update={"usage_error": f"{exc.body.code.value}: {exc.body.message}"})
+        if remote.cost is None:
+            return row.model_copy(update={"usage_error": "The API returned no cost for this agent."})
+        return row.model_copy(update={"charged_cents": round(remote.cost.chargedCents, 4)})
+
     rows = list(await asyncio.gather(*(read_status(agent) for agent in page.items)))
+    retry = [index for index, agent in enumerate(page.items) if agent.agent_id in transient]
+    if retry and budget.remaining(TOOL_BUDGET_SECONDS) >= _REREAD_MIN_SECONDS:
+        # A transient failure must not leave a runner unread: one more try, still in parallel.
+        again = await asyncio.gather(*(read_status(page.items[index]) for index in retry))
+        for index, row in zip(retry, again, strict=True):
+            rows[index] = row
+    if usage:
+        rows = list(await asyncio.gather(*(add_usage(row) for row in rows)))
     if activity:
         rows = list(await asyncio.gather(*(add_activity(row) for row in rows)))
     return SuperviseView(
@@ -345,6 +377,8 @@ def _summary(rows: list[SupervisedAgentView], stale_after_minutes: int) -> Super
         or (row.activity is not None and not row.activity.complete)
     ]
     errors = sum(1 for row in rows if row.read_error is not None)
+    costs = [row.charged_cents for row in rows if row.charged_cents is not None]
+    usage_errors = sum(1 for row in rows if row.usage_error is not None)
     return SuperviseSummaryView(
         agents=len(rows),
         by_status=dict(Counter(_status_key(row) for row in rows)),
@@ -352,4 +386,6 @@ def _summary(rows: list[SupervisedAgentView], stale_after_minutes: int) -> Super
         unfinished_after_end=unfinished or None,
         incomplete=incomplete or None,
         read_errors=errors or None,
+        charged_cents_total=round(sum(costs), 4) if costs else None,
+        usage_errors=usage_errors or None,
     )

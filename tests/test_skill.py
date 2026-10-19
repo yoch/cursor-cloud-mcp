@@ -16,6 +16,7 @@ from cursor_cloud_mcp.fixture import BUSY_AGENT_ID
 
 SKILL = Path(__file__).resolve().parents[1] / "skills" / "cursor-agents"
 CCM = SKILL / "scripts" / "ccm.py"
+PUSH_WATCH = SKILL / "scripts" / "push_watch.py"
 AGENT_ID = "bc-11111111-2222-3333-4444-555555555555"
 CREATE = {"prompt": "probe", "name": "skill-w01", "agent_id": AGENT_ID, "on_conflict": "reuse"}
 
@@ -116,3 +117,73 @@ async def test_skill_cites_only_tools_the_server_lists(tmp_path: Path) -> None:
         listed = {tool.name for tool in (await client.list_tools()).tools}
     assert cited
     assert cited <= listed, sorted(cited - listed)
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        timeout=60,
+    )
+
+
+def test_push_watch_flags_a_branch_whose_sha_stopped_moving(tmp_path: Path) -> None:
+    remote = tmp_path / "remote.git"
+    work = tmp_path / "work"
+    _git(tmp_path, "init", "--bare", str(remote))
+    _git(tmp_path, "init", str(work))
+    _git(work, "commit", "--allow-empty", "-m", "one")
+    _git(work, "push", str(remote), "HEAD:refs/heads/fleet/w01")
+    state = tmp_path / "state.json"
+
+    def watch() -> tuple[int, dict[str, object]]:
+        done = subprocess.run(
+            [sys.executable, str(PUSH_WATCH), "--remote", str(remote), "--state", str(state),
+             "--stale-minutes", "30", "fleet/w*", "fleet/w02"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        return done.returncode, json.loads(done.stdout)
+
+    code, first = watch()
+    assert code == 0, first
+    assert first["missing"] == ["fleet/w02"] and first["stale"] == []
+    # Pretend both clocks started an hour ago: the unchanged SHA and the absent branch are stale.
+    saved = json.loads(state.read_text())
+    for row in saved.values():
+        row["since"] = "2000-01-01T00:00:00+00:00"
+    state.write_text(json.dumps(saved))
+    code, second = watch()
+    assert code == 2
+    assert second["stale"] == ["fleet/w01", "fleet/w02"]
+    # A new push restarts the clock of that branch only.
+    _git(work, "commit", "--allow-empty", "-m", "two")
+    _git(work, "push", str(remote), "HEAD:refs/heads/fleet/w01")
+    code, third = watch()
+    assert code == 2 and third["stale"] == ["fleet/w02"]
+
+
+def test_push_watch_restarts_the_clock_of_a_damaged_state_entry(tmp_path: Path) -> None:
+    remote = tmp_path / "remote.git"
+    work = tmp_path / "work"
+    _git(tmp_path, "init", "--bare", str(remote))
+    _git(tmp_path, "init", str(work))
+    _git(work, "commit", "--allow-empty", "-m", "one")
+    _git(work, "push", str(remote), "HEAD:refs/heads/fleet/w01")
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"fleet/w01": {"sha": "abc"}, "fleet/w09": 5, "fleet/w08": {"since": "nope"}}))
+    done = subprocess.run(
+        [sys.executable, str(PUSH_WATCH), "--remote", str(remote), "--state", str(state),
+         "--stale-minutes", "30", "fleet/w*"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    # The damaged entry of a branch that no longer exists is still watched, with a fresh clock.
+    assert sorted(json.loads(done.stdout)["branches"]) == ["fleet/w01", "fleet/w08"]

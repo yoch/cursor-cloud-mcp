@@ -308,6 +308,21 @@ def _models() -> dict[str, Any]:
                 "values": [{"value": "true"}, {"value": "false"}],
             },
         ],
+        # The default variant turns fast on: a creation that leaves it out shows the warning.
+        "variants": [
+            {
+                "params": [
+                    {"id": "fast", "value": fast},
+                    {"id": "effort", "value": effort},
+                    {"id": "thinking", "value": thinking},
+                ],
+                "displayName": "Composer 2",
+                "isDefault": fast == "true" and effort == "high" and thinking == "true",
+            }
+            for fast in ("true", "false")
+            for effort in ("low", "high")
+            for thinking in ("true", "false")
+        ],
     }
 
 
