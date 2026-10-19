@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -17,6 +18,8 @@ from pydantic import BaseModel, ValidationError
 from cursor_cloud_mcp import budget, redaction
 from cursor_cloud_mcp.config import (
     API_BASE,
+    CONVERSATION_DEADLINE_SECONDS,
+    CONVERSATION_MAX_BYTES,
     CREATE_DEADLINE_SECONDS,
     DEFAULT_DEADLINE_SECONDS,
     MAX_RESPONSE_BYTES,
@@ -28,14 +31,20 @@ from cursor_cloud_mcp.config import (
 from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, explain, failure
 from cursor_cloud_mcp.models import (
     RemoteAccount,
+    RemoteActiveBuild,
     RemoteAgent,
     RemoteAgentPage,
     RemoteArtifactDownload,
     RemoteArtifactList,
+    RemoteBuild,
+    RemoteConversation,
     RemoteCreateAgent,
     RemoteCreateRun,
+    RemoteEnvironment,
+    RemoteEnvironmentPage,
     RemoteId,
     RemoteModelList,
+    RemotePoolList,
     RemoteRepositoryList,
     RemoteRun,
     RemoteRunPage,
@@ -349,6 +358,49 @@ class CursorCloudClient:
         )
         return _parse(RemoteId, payload, mutation=context)
 
+    async def list_environments(self, *, limit: int | None, cursor: str | None) -> RemoteEnvironmentPage:
+        return await self._get_model(
+            "/v1/environments",
+            RemoteEnvironmentPage,
+            query=_page_query(limit, cursor),
+            deadline=self._deadline,
+        )
+
+    async def get_environment(self, environment_id: str) -> RemoteEnvironment:
+        segment = require_segment(environment_id, label="environment_id")
+        return await self._get_model(
+            f"/v1/environments/{quote(segment, safe='')}", RemoteEnvironment, deadline=self._deadline
+        )
+
+    async def get_active_build(self, environment_id: str) -> RemoteActiveBuild:
+        segment = require_segment(environment_id, label="environment_id")
+        return await self._get_model(
+            f"/v1/environments/{quote(segment, safe='')}/builds/active", RemoteActiveBuild, deadline=self._deadline
+        )
+
+    async def get_build(self, environment_id: str, build_id: str) -> RemoteBuild:
+        segment = require_segment(environment_id, label="environment_id")
+        build = require_segment(build_id, label="build_id")
+        return await self._get_model(
+            f"/v1/environments/{quote(segment, safe='')}/builds/{quote(build, safe='')}",
+            RemoteBuild,
+            deadline=self._deadline,
+        )
+
+    async def get_conversation(self, agent_id: str) -> RemoteConversation:
+        # Legacy v0 endpoint: the v1 API has no conversation. It answered for a v1 agent on October 19, 2026.
+        segment = require_segment(agent_id, label="agent_id")
+        return await self._get_model(
+            f"/v0/agents/{quote(segment, safe='')}/conversation",
+            RemoteConversation,
+            deadline=CONVERSATION_DEADLINE_SECONDS,
+            max_bytes=CONVERSATION_MAX_BYTES,
+        )
+
+    async def list_pools(self) -> RemotePoolList:
+        # v0 path, kept by Cursor for self-hosted workers and pools (documented beside the v1 API).
+        return await self._get_model("/v0/private-workers/pools", RemotePoolList, deadline=self._deadline)
+
     async def get_usage(self, agent_id: str, *, run_id: str | None) -> RemoteUsage:
         segment = require_segment(agent_id, label="agent_id")
         query: dict[str, str] = {}
@@ -375,8 +427,9 @@ class CursorCloudClient:
         *,
         query: Mapping[str, str] | None = None,
         deadline: float,
+        max_bytes: int | None = None,
     ) -> M:
-        payload = await self._send("GET", path, query=query, deadline=deadline, mutation=None)
+        payload = await self._send("GET", path, query=query, deadline=deadline, mutation=None, max_bytes=max_bytes)
         return _parse(model, payload, mutation=None)
 
     async def _send(
@@ -388,6 +441,7 @@ class CursorCloudClient:
         json_body: Mapping[str, object] | None = None,
         deadline: float,
         mutation: MutationContext | None,
+        max_bytes: int | None = None,
     ) -> object | None:
         """One HTTP call bounded by ``deadline`` and by the tool budget.
 
@@ -447,6 +501,7 @@ class CursorCloudClient:
                             mutation=mutation,
                             retry_allowed=attempt == 0,
                             deadline_at=deadline_at,
+                            max_bytes=max_bytes,
                         )
                     except _Retry:
                         attempt = 1
@@ -475,6 +530,7 @@ class CursorCloudClient:
         mutation: MutationContext | None,
         retry_allowed: bool,
         deadline_at: float,
+        max_bytes: int | None = None,
     ) -> object | None:
         if response.status_code in _REDIRECTS:
             raise _redirect_failure(response, request_id, mutation)
@@ -497,7 +553,7 @@ class CursorCloudClient:
             if wait:
                 await asyncio.sleep(wait)
             raise _Retry
-        raw = await self._read(response, mutation, request_id)
+        raw = await self._read(response, mutation, request_id, max_bytes)
         return _interpret_bytes(
             response.status_code,
             response.headers,
@@ -511,9 +567,10 @@ class CursorCloudClient:
         response: httpx.Response,
         mutation: MutationContext | None,
         request_id: str | None,
+        max_bytes: int | None = None,
     ) -> bytes:
         try:
-            return await read_bounded(response, self._max_body)
+            return await read_bounded(response, max_bytes or self._max_body)
         except ResponseTooLarge:
             raise _body_failure(
                 mutation,
@@ -796,7 +853,7 @@ def _status_from(
     if remote_code == "invalid_last_event_id":
         recovery = "Cursor rejected by the stream: call cursor_read_run_events again without after_event_id."
     help_url, provider = _remote_help(raw)
-    return failure(
+    built = failure(
         code,
         message,
         agent_id=agent_id,
@@ -810,6 +867,23 @@ def _status_from(
         help_url=help_url,
         provider=provider,
     )
+    if code is ErrorCode.QUOTA:
+        built = CursorFailure(built.body.model_copy(update=_rate_limit_headers(headers)))
+    return built
+
+
+def _rate_limit_headers(headers: httpx.Headers) -> dict[str, object]:
+    """X-RateLimit-* as sent; a missing or malformed number is left out."""
+    found: dict[str, object] = {}
+    for key, name in (("rate_limit_limit", "x-ratelimit-limit"), ("rate_limit_remaining", "x-ratelimit-remaining")):
+        raw = headers.get(name)
+        # ASCII digits only: str.isdigit() also accepts characters such as "²" that int() refuses.
+        if raw is not None and re.fullmatch(r"[0-9]{1,18}", raw.strip()):
+            found[key] = int(raw.strip())
+    reset = headers.get("x-ratelimit-reset")
+    if reset is not None and 0 < len(reset.strip()) <= 64:
+        found["rate_limit_reset"] = reset.strip()
+    return found
 
 
 def _classify(status: int, remote_code: str | None, *, mutation: bool) -> ErrorCode:
@@ -821,6 +895,9 @@ def _classify(status: int, remote_code: str | None, *, mutation: bool) -> ErrorC
         return ErrorCode.AGENT_ID_CONFLICT
     if remote_code in {"rate_limit_exceeded", "usage_limit_exceeded"} or status == 429:
         return ErrorCode.QUOTA
+    # By code before the status: the spec gives stream_unavailable no status of its own.
+    if remote_code in {"stream_expired", "stream_unavailable"}:
+        return ErrorCode.STREAM_EXPIRED
     if status == 401 or remote_code in {"unauthorized", "api_key_not_found"}:
         return ErrorCode.AUTHENTICATION
     if status == 403:
@@ -829,7 +906,7 @@ def _classify(status: int, remote_code: str | None, *, mutation: bool) -> ErrorC
         return ErrorCode.NOT_FOUND
     if status == 409:
         return ErrorCode.CONFLICT
-    if remote_code in {"stream_expired", "stream_unavailable"} or status == 410:
+    if status == 410:
         return ErrorCode.STREAM_EXPIRED
     if status == 400:
         return ErrorCode.VALIDATION

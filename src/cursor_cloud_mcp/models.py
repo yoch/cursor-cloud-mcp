@@ -21,6 +21,18 @@ class ModelParam(BaseModel):
     value: str = Field(min_length=1)
 
 
+class ImageInput(BaseModel):
+    """One prompt image: ``url`` (Cursor fetches it), or base64 ``data`` with its ``mime_type``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    url: str | None = None
+    data: str | None = None
+    mime_type: str | None = None
+    width: int | None = Field(default=None, ge=1)
+    height: int | None = Field(default=None, ge=1)
+
+
 class RemoteEnv(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -215,6 +227,87 @@ class RemoteUsage(BaseModel):
     cost: RemoteCost | None = None
 
 
+class RemoteEnvironmentRepo(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    url: str
+
+
+class RemoteEnvironment(BaseModel):
+    """Only ``id`` is relied on: a row missing another field must not make the whole page unreadable."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    owner: str | None = None
+    repos: list[RemoteEnvironmentRepo] = Field(default_factory=list)
+    updatedAt: str | None = None
+    name: str | None = None
+
+
+class RemoteEnvironmentPage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    items: list[RemoteEnvironment]
+    nextCursor: str | None = None
+
+
+class RemoteActiveBuild(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    type: str
+    buildId: str | None = None
+
+
+class RemoteBuildFailure(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    type: str
+    code: str | None = None
+
+
+class RemoteBuild(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    status: str
+    trigger: str | None = None
+    draft: bool | None = None
+    failure: RemoteBuildFailure | None = None
+    completedAt: str | None = None
+
+
+class RemotePool(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    poolName: str
+    scope: str | None = None
+    repoUrl: str | None = None
+    connectedWorkerCount: int = 0
+    inUseWorkerCount: int = 0
+    isStale: bool | None = None
+
+
+class RemotePoolList(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    pools: list[RemotePool]
+
+
+class RemoteMessage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    type: str
+    text: str | None = None
+    id: str | None = None
+
+
+class RemoteConversation(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    messages: list[RemoteMessage]
+
+
 class RemoteId(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -243,7 +336,7 @@ class RemoteArtifactDownload(BaseModel):
 
 
 class RepositoryInput(BaseModel):
-    """Repository requested at creation. ``starting_ref`` is a branch name."""
+    """Repository requested at creation. ``starting_ref`` is a branch name or a full commit SHA."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -255,6 +348,23 @@ class RepositoryInput(BaseModel):
         return self.starting_ref
 
 
+class ServerStatusView(BaseModel):
+    """What this server process allows and uses: set by its environment, changed only by a restart."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: str
+    writes_enabled: bool
+    delete_enabled: bool
+    fixture: bool
+    default_model: str | None = None
+    default_model_error: str | None = None
+    journal_dir: str | None = None
+    journal: Literal["on", "off"]
+    # Names only: their values are never read here.
+    forward_env: list[str] | None = None
+
+
 class AccountView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -264,6 +374,9 @@ class AccountView(BaseModel):
     user_email: str | None = None
     user_first_name: str | None = None
     user_last_name: str | None = None
+    # The API omits the user fields for service-account and team keys.
+    service_account_key: bool | None = None
+    server: ServerStatusView | None = None
 
 
 class ModelView(BaseModel):
@@ -317,6 +430,79 @@ class ModelSelectionView(BaseModel):
     inherited: bool | None = None
     # The send ended in MUTATION_OUTCOME_UNKNOWN: Cursor may or may not have applied this model.
     unconfirmed: bool | None = None
+
+
+class ActiveBuildView(BaseModel):
+    """What an agent started on the environment boots from: one of its builds or Cursor's default image."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: str
+    build_id: str | None = None
+    status: str | None = None
+    trigger: str | None = None
+    draft: bool | None = None
+    failure: str | None = None
+    completed_at: str | None = None
+
+
+class EnvironmentView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    environment_id: str
+    name: str | None = None
+    owner: str | None = None
+    repos: list[str] | None = None
+    updated_at: str | None = None
+    active_build: ActiveBuildView | None = None
+    active_build_error: str | None = None
+
+
+class PoolView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    scope: str | None = None
+    repo_url: str | None = None
+    connected_workers: int
+    in_use_workers: int
+    stale: bool | None = None
+
+
+class EnvironmentListView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[EnvironmentView]
+    pools: list[PoolView] | None = None
+    pools_error: str | None = None
+    next_cursor: str | None = None
+    has_more: bool
+
+
+class ConversationMessageView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    index: int
+    type: str
+    text: str | None = None
+    clipped: bool | None = None
+    # A <system_notification> turn: injected by Cursor (a background task or subagent ended), not a user prompt.
+    injected: bool | None = None
+
+
+class ConversationView(BaseModel):
+    """Messages of an agent's whole conversation, all runs included, from the legacy v0 API."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    total_messages: int
+    offset: int
+    messages: list[ConversationMessageView]
+    next_offset: int | None = None
+    # The window ended before limit because its texts reached the per-call total.
+    truncated: bool | None = None
+    injected_turns: int | None = None
 
 
 class RepositoryListView(BaseModel):

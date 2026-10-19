@@ -8,7 +8,7 @@ from cursor_cloud_mcp.config import AGENT_SCAN_MAX_PAGES, AGENT_SCAN_MIN_SECONDS
 from cursor_cloud_mcp.errors import CursorFailure
 from cursor_cloud_mcp.journal import ModelJournal
 from cursor_cloud_mcp.models import UsageView
-from cursor_cloud_mcp.present import next_run_page, usage_view
+from cursor_cloud_mcp.present import page_cursor, usage_view
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ async def _start_times(
         for _ in range(AGENT_SCAN_MAX_PAGES):
             page = await client.list_runs(agent_id, limit=100, cursor=cursor)
             found.update({item.id: item.createdAt for item in page.items if item.id in wanted})
-            cursor, has_more = next_run_page(page)
+            cursor, has_more = page_cursor(page.nextCursor)
             if not has_more or wanted <= found.keys() or budget.remaining(TOOL_BUDGET_SECONDS) < AGENT_SCAN_MIN_SECONDS:
                 break
     except CursorFailure as exc:

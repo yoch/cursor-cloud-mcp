@@ -58,7 +58,21 @@ TAIL_DEFAULT_WAIT_SECONDS = 45
 ENV_MAX_COUNT = 50
 ENV_NAME_MAX_BYTES = 255
 ENV_VALUE_MAX_BYTES = 4096
-REPO_MAX_COUNT = 20
+REPO_MAX_COUNT = 500
+# Legacy v0 conversation: one GET returns the whole conversation, which can be slow and large.
+CONVERSATION_DEADLINE_SECONDS = 90.0
+# The API returns the whole conversation at once: a long-lived agent needs more than MAX_RESPONSE_BYTES.
+CONVERSATION_MAX_BYTES = 32_000_000
+# Text returned by one cursor_read_conversation call; reaching it shortens the window (truncated).
+CONVERSATION_TEXT_TOTAL_MAX_CHARS = 200_000
+CONVERSATION_DEFAULT_MESSAGES = 20
+CONVERSATION_TEXT_DEFAULT_CHARS = 2000
+# prompt.images: at most 5 per prompt, 15 MB each once decoded (OpenAPI of October 19, 2026).
+IMAGE_MAX_COUNT = 5
+IMAGE_MAX_BYTES = 15 * 1024 * 1024
+IMAGE_URL_MAX_CHARS = 2048
+IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+ENVIRONMENT_NAME_MAX_CHARS = 255
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 _UNEXPANDED = re.compile(r"^\$\{[^}]*\}$|^\{env:[^}]*\}$")
 _FIXTURE_WITH_KEY = (

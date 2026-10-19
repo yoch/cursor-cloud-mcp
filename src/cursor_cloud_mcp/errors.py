@@ -47,6 +47,10 @@ class ErrorBody(BaseModel):
     retry_after_seconds: float | None = None
     help_url: str | None = None
     provider: str | None = None
+    # QUOTA only: the X-RateLimit-* headers of the refusal, as Cursor sent them.
+    rate_limit_limit: int | None = None
+    rate_limit_remaining: int | None = None
+    rate_limit_reset: str | None = None
 
 
 class CursorFailure(Exception):

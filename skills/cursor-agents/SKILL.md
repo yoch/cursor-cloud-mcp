@@ -5,7 +5,7 @@ description: Run and supervise Cursor Cloud agents through the cursor-cloud-mcp 
 
 # Cursor agents: compute fleets and coding agents
 
-Written against cursor-cloud-mcp 0.5.0. If a tool or parameter differs, trust the server's tool
+Written against cursor-cloud-mcp 0.6.0. If a tool or parameter differs, trust the server's tool
 descriptions. **(observed)** marks behavior seen in real fleets that the API does not promise.
 
 Read only what the task needs:
@@ -92,6 +92,11 @@ user's own machines instead. Coordinator and workers share git branches only.
 - `git` in run views lists branch names and PR URL, no SHA, and can show an auto-generated
   `cursor/...` branch even when the prompt named another (observed). Use `git ls-remote origin`.
 - The artifact list is often empty: the result goes in the agent's final answer.
+- `cursor_read_conversation` gives an agent's whole text conversation (legacy endpoint): read it
+  before a resume prompt when the runs' results are not enough. `injected` turns are Cursor's
+  notices (a background task ended), not prompts.
+- `env_vars` / `forward_env` are a Cursor beta that may be ignored silently: the probe checks
+  that a variable arrived before the fleet relies on it.
 
 ## 4. Calls from scripts
 
@@ -130,8 +135,10 @@ a loop the user approved for paid calls.
 ## 6. Launch
 
 1. Approval (rule 1). Test the job locally for two chunks, including a kill and a restart.
-2. Push the code to a branch, check its head is the intended commit; that branch is `starting_ref`
-   (a 40/64-char SHA is refused). Put the first task on the control branch.
+2. Push the code to a branch, check its head is the intended commit; pass that branch, or the full
+   commit SHA itself, as `starting_ref`. Put the first task on the control branch. For `env_type`
+   `cloud` with a saved environment or `pool`, take `env_name` from `cursor_list_environments`;
+   `cursor_list_environments(environment_id=...)` shows whether its active build `SUCCEEDED`.
 3. Per worker, write `name` and `agent_id` (`python3 -c 'import uuid; print("bc-" + str(uuid.uuid4()))'`)
    to its job file **before** the call:
 

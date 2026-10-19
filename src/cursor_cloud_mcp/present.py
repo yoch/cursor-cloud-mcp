@@ -4,31 +4,42 @@ import json
 import logging
 from typing import Literal
 
+from cursor_cloud_mcp import __version__
 from cursor_cloud_mcp.catalog import default_selection, find_model, reasoning_parameter, restricted
-from cursor_cloud_mcp.config import RESULT_MAX_LIMIT
+from cursor_cloud_mcp.config import CONVERSATION_TEXT_TOTAL_MAX_CHARS, RESULT_MAX_LIMIT, Settings
 from cursor_cloud_mcp.errors import ErrorCode, failure
 from cursor_cloud_mcp.models import (
     AccountView,
+    ActiveBuildView,
     AgentPageView,
     AgentView,
     CancelView,
+    ConversationMessageView,
+    ConversationView,
     CostView,
     CreateAgentView,
     CreateRunView,
+    EnvironmentView,
     GitBranchView,
     GitView,
     ModelBriefView,
     ModelListView,
     ModelView,
+    PoolView,
     RemoteAccount,
+    RemoteActiveBuild,
     RemoteAgent,
     RemoteAgentPage,
+    RemoteBuild,
+    RemoteConversation,
     RemoteCost,
     RemoteCreateAgent,
     RemoteCreateRun,
+    RemoteEnvironment,
     RemoteGit,
     RemoteModel,
     RemoteModelList,
+    RemotePool,
     RemoteRepositoryList,
     RemoteRun,
     RemoteRunPage,
@@ -39,6 +50,7 @@ from cursor_cloud_mcp.models import (
     RunSummaryView,
     RunUsageView,
     RunView,
+    ServerStatusView,
     UsageView,
     agent_status_known,
     cursor_of,
@@ -46,6 +58,7 @@ from cursor_cloud_mcp.models import (
     summary_from,
     tokens_from,
 )
+from cursor_cloud_mcp.shapes import clip_edges
 from cursor_cloud_mcp.slicing import slice_text
 
 logger = logging.getLogger(__name__)
@@ -59,14 +72,34 @@ _REUSED_NEXT_STEP = (
 )
 
 
-def account_view(remote: RemoteAccount) -> AccountView:
-    return AccountView(
+def account_view(remote: RemoteAccount, settings: Settings | None = None) -> AccountView:
+    view = AccountView(
         api_key_name=remote.apiKeyName,
         created_at=remote.createdAt,
         user_id=remote.userId,
         user_email=remote.userEmail,
         user_first_name=remote.userFirstName,
         user_last_name=remote.userLastName,
+        service_account_key=(remote.userId is None and remote.userEmail is None) or None,
+    )
+    return view if settings is None else view.model_copy(update={"server": server_status(settings)})
+
+
+def server_status(settings: Settings) -> ServerStatusView:
+    default_model = None
+    if settings.default_model is not None:
+        model_id, params = settings.default_model
+        default_model = model_id + (":" + ",".join(f"{key}={value}" for key, value in params) if params else "")
+    return ServerStatusView(
+        version=__version__,
+        writes_enabled=settings.allow_writes,
+        delete_enabled=settings.allow_writes and settings.allow_delete,
+        fixture=settings.fixture,
+        default_model=default_model,
+        default_model_error=settings.default_model_error,
+        journal_dir=settings.state_dir,
+        journal="on" if settings.state_dir is not None else "off",
+        forward_env=sorted(settings.forward_env) or None,
     )
 
 
@@ -151,12 +184,100 @@ def agent_page_view(remote: RemoteAgentPage) -> AgentPageView:
     )
 
 
-def next_page(remote: RemoteAgentPage) -> tuple[str | None, bool]:
-    return _cursor(remote.nextCursor)
+def page_cursor(value: str | None) -> tuple[str | None, bool]:
+    """A page's next cursor and whether there is more; an empty cursor breaks the contract."""
+    return _cursor(value)
 
 
-def next_run_page(remote: RemoteRunPage) -> tuple[str | None, bool]:
-    return _cursor(remote.nextCursor)
+_INJECTED = "<system_notification>"
+
+
+def injected_turn(message_type: str, text: str | None) -> bool:
+    """A turn Cursor added (a background task or subagent ended): a user turn opening with its tag."""
+    return message_type == "user_message" and text is not None and text.lstrip().startswith(_INJECTED)
+
+
+def conversation_view(
+    remote: RemoteConversation, *, agent_id: str, offset: int | None, limit: int, text_limit: int
+) -> ConversationView:
+    """A window of messages; without offset, the last ``limit``. Texts keep both edges when clipped.
+
+    The window stops early when its texts reach CONVERSATION_TEXT_TOTAL_MAX_CHARS (``truncated``);
+    next_offset then resumes right after the last message returned.
+    """
+    total = len(remote.messages)
+    start = max(0, total - limit) if offset is None else offset
+    if start > total:
+        raise failure(ErrorCode.VALIDATION, f"offset exceeds the {total} messages of this conversation.")
+    flags = [injected_turn(item.type, item.text) for item in remote.messages]
+    messages: list[ConversationMessageView] = []
+    used = 0
+    end = start
+    for index in range(start, min(total, start + limit)):
+        item = remote.messages[index]
+        text, clipped = clip_edges(item.text, text_limit)
+        cost = len(text or "")
+        if messages and used + cost > CONVERSATION_TEXT_TOTAL_MAX_CHARS:
+            break
+        used += cost
+        end = index + 1
+        messages.append(
+            ConversationMessageView(
+                index=index,
+                type=item.type,
+                text=text,
+                clipped=clipped or None,
+                injected=flags[index] or None,
+            )
+        )
+    return ConversationView(
+        agent_id=agent_id,
+        total_messages=total,
+        offset=start,
+        messages=messages,
+        next_offset=end if end < total else None,
+        truncated=end < min(total, start + limit) or None,
+        injected_turns=sum(flags) or None,
+    )
+
+
+def environment_view(remote: RemoteEnvironment) -> EnvironmentView:
+    return EnvironmentView(
+        environment_id=remote.id,
+        name=remote.name,
+        owner=remote.owner,
+        repos=[repo.url for repo in remote.repos] or None,
+        updated_at=remote.updatedAt,
+    )
+
+
+def active_build_view(active: RemoteActiveBuild, build: RemoteBuild | None) -> ActiveBuildView:
+    view = ActiveBuildView(type=active.type, build_id=active.buildId)
+    if build is None:
+        return view
+    failure_text = None
+    if build.failure is not None:
+        failure_text = build.failure.type if build.failure.code is None else f"{build.failure.type}: {build.failure.code}"
+    return view.model_copy(
+        update={
+            "status": build.status,
+            "trigger": build.trigger,
+            "draft": build.draft,
+            "failure": failure_text,
+            "completed_at": build.completedAt,
+        }
+    )
+
+
+def pool_view(remote: RemotePool) -> PoolView:
+    return PoolView(
+        name=remote.poolName,
+        scope=remote.scope,
+        repo_url=remote.repoUrl,
+        connected_workers=remote.connectedWorkerCount,
+        in_use_workers=remote.inUseWorkerCount,
+        stale=remote.isStale,
+    )
 
 
 def agent_view(remote: RemoteAgent) -> AgentView:

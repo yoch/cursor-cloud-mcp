@@ -34,7 +34,7 @@ from cursor_cloud_mcp.models import (
     SuperviseView,
     summary_from,
 )
-from cursor_cloud_mcp.present import next_page, run_view
+from cursor_cloud_mcp.present import page_cursor, run_view
 from cursor_cloud_mcp.stream import Replay, tool_text_cost, walk_replay
 
 # Below this, a stream walk cannot reasonably complete inside the tool budget.
@@ -116,7 +116,7 @@ async def scan_agents(
             if len(matches) >= wanted:
                 break
         skip = 0
-        following, has_more = next_page(page)
+        following, has_more = page_cursor(page.nextCursor)
         if not has_more:
             return AgentPageView(items=matches, next_cursor=None, has_more=False, scanned=scanned)
         api_cursor = following

@@ -1,14 +1,24 @@
 """Local checks. They do not prove that a resource exists on GitHub or Cursor."""
 
+import base64
+import binascii
 import re
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from cursor_cloud_mcp.config import (
     ENV_NAME_MAX_BYTES,
     ENV_VALUE_MAX_BYTES,
+    IMAGE_MAX_BYTES,
+    IMAGE_MAX_COUNT,
+    IMAGE_MIME_TYPES,
+    IMAGE_URL_MAX_CHARS,
     PROMPT_MAX_CHARS,
 )
 from cursor_cloud_mcp.errors import ErrorCode, failure
+
+if TYPE_CHECKING:
+    from cursor_cloud_mcp.models import ImageInput
 
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$")
 _BRANCH_FORBIDDEN = re.compile(r"[\x00-\x20\x7f~^:?*\[\\]")
@@ -49,25 +59,68 @@ def require_prompt(prompt: str) -> str:
     return prompt
 
 
-def require_starting_ref(value: str) -> str:
-    """Branch name sent in ``startingRef``.
+def require_images(images: "list[ImageInput] | None") -> list[dict[str, object]] | None:
+    """``prompt.images`` for the API. Errors name the image's index and size, never its content."""
+    if not images:
+        return None
+    if len(images) > IMAGE_MAX_COUNT:
+        raise failure(ErrorCode.VALIDATION, f"At most {IMAGE_MAX_COUNT} images per prompt.")
+    built: list[dict[str, object]] = []
+    for index, image in enumerate(images, start=1):
+        if (image.url is None) == (image.data is None):
+            raise failure(ErrorCode.VALIDATION, f"Image {index}: give exactly one of url or data.")
+        entry: dict[str, object]
+        if image.url is not None:
+            if image.mime_type is not None:
+                raise failure(ErrorCode.VALIDATION, f"Image {index}: mime_type goes with data only; Cursor reads it from the url.")
+            try:
+                parts = urlsplit(image.url)
+                # Reading the port validates it: urlsplit itself accepts "host:99999".
+                _port = parts.port
+            except ValueError:
+                raise failure(ErrorCode.VALIDATION, f"Image {index}: url is not a valid URL.") from None
+            if parts.scheme not in {"http", "https"} or not parts.hostname or len(image.url) > IMAGE_URL_MAX_CHARS:
+                raise failure(ErrorCode.VALIDATION, f"Image {index}: url must be an http(s) URL of at most {IMAGE_URL_MAX_CHARS} characters.")
+            if parts.username or parts.password:
+                raise failure(ErrorCode.VALIDATION, f"Image {index}: url must not contain credentials.")
+            entry = {"url": image.url}
+        else:
+            data = image.data or ""
+            if image.mime_type not in IMAGE_MIME_TYPES:
+                raise failure(
+                    ErrorCode.VALIDATION,
+                    f"Image {index}: mime_type is required with data, one of {', '.join(sorted(IMAGE_MIME_TYPES))}.",
+                )
+            # Bound the text before decoding it: base64 is 4 characters per 3 bytes.
+            if len(data) > (IMAGE_MAX_BYTES + 2) // 3 * 4:
+                raise failure(ErrorCode.VALIDATION, f"Image {index}: larger than {IMAGE_MAX_BYTES // (1024 * 1024)} MB.")
+            try:
+                size = len(base64.b64decode(data, validate=True))
+            except (binascii.Error, ValueError):
+                raise failure(ErrorCode.VALIDATION, f"Image {index}: data is not valid base64 ({len(data)} characters).") from None
+            if size == 0 or size > IMAGE_MAX_BYTES:
+                raise failure(ErrorCode.VALIDATION, f"Image {index}: {size} bytes once decoded, allowed 1 to {IMAGE_MAX_BYTES}.")
+            entry = {"data": data, "mimeType": image.mime_type}
+        if (image.width is None) != (image.height is None):
+            raise failure(ErrorCode.VALIDATION, f"Image {index}: width and height go together.")
+        if image.width is not None and image.height is not None:
+            entry["dimension"] = {"width": image.width, "height": image.height}
+        built.append(entry)
+    return built
 
-    Rejecting a full SHA is a dated workaround: the API answered ``400`` on
-    October 1, 2026, even though the REST documentation says a reference may be a
-    SHA. Requalify with an authorized real test before removing it.
+
+def require_starting_ref(value: str) -> str:
+    """Branch name or full commit SHA sent in ``startingRef``.
+
+    A full SHA was refused (400) on October 1, 2026, and accepted (201) on October 19, 2026.
     """
     if _SHA.fullmatch(value) is not None:
-        raise failure(
-            ErrorCode.VALIDATION,
-            "A full SHA in startingRef was rejected by the Cursor API (observed on October 1, 2026). "
-            "Push this commit to a branch, check that its head is this SHA, "
-            "then pass the branch name in starting_ref.",
-        )
+        return value
     if not _valid_branch_name(value):
         raise failure(
             ErrorCode.VALIDATION,
-            "starting_ref must be a Git branch name. "
-            "This check does not prove that the branch exists on GitHub.",
+            "starting_ref must be a Git branch name or a full commit SHA. "
+            "This check does not prove that it exists on GitHub.",
         )
     return value
 

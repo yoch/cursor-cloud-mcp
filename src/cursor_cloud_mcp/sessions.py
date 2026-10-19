@@ -13,6 +13,7 @@ from cursor_cloud_mcp.config import (
     CANCEL_REREAD_PAUSE_SECONDS,
     CANCEL_REREADS,
     ENV_MAX_COUNT,
+    ENVIRONMENT_NAME_MAX_CHARS,
     REPO_MAX_COUNT,
     TOOL_BUDGET_SECONDS,
     Settings,
@@ -24,6 +25,7 @@ from cursor_cloud_mcp.models import (
     CreateAgentView,
     CreateRunView,
     DeleteView,
+    ImageInput,
     ModelParam,
     ModelSelectionView,
     RepositoryInput,
@@ -41,6 +43,7 @@ from cursor_cloud_mcp.validation import (
     require_agent_id,
     require_env_name,
     require_env_value,
+    require_images,
     require_mode,
     require_prompt,
     require_segment,
@@ -70,9 +73,14 @@ async def perform_create(
     forward_env: list[str] | None,
     on_conflict: str = "error",
     journal: ModelJournal | None = None,
+    images: list[ImageInput] | None = None,
+    skip_reviewer_request: bool = False,
 ) -> CreateAgentView:
     checked_prompt = require_prompt(prompt)
     checked_mode = require_mode(mode)
+    checked_images = require_images(images)
+    if skip_reviewer_request and not auto_create_pr:
+        raise failure(ErrorCode.VALIDATION, "skip_reviewer_request applies only with auto_create_pr=true.")
     if on_conflict not in {"error", "reuse"}:
         raise failure(ErrorCode.VALIDATION, "on_conflict must be error or reuse.")
     if on_conflict == "reuse" and agent_id is None:
@@ -105,10 +113,12 @@ async def perform_create(
     if model_body is None:
         warnings.append(_NO_MODEL_WARNING)
     body: dict[str, object] = {
-        "prompt": {"text": checked_prompt},
+        "prompt": _prompt_body(checked_prompt, checked_images),
         "workOnCurrentBranch": False,
         "autoCreatePR": auto_create_pr,
     }
+    if skip_reviewer_request:
+        body["skipReviewerRequest"] = True
     if repos:
         body["repos"] = repos
     if env_type is not None:
@@ -173,9 +183,11 @@ async def perform_followup(
     reasoning_level: str | None = None,
     replace_active: bool = False,
     journal: ModelJournal | None = None,
+    images: list[ImageInput] | None = None,
 ) -> CreateRunView:
     checked_prompt = require_prompt(prompt)
     checked_mode = require_mode(mode)
+    checked_images = require_images(images)
     agent = await client.get_agent(agent_id)
     ensure_continuation_allowed(agent)
     # Verified against the real API on October 5, 2026: model on POST /runs changes the model, and the choice persists.
@@ -191,7 +203,7 @@ async def perform_followup(
         # No server default here: it would silently change the model of an existing agent.
         selection = None if journal is None else journal.for_agent(agent_id)
         warnings.append(_KEPT_MODEL_WARNING if selection is not None else _KEPT_UNKNOWN_MODEL_WARNING)
-    body: dict[str, object] = {"prompt": {"text": checked_prompt}}
+    body: dict[str, object] = {"prompt": _prompt_body(checked_prompt, checked_images)}
     if checked_mode is not None:
         body["mode"] = checked_mode
     if model_body is not None:
@@ -348,6 +360,10 @@ _KEPT_UNKNOWN_MODEL_WARNING = (
 )
 
 
+def _prompt_body(text: str, images: list[dict[str, object]] | None) -> dict[str, object]:
+    return {"text": text, "images": images} if images else {"text": text}
+
+
 def _server_default(
     settings: Settings,
     model_params: list[ModelParam] | None,
@@ -462,7 +478,7 @@ def _repositories(
     if not repositories:
         return []
     if len(repositories) > REPO_MAX_COUNT:
-        raise failure(ErrorCode.VALIDATION, "At most 20 repositories.")
+        raise failure(ErrorCode.VALIDATION, f"At most {REPO_MAX_COUNT} repositories.")
     return [
         {
             "url": normalize_repository(item.url),
@@ -475,19 +491,21 @@ def _repositories(
 def _check_environment(env_type: str | None, env_name: str | None, repo_count: int) -> None:
     if env_name is not None and env_type is None:
         raise failure(ErrorCode.VALIDATION, "env_name requires env_type.")
-    if env_name is not None and (env_name.strip() == "" or len(env_name) > 128):
+    if env_name is not None and (env_name.strip() == "" or len(env_name) > ENVIRONMENT_NAME_MAX_CHARS):
         raise failure(ErrorCode.VALIDATION, "env_name is empty or too long.")
     named_cloud = env_type == "cloud" and env_name is not None
-    named_pool = env_type == "pool" and env_name is not None
     if named_cloud and repo_count:
         raise failure(
             ErrorCode.VALIDATION,
             "A named cloud environment cannot be combined with repositories.",
         )
-    if repo_count > 1 and not named_pool:
+    # Self-hosted: a machine and the default pool take one repository; only a named pool takes
+    # more (an any-repo one: the API refuses the others). A hosted VM took two on October 19, 2026.
+    single_only = env_type == "machine" or (env_type == "pool" and env_name is None)
+    if repo_count > 1 and single_only:
         raise failure(
             ErrorCode.VALIDATION,
-            "Multiple repositories require a named pool (env_type=pool and env_name).",
+            "Multiple repositories on a self-hosted worker require a named any-repo pool (env_type=pool and env_name).",
         )
 
 

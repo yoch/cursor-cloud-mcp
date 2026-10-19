@@ -121,6 +121,7 @@ async def test_listing_tools_does_not_call_cursor() -> None:
         "cursor_get_account",
         "cursor_list_models",
         "cursor_list_repositories",
+        "cursor_list_environments",
         "cursor_list_agents",
         "cursor_supervise",
         "cursor_get_agent",
@@ -129,6 +130,7 @@ async def test_listing_tools_does_not_call_cursor() -> None:
         "cursor_list_runs",
         "cursor_get_run",
         "cursor_read_run_events",
+        "cursor_read_conversation",
         "cursor_cancel_run",
         "cursor_get_usage",
         "cursor_list_artifacts",
@@ -141,12 +143,14 @@ async def test_listing_tools_does_not_call_cursor() -> None:
         "cursor_get_account",
         "cursor_list_models",
         "cursor_list_repositories",
+        "cursor_list_environments",
         "cursor_list_agents",
         "cursor_supervise",
         "cursor_get_agent",
         "cursor_list_runs",
         "cursor_get_run",
         "cursor_read_run_events",
+        "cursor_read_conversation",
         "cursor_get_usage",
         "cursor_list_artifacts",
         "cursor_read_artifact",
@@ -385,13 +389,13 @@ async def test_create_agent_sends_exact_rest_fields() -> None:
     assert router.calls[1][1] == "/v1/agents"
 
 
-async def test_validation_rejects_sha_url_and_extra_fields_before_http() -> None:
+async def test_validation_rejects_bad_ref_url_and_extra_fields_before_http() -> None:
     router = Router(lambda _request: (_ for _ in ()).throw(AssertionError("network")))
     client, _router = await _session(router)
     try:
         short = await client.call_tool(
             "cursor_create_agent",
-            {"repository": "https://github.com/acme/demo", "starting_ref": _SHA, "prompt": "x"},
+            {"repository": "https://github.com/acme/demo", "starting_ref": "not a ref", "prompt": "x"},
         )
         nested = await client.call_tool(
             "cursor_create_agent",

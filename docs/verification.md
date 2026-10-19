@@ -1,5 +1,19 @@
 # Verification
 
+## API re-read and real probes (October 19, 2026)
+
+The OpenAPI grew from 59 KB to 114 KB since September 30 (etag `57a4cf20b2db5ce669b8c9a8beed34d6`). `scripts/probe_api.py` checked live what it changed or left unclear. It sends raw HTTP and prints no text, prompt or secret value.
+
+- **Free GETs:**
+  - `GET /v1/agents` without `includeArchived` returned the same 8 `ARCHIVED` agents out of 100 as `includeArchived=true`, against 0 with `false`. The default is `true`, as the spec says; the tool descriptions said otherwise and are fixed.
+  - `GET /v0/agents/{id}/conversation` on an agent created through v1 answered `200`: 63 messages with fields `id`, `type` and `text`, typed `user_message` or `assistant_message`. This is the base of `cursor_read_conversation`.
+  - `GET /v0/private-workers/pools` and `/summary` answered `200` with a **user** key (0 pools), although the endpoints page reserves them to service-account keys.
+  - `GET /v1/environments` answered `200`: 20 environments on the first page, with fields `id`, `name`, `owner`, `repos`, `createdAt` and `updatedAt`.
+- **Paid**, `composer-2.5` with `fast=false`, three agents deleted at the end:
+  - a 40-character commit SHA in `startingRef`: `201`. It was `400` on October 1. The local refusal is removed.
+  - two repositories on an unnamed cloud environment: `201`. The rule "several repositories require a named pool" now applies to self-hosted workers only.
+  - `envVars`: the variable reached the VM (`len=24` reported for 24 characters sent). The beta flag of the spec does not apply to this account.
+
 ## Tool call truncation flags verified live (October 9, 2026)
 
 One-off paid check of the only contract point the 0.4.0 change had left unverified: the `truncated.args` / `truncated.result` flags of `tool_call` events.

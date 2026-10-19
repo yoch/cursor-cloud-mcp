@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/cursor-cloud-mcp)](https://pypi.org/project/cursor-cloud-mcp/)
 [![License: MIT](https://img.shields.io/pypi/l/cursor-cloud-mcp)](https://github.com/yoch/cursor-cloud-mcp/blob/main/LICENSE)
 
-Drive [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent) (formerly Background Agents) from any MCP client: Claude Code, Codex CLI or OpenCode. This local stdio MCP server exposes the Cursor Cloud Agents v1 REST API as seventeen tools: create a Cloud agent, choose its model, send follow-up runs, supervise a fleet of agents, read results, usage and cost, then archive or delete. It is not an orchestration platform.
+Drive [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent) (formerly Background Agents) from any MCP client: Claude Code, Codex CLI or OpenCode. This local stdio MCP server exposes the Cursor Cloud Agents v1 REST API as nineteen tools: create a Cloud agent, choose its model, send follow-up runs, supervise a fleet of agents, read results, usage and cost, then archive or delete. It is not an orchestration platform.
 
 To have an agent install or use it, give it [`AGENT_GUIDE.md`](https://github.com/yoch/cursor-cloud-mcp/blob/main/AGENT_GUIDE.md): client setup, usage patterns, recovery and troubleshooting. Each tool's description, seen by every MCP client, is the reference for its parameters and fields.
 
@@ -43,17 +43,19 @@ The server reads the process environment only, never a `.env` file. No tool chan
 
 | Tool | Does |
 |---|---|
-| `cursor_get_account` | Checks the key. |
+| `cursor_get_account` | Checks the key and reports what this server allows (writes, deletion, default model, journal). |
 | `cursor_list_models` | Compact model catalog: parameters, defaults, reasoning parameter (`brief`, `query`). |
 | `cursor_list_repositories` | GitHub repositories visible to Cursor (rate-limited by the API, cached 5 min). |
+| `cursor_list_environments` | Saved environments and self-hosted pools (the valid `env_name` values), and an environment's active build. |
 | `cursor_list_agents` | Agents, one page at a time; `name` filters locally. |
 | `cursor_supervise` | A fleet in one call: each agent's latest run, optionally stream activity and spend. |
 | `cursor_get_agent` | Agent metadata, url, latest run, recorded model. |
-| `cursor_create_agent` | **Paid.** Creates an agent and starts its first run. |
+| `cursor_create_agent` | **Paid.** Creates an agent and starts its first run; prompts may carry images. |
 | `cursor_create_run` | **Paid.** Follow-up run on the same agent; `replace_active` cancels a run in progress first. |
 | `cursor_list_runs` | An agent's runs, newest first. |
 | `cursor_get_run` | State, final result, branches; waits up to 60 s; `activity` adds what the stream shows. |
 | `cursor_read_run_events` | Stream excerpt, resumable, or the last N events (`tail`). |
+| `cursor_read_conversation` | An agent's whole conversation as text, every run included (legacy v0 endpoint). |
 | `cursor_cancel_run` | Cancels, then re-reads to confirm. Pushed commits stay. |
 | `cursor_get_usage` | Tokens and cost in US cents, per agent or per run. |
 | `cursor_list_artifacts` / `cursor_read_artifact` | Files under `artifacts/` (the API list is often empty: ask agents for their result in the final answer). |
@@ -76,7 +78,7 @@ The left column is a limit of the API, measured on real runs; the right column i
 | No listing of runs across agents | `cursor_supervise`: one call, parallel reads |
 | The model of an agent or a run is never returned | creations return the effective selection and warn about catalog defaults (such as `fast=true`); a local journal records each model sent and reads it back as `model` |
 | No quota or account spend | `cursor_supervise(usage=true)` sums a fleet's charged cost |
-| `starting_ref` as a full SHA is refused by the API | refused locally, before sending: use a branch name |
+| No conversation in v1 | `cursor_read_conversation` reads the legacy v0 one, flagging the turns Cursor injects |
 
 Activity is what the stream last showed, not a view inside the VM. The API cannot choose the CPU, RAM or GPU of a Cursor VM: `env_type` `pool` or `machine` targets the user's own workers.
 

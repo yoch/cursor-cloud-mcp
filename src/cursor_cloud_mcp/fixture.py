@@ -55,6 +55,19 @@ class FixtureTransport(httpx.AsyncBaseTransport):
             return _json(200, {"items": [{"url": "https://github.com/example/demo"}]})
         if request.method == "GET" and path == "/v1/agents":
             return self._list_agents(request)
+        if request.method == "GET" and path.startswith("/v0/agents/") and path.endswith("/conversation"):
+            agent_id = path.split("/")[3]
+            if agent_id not in self.agents:
+                return _error(404, "agent_not_found", "Unknown agent.")
+            messages = [
+                {"id": "m1", "type": "user_message", "text": "Simulated prompt."},
+                {"id": "m2", "type": "assistant_message", "text": "Simulated reply."},
+            ]
+            return _json(200, {"id": agent_id, "messages": messages})
+        if request.method == "GET" and path == "/v0/private-workers/pools":
+            return _json(200, {"pools": [_POOL]})
+        if request.method == "GET" and path.startswith("/v1/environments"):
+            return _environment_route(path)
         if request.method == "POST" and path == "/v1/agents":
             return self._create_agent(request)
         parts = [part for part in path.split("/") if part]
@@ -398,6 +411,48 @@ def _body(request: httpx.Request) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {}
     return payload
+
+
+_ENV_ID = "00000000-0000-4000-8000-0000000000e1"
+_BUILD_ID = "bld-20261019-00000000-0000-4000-8000-0000000000b1"
+_ENVIRONMENT = {
+    "id": _ENV_ID,
+    "name": "Fixture workspace",
+    "owner": "personal",
+    "repos": [{"url": "https://github.com/example/demo"}],
+    "createdAt": _NOW,
+    "updatedAt": _NOW,
+}
+_POOL = {
+    "scope": "team",
+    "poolName": "fixture-pool",
+    "repoUrl": "https://github.com/example/demo",
+    "connectedWorkerCount": 2,
+    "inUseWorkerCount": 1,
+    "isStale": False,
+}
+
+
+def _environment_route(path: str) -> httpx.Response:
+    if path == "/v1/environments":
+        return _json(200, {"items": [_ENVIRONMENT]})
+    if path == f"/v1/environments/{_ENV_ID}":
+        return _json(200, _ENVIRONMENT)
+    if path == f"/v1/environments/{_ENV_ID}/builds/active":
+        return _json(200, {"type": "build", "buildId": _BUILD_ID})
+    if path == f"/v1/environments/{_ENV_ID}/builds/{_BUILD_ID}":
+        build = {
+            "id": _BUILD_ID,
+            "environmentId": _ENV_ID,
+            "status": "SUCCEEDED",
+            "trigger": "CONFIG_CHANGE",
+            "draft": False,
+            "createdAt": _NOW,
+            "updatedAt": _NOW,
+            "completedAt": _NOW,
+        }
+        return _json(200, build)
+    return _error(404, "environment_not_found", "Unknown environment.")
 
 
 def _json(status: int, payload: dict[str, Any]) -> httpx.Response:

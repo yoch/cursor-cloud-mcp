@@ -296,7 +296,7 @@ async def test_unknown_reasoning_value_does_not_post() -> None:
     assert all(call[0] == "GET" for call in router.calls)
 
 
-async def test_named_cloud_with_repos_and_unpooled_multi_repo_are_local_errors() -> None:
+async def test_named_cloud_with_repos_and_multi_repo_on_a_machine_are_local_errors() -> None:
     router = Router(lambda _request: (_ for _ in ()).throw(AssertionError("network")))
     client, _router = await _session(router)
     try:
@@ -318,6 +318,7 @@ async def test_named_cloud_with_repos_and_unpooled_multi_repo_are_local_errors()
                     {"url": "https://github.com/acme/demo", "starting_ref": _BRANCH},
                     {"url": "https://github.com/acme/other", "starting_ref": _BRANCH},
                 ],
+                "env_type": "machine",
             },
         )
     finally:

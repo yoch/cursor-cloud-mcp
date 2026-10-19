@@ -2,7 +2,18 @@
 
 Instructions for an agent that must install or use this MCP server. Read this file in full before acting. The details of the API contract are in `docs/api-contract.md`.
 
-This server is local, over stdio. It exposes seventeen tools for the Cursor Cloud Agents v1 REST API. It is used to create a Cloud session, choose the model and the reasoning level, send a command, read the result, then archive or delete the session. It is not an orchestration platform. The package is published on PyPI as `cursor-cloud-mcp`.
+This server is local, over stdio. It exposes nineteen tools for the Cursor Cloud Agents v1 REST API. It is used to create a Cloud session, choose the model and the reasoning level, send a command, read the result, then archive or delete the session. It is not an orchestration platform. The package is published on PyPI as `cursor-cloud-mcp`.
+
+## Migration 0.5 → 0.6
+
+- Two read-only tools (nineteen in all):
+  - `cursor_list_environments`: saved environments (the `env_name` of `env_type` `cloud`) and self-hosted pools (the `env_name` of `pool`). With `environment_id`, one environment and its active build: `SUCCEEDED`, `FAILED`, `IN_PROGRESS` or Cursor's `universal_image`.
+  - `cursor_read_conversation`: an agent's whole conversation as text, every run included. It calls a legacy v0 endpoint that may disappear. `injected` marks `<system_notification>` turns, which Cursor adds and which are not user prompts.
+- `cursor_create_agent` and `cursor_create_run` take `images`: up to 5, each a `url` or base64 `data` with its `mime_type`. `cursor_create_agent` also takes `skip_reviewer_request`, which requires `auto_create_pr`.
+- `starting_ref` accepts a full commit SHA. A hosted VM accepts several repositories; on self-hosted workers, only a named pool does. Up to 500 repositories, and `env_name` up to 255 characters.
+- `cursor_get_account` adds `server` (writes and deletion enabled, fixture mode, default model, journal, `forward_env` names) and `service_account_key`.
+- `QUOTA` errors carry `rate_limit_limit`, `rate_limit_remaining` and `rate_limit_reset` when Cursor sends them.
+- Archived agents were always listed by default: the API's `includeArchived` defaults to `true`. Pass `include_archived=false` to hide them.
 
 ## Migration 0.4 → 0.5
 
@@ -186,7 +197,7 @@ If these reads fail, fix the configuration before any creation.
 
 Keep `agent_id` and `run_id` as soon as a creation responds. The execution state is on the run, not on the agent.
 
-Always give the user the `url` of each agent you create (`https://cursor.com/agents/bc-...`). It is the direct link to the web interface, and the user does not always find these agents in the list. An archived agent is hidden by default in that list: `cursor_list_agents` with `include_archived` set to `true` shows it. The order of `cursor_list_agents` is not guaranteed by date: search with `cursor_list_agents(name=...)`, which walks up to five pages and reports `scanned`, or with `pr_url` for a pull request's agent.
+Always give the user the `url` of each agent you create (`https://cursor.com/agents/bc-...`). It is the direct link to the web interface, and the user does not always find these agents in the list. Archived agents are listed by default (the API's `includeArchived` defaults to `true`): `cursor_list_agents` with `include_archived` set to `false` hides them. The order of `cursor_list_agents` is not guaranteed by date: search with `cursor_list_agents(name=...)`, which walks up to five pages and reports `scanned`, or with `pr_url` for a pull request's agent.
 
 ### Computation session
 
@@ -212,9 +223,11 @@ Useful parameters of `cursor_create_agent`:
 - `mode`: `agent` or `plan`.
 - `auto_create_pr`: `false` by default.
 - `agent_id`: optional. If omitted, the server generates one, but you only know it if a response reaches you (success or `MUTATION_OUTCOME_UNKNOWN`). For a sensitive creation, supply and keep an `agent_id` yourself before the call, and reuse it if the call is cut off. Also give a recognizable `name`: that is what lets you find the agent if your client gives up before any response.
-- `repository` and `starting_ref`: one repository. `starting_ref` is a branch name, not a SHA. A full SHA is refused locally, after an API refusal observed on October 1, 2026.
-- `repositories`: up to twenty repositories. Several repositories require a named pool.
-- `env_type`: `cloud`, `pool` or `machine`. A named cloud environment cannot be combined with repositories.
+- `repository` and `starting_ref`: one repository. `starting_ref` is a branch name or a full commit SHA.
+- `repositories`: up to 500 repositories. On self-hosted workers, several repositories require a named any-repo pool.
+- `env_type`: `cloud`, `pool` or `machine`, with `env_name` from `cursor_list_environments`. A named cloud environment cannot be combined with repositories.
+- `images`: up to 5 images, each a `url` or base64 `data` with `mime_type`.
+- `env_vars` / `forward_env`: Cursor's `envVars`, a beta feature silently ignored on accounts where it is not enabled. Check on the first run that a variable arrived.
 - `name`: required if you pass `env_vars` or `forward_env`, because the API then forbids `agentId`.
 
 `cursor_create_run` sends the next command to the same agent. Without `model_id`, the current model is kept. With `model_id` (and `model_params`, `reasoning_level`), the model changes for this run and the following ones; the API does not let you re-read the active model: the response's `model` and the local journal (`model` in `cursor_get_agent` and `cursor_get_run`) keep the one sent from this server. Refused if the agent is archived, if its status is unknown, or if `workOnCurrentBranch` is not explicitly `false`. A busy agent is re-read, not worked around.
@@ -269,7 +282,7 @@ This MCP server does not read the local checkout and does not replace GitHub. To
 
 1. Push that commit to a branch.
 2. Check that the head of that branch is indeed that SHA.
-3. Call `cursor_create_agent` with `repository` and `starting_ref` equal to the branch name (`release/2026`, `publication/certified-dfpn`). A 40- or 64-character SHA is refused before sending.
+3. Call `cursor_create_agent` with `repository` and `starting_ref` equal to the branch name (`release/2026`, `publication/certified-dfpn`), or to the full commit SHA itself.
 
 ```text
 Push the commit and check the branch head

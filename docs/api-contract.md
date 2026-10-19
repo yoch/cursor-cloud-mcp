@@ -1,6 +1,6 @@
 # API contract used
 
-Consulted on September 30, 2026, re-read on October 1, 2026. The raw file's fingerprint is unchanged.
+Consulted on September 30, 2026, re-read on October 1, 2026. Re-read on October 19, 2026: the spec had doubled (see the last section); the parts below are updated where this server now uses them.
 
 This document does not copy the OpenAPI. It fixes the fields this MCP server sends or reads. The officially read contract prevails over any other source. The discrepancies are listed below.
 
@@ -14,6 +14,7 @@ This document does not copy the OpenAPI. It fixes the fields this MCP server sen
 - `openapi`: `3.0.3`
 - Server: `https://api.cursor.com`
 - SHA-256 fingerprint of the raw file: `7fb350f40e928721afaba13d44377880f235f087734bc26ef51b54f7323ad209`
+- October 19, 2026: `etag: "57a4cf20b2db5ce669b8c9a8beed34d6"`, 114038 bytes, SHA-256 `d6bf8a5740df6ac252ab14f9858a7406830bc175a05528f21e60468b559dc5a3`
 
 Authentication chosen: `Authorization: Bearer`. The OpenAPI also accepts Basic with the key as the username and an empty password. Both schemes are documented as equivalent. No redirect is followed.
 
@@ -38,25 +39,33 @@ Authentication chosen: `Authorization: Bearer`. The OpenAPI also accepts Basic w
 | `POST /v1/agents/{id}/archive` | 200 `IdResponse` | `cursor_archive_agent` |
 | `POST /v1/agents/{id}/unarchive` | 200 `IdResponse` | `cursor_archive_agent` with `unarchive=true` |
 | `DELETE /v1/agents/{id}` | 200 `IdResponse` | `cursor_delete_agent` |
+| `GET /v1/environments` | 200 `ListEnvironmentsResponse` | `cursor_list_environments` |
+| `GET /v1/environments/{id}` | 200 `GetEnvironmentResponse` | `cursor_list_environments(environment_id)` |
+| `GET /v1/environments/{id}/builds/active` | 200 `EnvironmentActiveBuild` | same |
+| `GET /v1/environments/{id}/builds/{buildId}` | 200 `EnvironmentBuild` | same |
+| `GET /v0/private-workers/pools` | 200, endpoints page only | `cursor_list_environments`, first page, best effort |
+| `GET /v0/agents/{id}/conversation` | 200, legacy v0 page only | `cursor_read_conversation` |
 
 ## Fields sent
 
 `POST /v1/agents`, only the keys provided, never `null`:
 
 - `prompt.text`: required, non-empty
-- `repos`: zero to twenty elements `{ "url", "startingRef" }`. Absent if there is no repository. `startingRef` is a branch name. The OpenAPI schema types it as `string`, but a real trial on October 1, 2026 received `400 validation_error` for a full 40-character SHA, and `201` for the branch name whose head was that SHA
+- `repos`: zero to 500 elements `{ "url", "startingRef" }`. Absent if there is no repository. `startingRef` is a branch name or a full commit SHA: a SHA got `400 validation_error` on October 1, 2026 and `201` on October 19, 2026. On self-hosted workers, only a named any-repo pool takes more than one repository; a hosted VM took two on October 19
+- `prompt.images`: up to 5, each `{url}` or `{data, mimeType}` (png, jpeg, gif, webp, 15 MB decoded), with an optional `dimension`; checked locally, never logged
+- `skipReviewerRequest`: `true` only, and only with `autoCreatePR`
 - `workOnCurrentBranch`: always `false`
 - `autoCreatePR`: boolean, `false` unless the caller asks for `true`
 - `agentId`: `bc-` followed by a UUID, supplied or generated once before sending. Absent when `envVars` is sent: the API forbids both together
 - `name`, `model` (`id` and optionally `params[{id,value}]`), `mode` (`agent` or `plan`): only if provided
 - `env`: `{ "type": "cloud" | "pool" | "machine", "name"? }` only if provided
-- `envVars`: object of strings, at most 50, only if provided. Names do not start with `CURSOR_`
+- `envVars`: object of strings, at most 50, only if provided. Names do not start with `CURSOR_`. The October 19 spec marks it beta, "silently ignored" where not enabled; it reached the VM on the account tested that day
 
 `model.id` is a catalog id; an alias is accepted only if it designates a single model, and it is sent as that id. `model.params` is checked against `GET /v1/models` before sending: each value, then the combination, which must fit in at least one published variant (the real catalog of October 5, 2026 omits 5 combinations out of 20 for `gpt-5.5`). `reasoning_level` is placed in the first parameter present among `effort`, `reasoning_effort` and `reasoning`.
 
-`POST /v1/agents/{id}/runs`: `prompt.text`, and `mode` and `model` (same shape and same check as for creation) only if provided.
+`POST /v1/agents/{id}/runs`: `prompt.text`, and `prompt.images`, `mode` and `model` (same shape and same check as for creation) only if provided.
 
-`GET /v1/agents` and `GET /v1/agents/{id}/runs`: `limit` (1 to 100) and `cursor` only if provided. `GET /v1/agents` adds `includeArchived` and `prUrl` only if provided. The API refuses any other filter (`400`, "Unrecognized key(s)", verified on October 5, 2026 for `name`, `q`, `search`, `status`, `sort`): the name search of `cursor_list_agents` therefore walks at most five pages of one hundred and filters locally.
+`GET /v1/agents` and `GET /v1/agents/{id}/runs`: `limit` (1 to 100) and `cursor` only if provided. `GET /v1/agents` adds `includeArchived` and `prUrl` only if provided. `includeArchived` defaults to `true`: archived agents are listed unless `false` is sent (spec and observation of October 19, 2026). The API refuses any other filter (`400`, "Unrecognized key(s)", verified on October 5, 2026 for `name`, `q`, `search`, `status`, `sort`): the name search of `cursor_list_agents` therefore walks at most five pages of one hundred and filters locally.
 
 `GET /v1/agents/{id}/runs/{runId}/stream`: `Last-Event-ID` header only if provided. Reading stops on `done`, `result` or `error`, at the local deadline, or at 1 MB. `error` is a stream error, returned as `stream_error`: only `result` and `done` mark `finished`. UTF-8 decoding is incremental, so that a character split between two network chunks stays intact. `heartbeat` and `interaction_update` are not returned to the caller. Consecutive `assistant` (and `thinking`) fragments, sent word by word by the API, are merged into one event of at most 4000 characters, which carries the identifier of the last fragment. The `tail` mode and the activity summary send no `Last-Event-ID`: they walk the whole replay (see "Stream replay and supervision" below).
 
@@ -88,9 +97,9 @@ Created `agentId`: `^bc-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 
 Documented body: `{ "error": { "code", "message", "helpUrl"?, "provider"? } }`. `helpUrl` (HTTPS only) and `provider` are rendered in `help_url` and `provider` when present, for example for `integration_not_connected`. `invalid_last_event_id` carries a resume instruction without a cursor.
 
-Codes cited by the schema: `unauthorized`, `api_key_not_found`, `plan_required`, `role_forbidden`, `feature_unavailable`, `integration_not_connected`, `validation_error`, `missing_body`, `invalid_model`, `invalid_branch_name`, `repository_required`, `repository_access`, `pr_resolution_failed`, `artifact_not_found`, `service_account_required`, `agent_not_found`, `run_not_found`, `agent_busy`, `agent_archived`, `agent_id_conflict`, `run_not_cancellable`, `rate_limit_exceeded`, `usage_limit_exceeded`, `stream_expired`, `stream_unavailable`, `invalid_last_event_id`, `client_cancelled`, `not_implemented`, `upstream_error`, `internal_error`.
+Codes cited by the schema: `unauthorized`, `api_key_not_found`, `plan_required`, `role_forbidden`, `feature_unavailable`, `integration_not_connected`, `validation_error`, `missing_body`, `invalid_model`, `invalid_branch_name`, `repository_required`, `repository_access`, `pr_resolution_failed`, `artifact_not_found`, `service_account_required`, `agent_not_found`, `run_not_found`, `agent_busy`, `agent_archived`, `agent_id_conflict`, `run_not_cancellable`, `rate_limit_exceeded`, `usage_limit_exceeded`, `stream_expired`, `stream_unavailable`, `invalid_last_event_id`, `client_cancelled`, `not_implemented`, `upstream_error`, `internal_error`. Added by October 19: `environment_not_found`, `build_not_found`, `team_admin_required`, `environment_name_conflict`, `duplicate_json_key`, plus secret-specific codes on the secret endpoints. `stream_expired` and `stream_unavailable` are classified by code before the status.
 
-Statuses used for classification: 400 validation, 401 authentication, 403 permissions (`feature_unavailable` included), 404 missing resource, 409 conflict, 410 expired stream, 429 quota. The 429 may carry `Retry-After`. Without this header, a single GET retry waits one second, within the deadline. The OpenAPI also mentions `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`. No request identifier is specified: the `x-request-id`, `request-id` and `x-cursor-request-id` headers are kept only if present.
+Statuses used for classification: 400 validation, 401 authentication, 403 permissions (`feature_unavailable` included), 404 missing resource, 409 conflict, 410 expired stream, 429 quota. The 429 may carry `Retry-After`. Without this header, a single GET retry waits one second, within the deadline. The OpenAPI also mentions `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset`: a `QUOTA` error carries them as `rate_limit_limit`, `rate_limit_remaining` and `rate_limit_reset` when present. No request identifier is specified: the `x-request-id`, `request-id` and `x-cursor-request-id` headers are kept only if present.
 
 `GET /v1/agents/{id}/usage` may answer `403 feature_unavailable` (early access).
 
@@ -103,9 +112,9 @@ Statuses used for classification: 400 validation, 401 authentication, 403 permis
 - Per-request deadline, within this budget: 40 seconds per call, 90 seconds for `POST /v1/agents` and `POST /v1/agents/{id}/runs` (a real creation exceeded 40 seconds before succeeding), 90 seconds for `GET /v1/repositories`, because the official contract warns that this call can take tens of seconds. `cursor_get_run` with `wait_seconds` chains reads within a deadline of at most 60 seconds. `cursor_read_run_events` bounds its wait to 50 seconds.
 - `IDLE` is not in the agent's OpenAPI enum, but the endpoints page defines it. It is not rejected.
 - The SSE stream is read once, with no internal reconnection. `410 stream_expired` becomes `STREAM_EXPIRED`.
-- Artifacts, archiving, unarchiving and deletion are exposed. `prUrl` serves as a read filter (`cursor_list_agents`), not for creation. Images, `mcpServers`, `customSubagents` and `POST /v1/sub-tokens` remain out of this MCP server.
+- Artifacts, archiving, unarchiving and deletion are exposed. `prUrl` serves as a read filter (`cursor_list_agents`), not for creation. `mcpServers`, `customSubagents`, `POST /v1/sub-tokens`, environment writes and secrets remain out of this MCP server.
 - `startingRef` is ignored by Cursor when `prUrl` is supplied. This MCP server does not send `prUrl`.
-- A full SHA is not sent in `startingRef`. The caller pushes the commit to a branch and passes that branch's name in `starting_ref` (the old `starting_sha` alias was removed on October 5, 2026). This format check does not prove that the branch exists. It is a workaround dated from the October 1, 2026 observation: the REST documentation and the SDK v1.0.36 bridge say a reference may include a SHA. It will be removed only after an explicitly authorized real test.
+- A full SHA is sent as is in `startingRef` since the real test of October 19, 2026 (it was refused locally after the October 1 observation). The format check proves neither that the branch nor that the commit exists.
 - A follow-up run requires `workOnCurrentBranch` explicitly `false` and a known agent status. The schema allows this field to be absent; this MCP server treats its absence as a refusal, not as an authorization. A read, on the contrary, keeps an unknown state as is.
 - A cut after a mutation is sent — headers received or not, during the reading, decoding or closing of the body — yields `MUTATION_OUTCOME_UNKNOWN` with the known identifiers, HTTP status and request id. No mutation is replayed. A close error after a complete body (according to `Content-Length`) does not overwrite the result.
 - No schema field chooses the CPU, RAM or GPU size of a Cursor VM. `env.type` `pool` or `machine` targets a self-hosted worker.
@@ -119,19 +128,19 @@ Re-read on October 5, 2026 against the code of the official Python SDK `cursor-s
 |---|---|---|---|---|
 | Creation, follow-up run, cancellation, archiving, deletion | yes | yes | yes | yes (October 1 and 5, 2026) |
 | `startingRef` as a branch name | yes | yes | yes | yes |
-| `startingRef` as a full SHA | refused locally | announced | announced | refused (400) on October 1, 2026 |
+| `startingRef` as a full SHA | yes | announced | announced | refused (400) on October 1, 2026; accepted (201) on October 19, 2026 |
 | `prUrl` filter of `GET /v1/agents` | yes (`pr_url`) | yes | yes | yes (October 5, 2026) |
 | Raw / charged cost (`cost`) | yes (`cursor_get_usage`) | no | yes | yes (October 5, 2026) |
 | Run error (`Run.error`) | yes, if present | no | yes | never observed: absent from the `ERROR` runs re-read on October 5, 2026 |
 | `helpUrl`, `provider` of errors | yes | yes | yes | no |
-| Images in the prompt | no | yes | yes | no |
+| Images in the prompt | yes (`images`) | yes | yes | no |
 | Remote MCP servers (`mcpServers`) | no | yes | yes | no |
 | Custom subagents | no | yes | yes | no |
 | Idempotency key (`Idempotency-Key`, creation and send) | no (`agentId` fixed before sending instead) | no | yes (uuid4 per creation) | **ignored** (October 5, 2026, see below) |
 | Model per send (`model` on `POST .../runs`) | yes (`model_id` of `cursor_create_run`) | no | yes | **yes, and persistent** (October 5, 2026, see below) |
 | Environment variables limited to one run | no | no | yes | no |
 | Agent metadata (`metadata`) | no | no | yes | no |
-| Conversation of a run | no (SSE stream and `cursor_get_run`) | no | yes, rebuilt client-side from `interaction_update` | no |
+| Conversation of an agent | yes (`cursor_read_conversation`, legacy v0 endpoint) | no | yes, rebuilt client-side from `interaction_update` | v0 answered for a v1 agent (October 19, 2026) |
 | Observation with resume by ordinal (`observe`) | no | no | bridge only | no |
 | Liveness of a running run | yes (`last_event_at` from event ids) | no (`updatedAt` frozen) | no | yes (October 6, 2026) |
 | Reading the end of a stream | yes (full replay walk) | no | no | no server-side tail (October 6, 2026) |
@@ -172,3 +181,15 @@ GET requests only, on the account's real runs.
 - **An `ERROR` run carries no cause**: the only one younger than 24 hours ended its stream with `status: ERROR`, a `result` event without text or error, and `done`, after 4 h 27 min. Its last tool call was an `await` on a background task, still `running`.
 - **Background tasks are visible**: a `run_terminal_cmd` launched in the background returns `success.shellId` (the task id), `pid` and the command; `await` returns `success.stillRunning {taskId, runtimeMs, …}` or `success.complete {taskId, runtimeMs, …}`.
 - **No run listing across agents**: `GET /v1/agents` returns `latestRunId`, not the run's status.
+
+## October 19, 2026 re-read: what the spec added
+
+The OpenAPI doubled (59 KB to 114 KB). What this server uses is in the sections above; the rest is listed here, with the reason it is left out.
+
+- **Used:** `GET /v1/environments`, `GET /v1/environments/{id}`, `.../builds/active`, `.../builds/{buildId}` (read-only `cursor_list_environments`); `prompt.images` on creation and follow-up; `skipReviewerRequest`; the `X-RateLimit-*` headers.
+- **Left out, mutations or secrets:** `POST`/`PATCH`/`DELETE /v1/environments[/{id}]`; environment history and build lists; `GET`/`PUT`/`DELETE` on environment and team secrets, and the `GET /v1/secrets` inventory; `POST /v1/sub-tokens` (agent-scoped service-account keys only). `mcpServers` (stdio or remote, with headers or OAuth) and `customSubagents` (up to 20) on creation, and `mcpServers` on follow-ups.
+- **Legacy v0 still documented:** `/v0/private-workers` (workers, summary, pools, pending requests, claims, tokens) for self-hosted machines; the v0 agents page, labeled legacy, "available during the migration window", with webhooks (`webhook{url, secret}`, event `statusChange`, HMAC-SHA256 signature) and `GET /v0/agents/{id}/conversation`. v1 webhooks are "coming soon".
+- **Agent statuses:** the enum is `ACTIVE`, `ARCHIVED`; `IDLE`, still observed, stays accepted.
+- **Stream event ids:** the spec now calls them opaque ("Do not parse"). `last_event_at` and `idle_seconds` still read them as millisecond timestamps, an observed format; an id that does not match yields no time rather than a wrong one.
+- **Still absent:** the model in agent, run and usage responses; `cost` in the usage schema (returned by the real API); `Run.error`.
+
