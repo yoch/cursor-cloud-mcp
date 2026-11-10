@@ -4,6 +4,20 @@ Instructions for an agent that must install or use this MCP server. Read this fi
 
 This server is local, over stdio. It exposes nineteen tools for the Cursor Cloud Agents v1 REST API. It is used to create a Cloud session, choose the model and the reasoning level, send a command, read the result, then archive or delete the session. It is not an orchestration platform. The package is published on PyPI as `cursor-cloud-mcp`.
 
+## Unreleased, after 0.6.0
+
+From the Cursor spec of November 9, 2026 and real reads of November 10. "Not verified live" means the request shape is tested against the spec only: no real run could be created that day.
+
+- `cursor_create_run(delivery="steer")` adds a prompt to the run in progress instead of being refused with `AGENT_BUSY`. It takes only `prompt` and `images`. The result carries `delivery`: `steered` (`run_id` is the running run, no new run) or `queued` (the prompt is the agent's next follow-up, no `run_id`: re-read `cursor_get_agent`). Never send a steer twice, also after `MUTATION_OUTCOME_UNKNOWN`: a delivered steer creates no run, so look for the prompt in the run's events or the conversation instead. `PERMISSION` with `remote_code: feature_unavailable` means the account does not have it: `replace_active=true` remains. Not verified live beyond the API's body validation. **`run_id` and `status` of `cursor_create_run` are now optional**: both are absent on a queued steer.
+- `cursor_create_run` takes `env_vars` and `forward_env`, for that run only. Not verified live.
+- `WAITING_FOR_BACKGROUND_WORK` is a known, non-terminal run status (it was reported with `status_known: false`). Not observed live.
+- `cursor_get_usage`: a run whose token counts are all zero carries `no_usage_recorded: true`; `runs_without_usage` counts them and `warnings` says the zeros are not a cost of zero. `cursor_supervise(usage=true)` gives an agent with such an ended run `no_usage_recorded: true` (a run still in progress is not counted; `charged_cents` is then shown only if something was charged), and `summary.no_usage_recorded` lists those agents, for which the total is a lower bound. Seen live: agents created on a unified Cursor and Grok account reported zero tokens after minutes of work.
+- `cursor_list_models`: `default_max_mode: true` when the catalog flags the default variant Max Mode, and with `model_id`, `max_mode_variants`. A creation or follow-up whose effective selection is such a variant returns `model.max_mode: true` and a warning. The flag is not written to the local journal, so `model` read back later does not carry it; its `params` do.
+- `cursor_get_account` adds `api_key_type` (`crsr`, `grok` or `other`, from the configured key's prefix) and `notes`.
+- `cursor_list_environments` takes the API's filters: `query`, `owner`, `named`, `repositories`. They are refused with `environment_id`.
+- Cursor's "Blocked by privacy setting" refusal is now `PERMISSION`, with a `recovery` saying the arguments are not the cause; it used to read "Parameters rejected.". Seen live on `cursor_list_environments` with a `grok_` key, while a `crsr_` key of the same account was accepted.
+- Environment variable names containing `CURSOR_SANDBOX` (any letter case) are refused locally, as the spec now says.
+
 ## Migration 0.5 → 0.6
 
 - Two read-only tools (nineteen in all):
@@ -243,7 +257,7 @@ What the API does not tell you, measured on October 6, 2026. These are API limit
 - `FINISHED` means the agent ended its turn, not that its job is done. Jobs it started in the background may have been killed or may still be running.
 - A `RUNNING` run keeps `updated_at` at its creation time, even after hours: it is not a liveness signal.
 - An `ERROR` run carries no cause: neither `error` nor `result`.
-- A run in progress cannot receive a message: a follow-up answers `AGENT_BUSY`.
+- A run in progress refuses an ordinary follow-up (`AGENT_BUSY`). Since November 2026 the API takes a steer instead (`delivery="steer"`), where the account has it.
 - The stream can only be replayed from its start.
 
 What to use instead:
@@ -253,6 +267,7 @@ cursor_supervise(name="runner")                 every runner, latest run, one ca
 cursor_supervise(name="runner", activity=true)  + last_event_at, idle_seconds, background tasks (about 30-60 s)
 cursor_get_run(agent_id, run_id, activity=true) detail of one run: last text, last tool call, background tasks
 cursor_read_run_events(..., tail=20)            the last 20 events
+cursor_create_run(..., delivery="steer")        add a message to the run in progress, cancelling nothing
 cursor_create_run(..., replace_active=true)     redirect a runner: stop its run, then follow up
 ```
 
