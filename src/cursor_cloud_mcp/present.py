@@ -5,7 +5,15 @@ import logging
 from typing import Literal
 
 from cursor_cloud_mcp import __version__
-from cursor_cloud_mcp.catalog import default_selection, find_model, reasoning_parameter, restricted
+from cursor_cloud_mcp.catalog import (
+    default_max_mode,
+    default_selection,
+    find_model,
+    max_mode_selections,
+    projected_variants,
+    reasoning_parameter,
+    restricted,
+)
 from cursor_cloud_mcp.config import CONVERSATION_TEXT_TOTAL_MAX_CHARS, RESULT_MAX_LIMIT, Settings
 from cursor_cloud_mcp.errors import ErrorCode, failure
 from cursor_cloud_mcp.models import (
@@ -43,6 +51,7 @@ from cursor_cloud_mcp.models import (
     RemoteRepositoryList,
     RemoteRun,
     RemoteRunPage,
+    RemoteSteer,
     RemoteUsage,
     RepositoryListView,
     RepoView,
@@ -72,6 +81,24 @@ _REUSED_NEXT_STEP = (
 )
 
 
+_GROK_KEY_NOTE = (
+    "grok_ key: Cursor documents that its secrets API refuses this key type (key_not_supported). "
+    "A PERMISSION error whose message contains \"Blocked by privacy setting\" is about this key, "
+    "not about the call's arguments."
+)
+
+
+def api_key_type(api_key: str | None) -> Literal["crsr", "grok", "other"] | None:
+    """The key's family from its prefix. Only a fixed literal leaves this function, never part of the key."""
+    if not api_key:
+        return None
+    if api_key.startswith("crsr_"):
+        return "crsr"
+    if api_key.startswith("grok_"):
+        return "grok"
+    return "other"
+
+
 def account_view(remote: RemoteAccount, settings: Settings | None = None) -> AccountView:
     view = AccountView(
         api_key_name=remote.apiKeyName,
@@ -82,7 +109,16 @@ def account_view(remote: RemoteAccount, settings: Settings | None = None) -> Acc
         user_last_name=remote.userLastName,
         service_account_key=(remote.userId is None and remote.userEmail is None) or None,
     )
-    return view if settings is None else view.model_copy(update={"server": server_status(settings)})
+    if settings is None:
+        return view
+    kind = api_key_type(settings.api_key)
+    return view.model_copy(
+        update={
+            "api_key_type": kind,
+            "notes": [_GROK_KEY_NOTE] if kind == "grok" else None,
+            "server": server_status(settings),
+        }
+    )
 
 
 def server_status(settings: Settings) -> ServerStatusView:
@@ -113,12 +149,13 @@ def model_list_view(
     """Compact catalog. With model_id, a single model and its valid variants."""
     if model_id is not None:
         model = find_model(remote, model_id)
-        variants = [
-            {item.id: item.value for item in variant.params if item.id in _published(model)}
-            for variant in model.variants or []
-        ]
+        variants = [values for _variant, values in projected_variants(model)]
         unique = [item for index, item in enumerate(variants) if item and item not in variants[:index]]
-        return ModelListView(items=[_model_view(model).model_copy(update={"variants": unique or None})])
+        # An empty selection (a model without parameters) is told by default_max_mode alone.
+        flagged = [item for item in max_mode_selections(model) if item]
+        return ModelListView(
+            items=[_model_view(model).model_copy(update={"variants": unique or None, "max_mode_variants": flagged or None})]
+        )
     models = remote.items
     if query is not None:
         needle = query.casefold()
@@ -130,7 +167,12 @@ def model_list_view(
     if brief:
         return ModelListView(
             items=[
-                ModelBriefView(id=model.id, aliases=model.aliases or None, defaults=default_selection(model))
+                ModelBriefView(
+                    id=model.id,
+                    aliases=model.aliases or None,
+                    defaults=default_selection(model),
+                    default_max_mode=default_max_mode(model) or None,
+                )
                 for model in models
             ]
         )
@@ -149,11 +191,8 @@ def _model_view(model: RemoteModel) -> ModelView:
         defaults=default_selection(model),
         reasoning_param=None if reasoning is None else reasoning.id,
         restricted_combinations=restricted(model) or None,
+        default_max_mode=default_max_mode(model) or None,
     )
-
-
-def _published(model: RemoteModel) -> set[str]:
-    return {parameter.id for parameter in model.parameters or []}
 
 
 def repository_list_view(
@@ -384,6 +423,39 @@ def reused_agent_view(remote: RemoteAgent) -> CreateAgentView:
     )
 
 
+_STEERED_NEXT_STEP = (
+    "steered: this running run took the prompt and reads it at its next safe step; no new run was created. "
+    "Follow run_id with cursor_get_run or cursor_read_run_events. If that run ends first, the prompt starts the "
+    "agent's next run: re-read cursor_get_agent for latest_run_id. Do not send the prompt again."
+)
+_STEERED_NO_RUN_NEXT_STEP = (
+    "steered, but the API named no run: the agent had no active run when it took the prompt. "
+    "Re-read cursor_get_agent for latest_run_id, then follow that run. Do not send the prompt again."
+)
+_QUEUED_NEXT_STEP = (
+    "No running turn took the prompt: it is the agent's next follow-up, and the API returns no run id for it. "
+    "Re-read cursor_get_agent until latest_run_id changes, then follow that run. Do not send the prompt again."
+)
+
+
+def steer_view(remote: RemoteSteer, *, agent_id: str, previous_latest_run_id: str | None, url: str | None) -> CreateRunView:
+    """A steer's answer. No run id is invented: a queued prompt, or a steer with no active run, has none."""
+    steered = remote.delivery == "steered"
+    run_id = remote.runId if steered else None
+    if not steered:
+        next_step = _QUEUED_NEXT_STEP
+    else:
+        next_step = _STEERED_NEXT_STEP if run_id is not None else _STEERED_NO_RUN_NEXT_STEP
+    return CreateRunView(
+        agent_id=agent_id,
+        run_id=run_id,
+        delivery=remote.delivery,
+        previous_latest_run_id=previous_latest_run_id,
+        url=url,
+        next_step=next_step,
+    )
+
+
 def create_run_view(remote: RemoteCreateRun, *, previous_latest_run_id: str | None, url: str | None) -> CreateRunView:
     return CreateRunView(
         agent_id=remote.run.agentId,
@@ -426,20 +498,35 @@ def cancel_view(
 
 
 def usage_view(remote: RemoteUsage) -> UsageView:
+    runs = [
+        RunUsageView(
+            run_id=item.id,
+            usage_uuid=item.usageUuid,
+            usage=tokens_from(item.usage),
+            cost=_cost(item.cost),
+            charged_cents_per_million_tokens=_rate(item.cost, item.usage.totalTokens),
+            # On tokens, never on the charged cost: a run covered by the plan is charged zero with real usage.
+            no_usage_recorded=item.usage.totalTokens == 0 or None,
+        )
+        for item in remote.runs
+    ]
+    silent = sum(1 for row in runs if row.no_usage_recorded)
+    warnings = None
+    if silent:
+        warnings = [
+            (
+                f"{silent} of {len(runs)} run(s) report no usage (every token count is zero). The API returns zeros "
+                "when it recorded nothing: this is not a measured cost of zero, and the totals leave these runs out. "
+                "A run that just started may simply not have reported yet."
+            )
+        ]
     return UsageView(
         total_usage=tokens_from(remote.totalUsage),
         total_cost=_cost(remote.cost),
         charged_cents_per_million_tokens=_rate(remote.cost, remote.totalUsage.totalTokens),
-        runs=[
-            RunUsageView(
-                run_id=item.id,
-                usage_uuid=item.usageUuid,
-                usage=tokens_from(item.usage),
-                cost=_cost(item.cost),
-                charged_cents_per_million_tokens=_rate(item.cost, item.usage.totalTokens),
-            )
-            for item in remote.runs
-        ],
+        runs=runs,
+        runs_without_usage=silent or None,
+        warnings=warnings,
     )
 
 

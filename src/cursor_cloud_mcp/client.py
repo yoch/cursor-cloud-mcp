@@ -48,6 +48,7 @@ from cursor_cloud_mcp.models import (
     RemoteRepositoryList,
     RemoteRun,
     RemoteRunPage,
+    RemoteSteer,
     RemoteUsage,
 )
 from cursor_cloud_mcp.validation import require_segment, same_id
@@ -57,6 +58,7 @@ logger = logging.getLogger(__name__)
 _REDIRECTS = {301, 302, 303, 307, 308}
 _REQUEST_ID_HEADERS = ("x-request-id", "request-id", "x-cursor-request-id")
 _RECOVERY = "Re-read the remote state before any new mutation."
+_PRIVACY_BLOCK = "Blocked by privacy setting"
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,8 @@ class MutationContext:
     run_id: str | None = None
     previous_latest_run_id: str | None = None
     lookup_name: str | None = None
+    # A steer: answered 202, creates no run, and must never be sent twice.
+    steer: bool = False
 
 
 class ResponseTooLarge(Exception):
@@ -288,16 +292,36 @@ class CursorCloudClient:
         *,
         previous_latest_run_id: str | None,
     ) -> RemoteCreateRun:
-        segment = require_segment(agent_id, label="agent_id")
-        context = MutationContext(agent_id=segment, previous_latest_run_id=previous_latest_run_id)
-        payload = await self._send(
+        context = MutationContext(agent_id=agent_id, previous_latest_run_id=previous_latest_run_id)
+        return _parse(RemoteCreateRun, await self._post_run(context, body), mutation=context)
+
+    async def steer_run(
+        self,
+        agent_id: str,
+        body: Mapping[str, object],
+        *,
+        previous_latest_run_id: str | None,
+    ) -> RemoteSteer | RemoteCreateRun:
+        """POST .../runs with ``delivery: steer``: 202. Never replayed: Cursor treats a retry as a new prompt.
+
+        A ``run`` in the answer means Cursor started a follow-up run instead: it is returned as such,
+        so its id is not lost.
+        """
+        context = MutationContext(agent_id=agent_id, previous_latest_run_id=previous_latest_run_id, steer=True)
+        payload = await self._post_run(context, body)
+        if isinstance(payload, dict) and "run" in payload:
+            return _parse(RemoteCreateRun, payload, mutation=context)
+        return _parse(RemoteSteer, payload, mutation=context)
+
+    async def _post_run(self, context: MutationContext, body: Mapping[str, object]) -> object | None:
+        segment = require_segment(context.agent_id or "", label="agent_id")
+        return await self._send(
             "POST",
             f"/v1/agents/{quote(segment, safe='')}/runs",
             json_body=dict(body),
             deadline=self._create_deadline,
             mutation=context,
         )
-        return _parse(RemoteCreateRun, payload, mutation=context)
 
     async def cancel_run(self, agent_id: str, run_id: str) -> RemoteId:
         agent = require_segment(agent_id, label="agent_id")
@@ -358,11 +382,18 @@ class CursorCloudClient:
         )
         return _parse(RemoteId, payload, mutation=context)
 
-    async def list_environments(self, *, limit: int | None, cursor: str | None) -> RemoteEnvironmentPage:
+    async def list_environments(
+        self,
+        *,
+        limit: int | None,
+        cursor: str | None,
+        filters: Mapping[str, str | list[str]] | None = None,
+    ) -> RemoteEnvironmentPage:
+        # A list value is sent as a repeated key: the API's repo filter is repeatable.
         return await self._get_model(
             "/v1/environments",
             RemoteEnvironmentPage,
-            query=_page_query(limit, cursor),
+            query={**(filters or {}), **_page_query(limit, cursor)},
             deadline=self._deadline,
         )
 
@@ -425,7 +456,7 @@ class CursorCloudClient:
         path: str,
         model: type[M],
         *,
-        query: Mapping[str, str] | None = None,
+        query: Mapping[str, str | list[str]] | None = None,
         deadline: float,
         max_bytes: int | None = None,
     ) -> M:
@@ -437,7 +468,7 @@ class CursorCloudClient:
         method: str,
         path: str,
         *,
-        query: Mapping[str, str] | None = None,
+        query: Mapping[str, str | list[str]] | None = None,
         json_body: Mapping[str, object] | None = None,
         deadline: float,
         mutation: MutationContext | None,
@@ -689,7 +720,9 @@ def _interpret_bytes(
     mutation: MutationContext | None,
     request_id: str | None,
 ) -> object | None:
-    if status not in {200, 201}:
+    # 202 is a success for a steer only (POST .../runs with delivery).
+    accepted = status in {200, 201} or (status == 202 and mutation is not None and mutation.steer)
+    if not accepted:
         raise _status_from(
             status,
             headers,
@@ -800,7 +833,16 @@ def _redirect_failure(
     )
 
 
+_STEER_RECOVERY = (
+    "Do not send this steer again: Cursor treats a repeat as a new prompt. A delivered steer creates no run, "
+    "so latest_run_id does not tell whether it arrived: look for the prompt in the run's events "
+    "(cursor_read_run_events with tail) or in cursor_read_conversation."
+)
+
+
 def _recovery_for(mutation: MutationContext | None) -> str:
+    if mutation is not None and mutation.steer:
+        return _STEER_RECOVERY
     if mutation is not None and mutation.agent_id is None and mutation.lookup_name:
         return (
             f"Look up the agent named {mutation.lookup_name} with cursor_list_agents "
@@ -822,6 +864,10 @@ def _status_from(
     remote_code, remote_message = _remote_error_bytes(headers, raw)
     remote_message = _clean(remote_message)
     code = _classify(status, remote_code, mutation=mutation is not None)
+    # Cursor sends this account-state refusal as 400 validation_error: no argument can fix it.
+    privacy_block = status == 400 and remote_message.startswith(_PRIVACY_BLOCK)
+    if privacy_block:
+        code = ErrorCode.PERMISSION
     if code is ErrorCode.MUTATION_OUTCOME_UNKNOWN and mutation is not None:
         return _uncertain(mutation, remote_message, status=status, request_id=request_id, remote_code=remote_code)
     message = explain(code)
@@ -837,8 +883,8 @@ def _status_from(
         recovery = "Re-read this agent before any new creation. Do not change the identifier."
     if code is ErrorCode.AGENT_BUSY:
         recovery = (
-            "Wait for the run to finish, or send the follow-up with replace_active=true (it cancels the run). "
-            "Do not create another agent."
+            "Wait for the run to finish, add the prompt to the running turn with delivery=steer (cancels nothing), "
+            "or send the follow-up with replace_active=true (it cancels the run). Do not create another agent."
         )
     if remote_code == "usage_limit_exceeded":
         message = f"Cursor usage limit reached: the account's spend limit is exhausted. {remote_message or ''}".strip()
@@ -848,6 +894,12 @@ def _status_from(
         )
     elif code is ErrorCode.QUOTA:
         recovery = "Rate limit: wait retry_after_seconds (about a minute if absent), then retry once."
+    if privacy_block:
+        recovery = (
+            "Cursor refused this call for the privacy mode it resolves for this API key, not for its "
+            "arguments: do not retry with other parameters. Only the account owner can change the privacy "
+            "setting or supply another key."
+        )
     if code is ErrorCode.STREAM_EXPIRED:
         recovery = "The stream can no longer be replayed. Read the result with cursor_get_run."
     if remote_code == "invalid_last_event_id":

@@ -201,11 +201,14 @@ def require_env_name(name: str) -> str:
         name == ""
         or len(encoded) > ENV_NAME_MAX_BYTES
         or name.startswith("CURSOR_")
+        # Spec of November 9, 2026: refused anywhere in the name, in any letter case.
+        or "CURSOR_SANDBOX" in name.upper()
         or _ENV_NAME.fullmatch(name) is None
     ):
         raise failure(
             ErrorCode.VALIDATION,
-            "A variable name is empty, too long, starts with CURSOR_ or contains a forbidden character.",
+            "A variable name is empty, too long, starts with CURSOR_, contains CURSOR_SANDBOX "
+            "or contains a forbidden character.",
         )
     return name
 

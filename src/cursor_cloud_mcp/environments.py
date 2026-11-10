@@ -3,9 +3,33 @@
 import asyncio
 
 from cursor_cloud_mcp.client import CursorCloudClient
-from cursor_cloud_mcp.errors import CursorFailure
+from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure
 from cursor_cloud_mcp.models import ActiveBuildView, EnvironmentListView, PoolView
 from cursor_cloud_mcp.present import active_build_view, environment_view, page_cursor, pool_view
+
+
+def environment_filters(
+    *,
+    query: str | None,
+    owner: str | None,
+    named: bool | None,
+    repositories: list[str] | None,
+) -> dict[str, str | list[str]]:
+    """Query parameters of GET /v1/environments, only those provided. The API applies and combines them."""
+    filters: dict[str, str | list[str]] = {}
+    if query is not None:
+        if query.strip() == "":
+            raise failure(ErrorCode.VALIDATION, "query is empty.")
+        filters["query"] = query
+    if owner is not None:
+        filters["owner"] = owner
+    if named is not None:
+        filters["named"] = "true" if named else "false"
+    if repositories is not None:
+        if any(item.strip() == "" for item in repositories):
+            raise failure(ErrorCode.VALIDATION, "repositories contains an empty entry.")
+        filters["repo"] = list(repositories)
+    return filters
 
 
 async def list_environments(
@@ -14,9 +38,12 @@ async def list_environments(
     limit: int | None,
     cursor: str | None,
     environment_id: str | None,
+    filters: dict[str, str | list[str]] | None = None,
 ) -> EnvironmentListView:
     """One page of environments with the pools, or one environment with its active build."""
     if environment_id is not None:
+        if filters:
+            raise failure(ErrorCode.VALIDATION, "environment_id reads one environment: it takes no filter.")
         environment = environment_view(await client.get_environment(environment_id))
         build, error = await _active_build(client, environment.environment_id)
         detail = environment.model_copy(update={"active_build": build, "active_build_error": error})
@@ -24,7 +51,7 @@ async def list_environments(
     # Pools are not paginated: the first page carries them, read alongside it.
     pools_task = asyncio.create_task(_pools(client)) if cursor is None else None
     try:
-        page = await client.list_environments(limit=limit, cursor=cursor)
+        page = await client.list_environments(limit=limit, cursor=cursor, filters=filters)
     except BaseException:
         if pools_task is not None:
             pools_task.cancel()

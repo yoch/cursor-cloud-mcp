@@ -57,7 +57,10 @@ class ModelJournal:
             "ts": _now(),
             "agent_id": agent_id,
             "run_id": run_id,
-            "model": model.model_dump(exclude_none=True, exclude={"recorded_at", "inherited", "unconfirmed"}),
+            # max_mode stays out: an older server sharing this file refuses unknown fields and would drop the line.
+            "model": model.model_dump(
+                exclude_none=True, exclude={"recorded_at", "inherited", "unconfirmed", "max_mode"}
+            ),
         }
         if run_created_at is not None:
             line["run_created_at"] = run_created_at
