@@ -1,5 +1,29 @@
 # Verification
 
+## Unified Cursor and Grok account, spec re-read and real reads (November 10, 2026)
+
+The OpenAPI grew from 114 KB to 146 KB (etag `ea6fc66ea63a13ad6c768de490b1276f`, modified November 9). The account used for these checks had moved the same day to the unified Cursor and Grok subscription: its Cursor dashboard now points to Grok's, its existing `crsr_` keys are labelled legacy and can no longer be created, and new keys start with `grok_`. Everything below was read with one `crsr_` key and one `grok_` key of that account, which `GET /v1/me` resolves to the same user. No agent could be created that day (see the last list), so nothing here comes from a new run.
+
+- **Same answers with both keys:** `GET /v1/me`, `/v1/models`, `/v1/repositories`, `/v1/agents`, an agent, its runs, a run, its stream, its usage, its artifacts, and `GET /v0/agents/{id}/conversation`.
+- **Different answers, three alternations back to back:**
+
+  | Call | `crsr_` key | `grok_` key |
+  |---|---|---|
+  | `GET /v1/environments` (any filter) | `200` | `400 validation_error`, "Blocked by privacy setting: Cloud agent is not supported in Privacy Mode (Legacy). Switch to Privacy Mode to use cloud agents." |
+  | `GET /v0/private-workers/pools` | `200` | `403 permission_denied` |
+  | `GET /v1/secrets` | `200` | `403 key_not_supported` |
+
+  The account's Cursor privacy setting was "Privacy Mode (no training)", and its dialog offers no legacy mode: the message cannot be acted on. The SDK's `x-ghost-mode` header changes nothing. Only the secrets refusal is in the spec. `cursor_list_environments` now returns this refusal as `PERMISSION`, and `cursor_get_account` names the key type.
+- **Other keys:** an `xai-` key of the Grok inference API is refused by `api.cursor.com` (`401`, top-level `code` and `message`), which the server renders as `AUTHENTICATION`. `api.x.ai` refuses a `grok_` key.
+- **Usage reads zero for agents created after the move:** three agents created that day reported zero tokens and zero cost on every run, with a `usageUuid`. Two of them had runs of two to three minutes and several assistant replies in their conversation; the third had two runs of a few seconds. Agents from the week before still report their tokens, with `chargedCents` at zero for runs the plan covered. On three long-lived agents read run by run, every run up to November 8 reports tokens and every run from November 9, 14:04 UTC onwards reports zero (21 or 22 runs each), with the same spread of durations as before, up to about 30 minutes. The cut predates the plan change and follows the exhaustion of the old plan's monthly quota. Hence `no_usage_recorded`, keyed on tokens and never on the charged cost, and counted in `cursor_supervise` for ended runs only.
+- **Max Mode in the catalog:** variants carry `isMaxMode`, which the OpenAPI does not list. The default variant of 20 models out of 47 is flagged, `grok-4.7` among them (`context=500k`, `reasoning_effort=high`, `fast=true`).
+- **Environment filters, through the real stdio server:** `owner=personal` and `owner=team`, `named=true` (only named environments) and `named=false` (only unnamed ones), a `query` matching nothing (empty list) and one `repositories` entry (a subset) all behaved as specified.
+- **Steer, body validation only:** sent to an agent id that does not exist, a steer body with `mode` answered `400 validation_error`, `"mode" is not allowed with delivery "steer"`, and `delivery: "bogus"` answered `400`. The API knows the field; an accepted steer was not observed.
+- **Creation refused for both keys:** `POST /v1/agents` answered `400 usage_limit_exceeded`, "Your prepaid balance is used up. Add funds or enable auto top-up in your billing settings to keep going.", for `composer-2.5`, two Grok models and no model, eight attempts in all, none of which created an agent. The same account created agents by hand in the web interface during those minutes. The cause is on Cursor's side and was not established.
+- **`scripts/smoke_live.py`:** its paid run stopped at these refusals (8 checks out of 11). Its "SHA refused locally" check was stale since October 19, when a full SHA stopped being refused locally: it sent a real `POST`. It now uses a ref no Git accepts, and a test proves that value sends nothing.
+
+Not verified, for lack of a real run: an accepted steer (`steered`, `queued`), `envVars` on a follow-up, and the `WAITING_FOR_BACKGROUND_WORK` status, including what the stream sends while a run is in it.
+
 ## API re-read and real probes (October 19, 2026)
 
 The OpenAPI grew from 59 KB to 114 KB since September 30 (etag `57a4cf20b2db5ce669b8c9a8beed34d6`). `scripts/probe_api.py` checked live what it changed or left unclear. It sends raw HTTP and prints no text, prompt or secret value.

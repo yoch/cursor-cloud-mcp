@@ -276,6 +276,25 @@ async def test_usage_limit_is_told_apart_from_a_rate_limit() -> None:
     assert "account owner" in str(payload["recovery"])
 
 
+async def test_privacy_block_is_not_reported_as_rejected_parameters() -> None:
+    message = "Blocked by privacy setting: Cloud agent is not supported in Privacy Mode (Legacy)."
+
+    def responder(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"code": "validation_error", "message": message}})
+
+    client, _router = await _session(Router(responder))
+    try:
+        result = await client.call_tool("cursor_list_environments", {})
+    finally:
+        await client.__aexit__(None, None, None)
+    payload = _error_payload(result)
+    assert payload["code"] == "PERMISSION"
+    assert payload["remote_code"] == "validation_error"
+    assert "Parameters rejected" not in str(payload["message"])
+    assert message in str(payload["message"])
+    assert "account owner" in str(payload["recovery"])
+
+
 async def test_usage_rows_carry_ratio_and_recorded_model(tmp_path: Path) -> None:
     journal = ModelJournal(str(tmp_path))
     journal.record(

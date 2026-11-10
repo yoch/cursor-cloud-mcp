@@ -26,6 +26,7 @@ from cursor_cloud_mcp.models import (
     AgentPageView,
     AgentSummaryView,
     RemoteAgentSummary,
+    RemoteUsage,
     RunEventsView,
     RunEventView,
     RunView,
@@ -324,9 +325,15 @@ async def supervise(
                 remote = await client.get_usage(row.agent_id, run_id=None)
             except CursorFailure as exc:
                 return row.model_copy(update={"usage_error": f"{exc.body.code.value}: {exc.body.message}"})
+        silent = _usage_missing(row, remote) or None
         if remote.cost is None:
-            return row.model_copy(update={"usage_error": "The API returned no cost for this agent."})
-        return row.model_copy(update={"charged_cents": round(remote.cost.chargedCents, 4)})
+            return row.model_copy(
+                update={"usage_error": "The API returned no cost for this agent.", "no_usage_recorded": silent}
+            )
+        charged = round(remote.cost.chargedCents, 4)
+        # A zero next to missing usage would read as "free": only a cost actually charged is shown then.
+        shown = None if silent and charged == 0 else charged
+        return row.model_copy(update={"charged_cents": shown, "no_usage_recorded": silent})
 
     rows = list(await asyncio.gather(*(read_status(agent) for agent in page.items)))
     retry = [index for index, agent in enumerate(page.items) if agent.agent_id in transient]
@@ -346,6 +353,18 @@ async def supervise(
         has_more=page.has_more,
         next_cursor=page.next_cursor,
     )
+
+
+def _usage_missing(row: SupervisedAgentView, remote: RemoteUsage) -> bool:
+    """True when the API recorded no tokens for a run that is over: its cost is unknown, not zero.
+
+    The latest run is left out while it is still going: it may simply not have reported yet.
+    """
+    latest_active = row.terminal is not True
+    ended = [item for item in remote.runs if not (latest_active and item.id == row.run_id)]
+    if any(item.usage.totalTokens == 0 for item in ended):
+        return True
+    return row.run_id is not None and not latest_active and remote.totalUsage.totalTokens == 0
 
 
 def _status_key(row: SupervisedAgentView) -> str:
@@ -379,6 +398,7 @@ def _summary(rows: list[SupervisedAgentView], stale_after_minutes: int) -> Super
     errors = sum(1 for row in rows if row.read_error is not None)
     costs = [row.charged_cents for row in rows if row.charged_cents is not None]
     usage_errors = sum(1 for row in rows if row.usage_error is not None)
+    silent = [row.agent_id for row in rows if row.no_usage_recorded]
     return SuperviseSummaryView(
         agents=len(rows),
         by_status=dict(Counter(_status_key(row) for row in rows)),
@@ -387,5 +407,6 @@ def _summary(rows: list[SupervisedAgentView], stale_after_minutes: int) -> Super
         incomplete=incomplete or None,
         read_errors=errors or None,
         charged_cents_total=round(sum(costs), 4) if costs else None,
+        no_usage_recorded=silent or None,
         usage_errors=usage_errors or None,
     )

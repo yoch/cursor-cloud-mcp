@@ -26,7 +26,8 @@ REPO_URL = os.environ.get("SMOKE_REPO", "https://github.com/yoch/cursor-cloud-mc
 BRANCH = os.environ.get("SMOKE_BRANCH", "main")
 FWD_VALUE = "smoke-forwarded-value-12345678"
 PUB_VALUE = "smoke-public-value-87654321"
-SHA = "a" * 40
+# Refused by the server before any request (".." is not a Git ref). A full SHA is no longer one: it is sent.
+BAD_REF = "smoke..invalid"
 # Shared by both agent names, so cursor_supervise(name=TAG) finds exactly this run's agents.
 TAG = f"smoke-{uuid.uuid4().hex[:8]}"
 # Network variables passed to the server if they exist: proxy and certificate authority
@@ -218,10 +219,10 @@ async def run_all(client: Client, report: Report, created: list[str]) -> None:
     ok, data = await call(
         client,
         "cursor_create_agent",
-        {"prompt": "x", "repository": REPO_URL, "starting_ref": SHA, "model_id": MODEL},
+        {"prompt": "x", "repository": REPO_URL, "starting_ref": BAD_REF, "model_id": MODEL},
     )
     report.check(
-        "SHA refused locally", not ok and code_of(data) == "VALIDATION", code_of(data)
+        "invalid starting_ref refused locally", not ok and code_of(data) == "VALIDATION", code_of(data)
     )
     ok, data = await call(
         client,

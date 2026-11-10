@@ -51,7 +51,7 @@ The server reads the process environment only, never a `.env` file. No tool chan
 | `cursor_supervise` | A fleet in one call: each agent's latest run, optionally stream activity and spend. |
 | `cursor_get_agent` | Agent metadata, url, latest run, recorded model. |
 | `cursor_create_agent` | **Paid.** Creates an agent and starts its first run; prompts may carry images. |
-| `cursor_create_run` | **Paid.** Follow-up run on the same agent; `replace_active` cancels a run in progress first. |
+| `cursor_create_run` | **Paid.** Follow-up run on the same agent; `delivery="steer"` adds to a run in progress, `replace_active` cancels it first. |
 | `cursor_list_runs` | An agent's runs, newest first. |
 | `cursor_get_run` | State, final result, branches; waits up to 60 s; `activity` adds what the stream shows. |
 | `cursor_read_run_events` | Stream excerpt, resumable, or the last N events (`tail`). |
@@ -74,7 +74,8 @@ The left column is a limit of the API, measured on real runs; the right column i
 | A `RUNNING` run keeps `updatedAt` at creation time | `activity.last_event_at` and `idle_seconds`, from the stream's event ids |
 | An `ERROR` run carries no cause | the activity summary (last events, last tool call, background tasks) is added automatically |
 | A stream can only be replayed from its start, with no end marker | `tail` and `activity` walk the whole replay without keeping it, and know where it ends |
-| A run in progress cannot receive a message | `cursor_create_run(replace_active=true)`: cancel, confirm, then follow up on the same agent |
+| A run in progress refuses an ordinary follow-up | `cursor_create_run(delivery="steer")` adds the prompt to the running turn; `replace_active=true` cancels, confirms, then follows up on the same agent |
+| Usage can read zero for a run that worked | `no_usage_recorded` marks those runs and agents, and keeps them out of the fleet total |
 | No listing of runs across agents | `cursor_supervise`: one call, parallel reads |
 | The model of an agent or a run is never returned | creations return the effective selection and warn about catalog defaults (such as `fast=true`); a local journal records each model sent and reads it back as `model` |
 | No quota or account spend | `cursor_supervise(usage=true)` sums a fleet's charged cost |

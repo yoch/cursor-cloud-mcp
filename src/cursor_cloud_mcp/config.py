@@ -73,6 +73,8 @@ IMAGE_MAX_BYTES = 15 * 1024 * 1024
 IMAGE_URL_MAX_CHARS = 2048
 IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 ENVIRONMENT_NAME_MAX_CHARS = 255
+# GET /v1/environments: the repo filter can be repeated up to 100 times.
+ENVIRONMENT_REPO_FILTER_MAX = 100
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 _UNEXPANDED = re.compile(r"^\$\{[^}]*\}$|^\{env:[^}]*\}$")
 _FIXTURE_WITH_KEY = (

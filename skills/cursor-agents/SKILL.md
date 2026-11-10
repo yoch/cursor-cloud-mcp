@@ -44,7 +44,8 @@ user's approval in one short block before the first paid call.
    `cursor_supervise(name, status="all", usage=true)` sums a fleet (`summary.charged_cents_total`).
    Read it after the probe and at every checkpoint. No quota or reset is visible: `QUOTA` with
    `usage_limit_exceeded` means the spend limit is reached, stop all paid calls and tell the user.
-   Do not turn tokens into dollar estimates.
+   Do not turn tokens into dollar estimates. `no_usage_recorded` on a run or an agent means the
+   API recorded nothing: its cost is unknown, not zero, and the fleet total leaves it out.
 8. **Client timeout ≥ 100 s** (the server bounds calls at 95 s); a client that gives up earlier
    may abandon a creation already sent.
 9. **Always name the model and every cost parameter** (`model_id`, `reasoning_level`,
@@ -78,8 +79,10 @@ user's own machines instead. Coordinator and workers share git branches only.
 - An `ERROR` run carries no cause; `cursor_get_run` adds the activity summary by itself. Runs
   blocked for hours in one `await` ended in `ERROR` after 2 to 4 h while their `nohup` job went
   on (observed).
-- A run in progress cannot receive a message (`AGENT_BUSY`): `replace_active=true` cancels it
-  first. A worker whose run ended its turn (detached job, section 5) takes a plain follow-up.
+- A run in progress refuses a plain follow-up (`AGENT_BUSY`): `delivery="steer"` adds the prompt
+  to the running turn where the account has it (never send it twice), `replace_active=true`
+  cancels the run first. A worker whose run ended its turn (detached job, section 5) takes a
+  plain follow-up.
 - The API never returns the model. `model` in agent, run, supervise and usage views is what this
   server recorded locally when it sent it (`source: local_journal`, `inherited` for a run sent
   without one); absent means unknown, not the default.

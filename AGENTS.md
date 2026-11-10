@@ -21,6 +21,8 @@ Dev repo for `cursor-cloud-mcp`: stdio MCP server (Python 3.12+) for Cursor Clou
 - Single version source: `__version__` in `src/cursor_cloud_mcp/__init__.py`. Release tag must be exactly `v<version>` (`release.yml` enforces it, publishes via Trusted Publishing).
 - Tool errors must be pure JSON: raise `failure(ErrorCode, ...)` (becomes `ToolFailure`); only SDK-level arg rejection stays plain text. Never emit `null` fields in views (`present.py` omits).
 - Pre-send guards live in code, not the API: `starting_ref` is a branch name or full SHA (SHA accepted live 2026-10-19), `model_id`/`reasoning_level`/`model_params` checked against the cached catalog (`catalog.py`), `workOnCurrentBranch` forced `false`, follow-ups refused on archived/unknown-status agents.
+- Key types: `crsr_` (Cursor dashboard, "legacy" on a unified Cursor and Grok account) and `grok_`. Seen 2026-11-10 on one account: `grok_` refused on environments (400 "Blocked by privacy setting", rendered `PERMISSION`), pools and secrets, `crsr_` accepted. Zero tokens in usage means "not recorded" (`no_usage_recorded`), never free.
+- From the November 9, 2026 spec, tested against the spec only (no real run yet): `delivery="steer"` (202 `steered`/`queued`, never resent), per-run `envVars`, run status `WAITING_FOR_BACKGROUND_WORK`.
 - API limits encoded in behavior (don't "fix" by simplifying): `FINISHED` ≠ job done, `updatedAt` frozen while `RUNNING`, no name/status filter server-side (`name` = local scan ≤5 pages, `next_cursor` must round-trip unchanged), artifact list often empty (result must come from `cursor_get_run`), stream has no tail marker (full replay walk, budgets ≤95s so client timeout must be ~100s).
 
 ## Tests
