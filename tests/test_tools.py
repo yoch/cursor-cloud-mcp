@@ -90,11 +90,21 @@ def _data(result: CallToolResult) -> dict[str, object]:
 
 
 class Router:
-    def __init__(self, responder: Callable[[httpx.Request], httpx.Response]) -> None:
+    """Records the calls it answers.
+
+    The server reads ``GET /v1/projects`` on its own to mark a Project's coordinator in agent rows. Unless a test
+    is about Projects (``stub_projects=False``), that read gets an empty page and is not recorded, so the call
+    lists and the pages the other tests script stay about what they test.
+    """
+
+    def __init__(self, responder: Callable[[httpx.Request], httpx.Response], *, stub_projects: bool = True) -> None:
         self.responder = responder
+        self.stub_projects = stub_projects
         self.calls: list[tuple[str, str, object]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
+        if self.stub_projects and request.method == "GET" and request.url.path == "/v1/projects":
+            return httpx.Response(200, json={"items": []})
         body: object = None
         if request.content:
             body = json.loads(request.content.decode())
@@ -122,6 +132,7 @@ async def test_listing_tools_does_not_call_cursor() -> None:
         "cursor_list_models",
         "cursor_list_repositories",
         "cursor_list_environments",
+        "cursor_list_projects",
         "cursor_list_agents",
         "cursor_supervise",
         "cursor_get_agent",
@@ -144,6 +155,7 @@ async def test_listing_tools_does_not_call_cursor() -> None:
         "cursor_list_models",
         "cursor_list_repositories",
         "cursor_list_environments",
+        "cursor_list_projects",
         "cursor_list_agents",
         "cursor_supervise",
         "cursor_get_agent",

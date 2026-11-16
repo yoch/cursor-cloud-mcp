@@ -263,6 +263,35 @@ class RemoteEnvironmentPage(BaseModel):
     nextCursor: str | None = None
 
 
+class RemoteProjectAppearance(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    icon: str | None = None
+    color: str | None = None
+
+
+class RemoteProject(BaseModel):
+    """Only ``id`` is relied on, as for environments: one odd row must not make the whole page unreadable."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    status: str | None = None
+    name: str | None = None
+    coordinatorAgentId: str | None = None
+    appearance: RemoteProjectAppearance | None = None
+    createdAt: str | None = None
+    updatedAt: str | None = None
+    url: str | None = None
+
+
+class RemoteProjectPage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    items: list[RemoteProject]
+    nextCursor: str | None = None
+
+
 class RemoteActiveBuild(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -562,6 +591,9 @@ class AgentSummaryView(BaseModel):
     updated_at: str
     latest_run_id: str | None = None
     env: EnvView
+    # Set when this agent is the caller's coordinator in a Project: the Project's id. Archiving or deleting it
+    # acts on that coordinator, and per the spec a Project is ARCHIVED once its owner's coordinator is stopped.
+    coordinator_of_project: str | None = None
 
 
 class AgentPageView(BaseModel):
@@ -571,6 +603,41 @@ class AgentPageView(BaseModel):
     next_cursor: str | None = None
     has_more: bool
     scanned: int | None = None
+
+
+class ProjectView(BaseModel):
+    """A Project: a coordinator agent that starts and follows other agents.
+
+    ``coordinator_agent_id`` is the caller's own coordinator. For a Project the caller owns it equals
+    ``project_id``; for one they joined, ``project_id`` is the owner's coordinator and this field may be absent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    name: str | None = None
+    status: str | None = None
+    coordinator_agent_id: str | None = None
+    icon: str | None = None
+    color: str | None = None
+    url: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ProjectListView(BaseModel):
+    """A page of Projects, or one Project (``items`` has it alone) with a page of the agents its coordinator started.
+
+    ``next_cursor`` and ``has_more`` belong to ``items`` for a list and to ``agents`` for one Project.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[ProjectView]
+    agents: list[AgentSummaryView] | None = None
+    agents_error: str | None = None
+    next_cursor: str | None = None
+    has_more: bool
 
 
 class AgentView(AgentSummaryView):
@@ -710,6 +777,7 @@ class SupervisedAgentView(BaseModel):
     name: str | None = None
     url: str
     agent_status: str
+    coordinator_of_project: str | None = None
     run_id: str | None = None
     status: str | None = None
     terminal: bool | None = None

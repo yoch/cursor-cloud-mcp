@@ -145,11 +145,16 @@ def require_segment(value: str, *, label: str) -> str:
     return value
 
 
-def require_agent_id(value: str) -> str:
-    if _AGENT_ID.fullmatch(value) is None:
+def is_agent_id(value: str) -> bool:
+    """The ``bc-<uuid>`` form of an agent, and of a Project, which the API documents as the same identifier."""
+    return _AGENT_ID.fullmatch(value) is not None
+
+
+def require_agent_id(value: str, *, label: str = "agent_id") -> str:
+    if not is_agent_id(value):
         raise failure(
             ErrorCode.VALIDATION,
-            "agent_id must have the bc-<uuid> form documented by the Cursor API.",
+            f"{label} must have the bc-<uuid> form documented by the Cursor API.",
         )
     return value
 

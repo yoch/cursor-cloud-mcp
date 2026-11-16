@@ -34,6 +34,7 @@ from cursor_cloud_mcp.models import (
     ModelListView,
     ModelView,
     PoolView,
+    ProjectView,
     RemoteAccount,
     RemoteActiveBuild,
     RemoteAgent,
@@ -48,6 +49,7 @@ from cursor_cloud_mcp.models import (
     RemoteModel,
     RemoteModelList,
     RemotePool,
+    RemoteProject,
     RemoteRepositoryList,
     RemoteRun,
     RemoteRunPage,
@@ -286,6 +288,21 @@ def environment_view(remote: RemoteEnvironment) -> EnvironmentView:
         name=remote.name,
         owner=remote.owner,
         repos=[repo.url for repo in remote.repos] or None,
+        updated_at=remote.updatedAt,
+    )
+
+
+def project_view(remote: RemoteProject) -> ProjectView:
+    appearance = remote.appearance
+    return ProjectView(
+        project_id=remote.id,
+        name=remote.name,
+        status=remote.status,
+        coordinator_agent_id=remote.coordinatorAgentId,
+        icon=None if appearance is None else appearance.icon,
+        color=None if appearance is None else appearance.color,
+        url=remote.url,
+        created_at=remote.createdAt,
         updated_at=remote.updatedAt,
     )
 

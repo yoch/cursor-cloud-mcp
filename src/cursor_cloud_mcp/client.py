@@ -25,6 +25,8 @@ from cursor_cloud_mcp.config import (
     MAX_RESPONSE_BYTES,
     MODEL_CACHE_TTL_SECONDS,
     MUTATION_MIN_SECONDS,
+    PROJECT_COORDINATOR_CACHE_TTL_SECONDS,
+    PROJECT_COORDINATOR_MAX_PAGES,
     REPOSITORIES_DEADLINE_SECONDS,
     REPOSITORY_CACHE_TTL_SECONDS,
 )
@@ -45,13 +47,15 @@ from cursor_cloud_mcp.models import (
     RemoteId,
     RemoteModelList,
     RemotePoolList,
+    RemoteProject,
+    RemoteProjectPage,
     RemoteRepositoryList,
     RemoteRun,
     RemoteRunPage,
     RemoteSteer,
     RemoteUsage,
 )
-from cursor_cloud_mcp.validation import require_segment, same_id
+from cursor_cloud_mcp.validation import is_agent_id, require_agent_id, require_segment, same_id
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +120,7 @@ class CursorCloudClient:
         create_deadline_seconds: float = CREATE_DEADLINE_SECONDS,
         repository_cache_ttl_seconds: float = REPOSITORY_CACHE_TTL_SECONDS,
         model_cache_ttl_seconds: float = MODEL_CACHE_TTL_SECONDS,
+        project_cache_ttl_seconds: float = PROJECT_COORDINATOR_CACHE_TTL_SECONDS,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
         download_transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -130,6 +135,7 @@ class CursorCloudClient:
         self._http: httpx.AsyncClient | None = None
         self._repo_cache: _TtlCache[RemoteRepositoryList] = _TtlCache(ttl=repository_cache_ttl_seconds)
         self._model_cache: _TtlCache[RemoteModelList] = _TtlCache(ttl=model_cache_ttl_seconds)
+        self._coordinator_cache: _TtlCache[dict[str, str]] = _TtlCache(ttl=project_cache_ttl_seconds)
 
     async def open(self) -> None:
         headers = {"Accept": "application/json"}
@@ -409,6 +415,41 @@ class CursorCloudClient:
             f"/v1/environments/{quote(segment, safe='')}/builds/active", RemoteActiveBuild, deadline=self._deadline
         )
 
+    async def list_projects(
+        self, *, limit: int | None, cursor: str | None, include_archived: bool | None = None
+    ) -> RemoteProjectPage:
+        query = _page_query(limit, cursor)
+        if include_archived is not None:
+            query["includeArchived"] = "true" if include_archived else "false"
+        return await self._get_model("/v1/projects", RemoteProjectPage, query=query, deadline=self._deadline)
+
+    async def get_project(self, project_id: str) -> RemoteProject:
+        segment = require_agent_id(project_id, label="project_id")
+        project = await self._get_model(
+            f"/v1/projects/{quote(segment, safe='')}", RemoteProject, deadline=self._deadline
+        )
+        # The spec also accepts the caller's own coordinator id, which differs from the id of a joined Project.
+        if project.coordinatorAgentId is None or not same_id(project.coordinatorAgentId, segment):
+            _require_same_id(project.id, segment, "project")
+        elif not is_agent_id(project.id):
+            # The row is accepted on the coordinator's id alone: its own id still builds the next request's path.
+            raise failure(
+                ErrorCode.INCOMPATIBLE_RESPONSE,
+                "The Cursor response describes a Project whose id is not in the bc-<uuid> form. Nothing was modified.",
+            )
+        return project
+
+    async def list_project_agents(
+        self, project_id: str, *, limit: int | None, cursor: str | None
+    ) -> RemoteAgentPage:
+        segment = require_agent_id(project_id, label="project_id")
+        return await self._get_model(
+            f"/v1/projects/{quote(segment, safe='')}/agents",
+            RemoteAgentPage,
+            query=_page_query(limit, cursor),
+            deadline=self._deadline,
+        )
+
     async def get_build(self, environment_id: str, build_id: str) -> RemoteBuild:
         segment = require_segment(environment_id, label="environment_id")
         build = require_segment(build_id, label="build_id")
@@ -443,6 +484,32 @@ class CursorCloudClient:
             query=query,
             deadline=self._deadline,
         )
+
+    async def project_coordinators(self) -> dict[str, str]:
+        """Agent ids that are the caller's coordinator in a Project, each with that Project's id (lower-cased keys).
+
+        Best effort and cached for a minute, failures included: the answer only marks rows, so a team that turned
+        Projects off, a service-account key or a transient error give an empty map, never an error.
+        """
+        found, _hit = await self._coordinator_cache.get(self._fetch_coordinators, wait_cap=self._deadline)
+        return found
+
+    async def _fetch_coordinators(self) -> dict[str, str]:
+        found: dict[str, str] = {}
+        cursor: str | None = None
+        try:
+            for _ in range(PROJECT_COORDINATOR_MAX_PAGES):
+                page = await self.list_projects(limit=100, cursor=cursor)
+                for project in page.items:
+                    if project.coordinatorAgentId is not None:
+                        found[project.coordinatorAgentId.casefold()] = project.id
+                cursor = page.nextCursor
+                if not cursor:
+                    break
+        except CursorFailure as exc:
+            logger.debug("project_coordinators_unavailable=%s", exc.body.code.value)
+            return found
+        return found
 
     async def _fetch_repositories(self) -> RemoteRepositoryList:
         return await self._get_model(

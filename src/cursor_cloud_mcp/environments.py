@@ -3,7 +3,7 @@
 import asyncio
 
 from cursor_cloud_mcp.client import CursorCloudClient
-from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure
+from cursor_cloud_mcp.errors import CursorFailure, ErrorCode, failure, failure_note
 from cursor_cloud_mcp.models import ActiveBuildView, EnvironmentListView, PoolView
 from cursor_cloud_mcp.present import active_build_view, environment_view, page_cursor, pool_view
 
@@ -71,7 +71,7 @@ async def _pools(client: CursorCloudClient) -> tuple[list[PoolView] | None, str 
         pools = await client.list_pools()
     except CursorFailure as exc:
         # Best effort: the documentation reserves this list to service-account keys.
-        return None, f"{exc.body.code.value}: {exc.body.message}"
+        return None, failure_note(exc)
     return [pool_view(item) for item in pools.pools], None
 
 
@@ -79,11 +79,11 @@ async def _active_build(client: CursorCloudClient, environment_id: str) -> tuple
     try:
         active = await client.get_active_build(environment_id)
     except CursorFailure as exc:
-        return None, f"{exc.body.code.value}: {exc.body.message}"
+        return None, failure_note(exc)
     if active.buildId is None:
         return active_build_view(active, None), None
     try:
         build = await client.get_build(environment_id, active.buildId)
     except CursorFailure as exc:
-        return active_build_view(active, None), f"{exc.body.code.value}: {exc.body.message}"
+        return active_build_view(active, None), failure_note(exc)
     return active_build_view(active, build), None

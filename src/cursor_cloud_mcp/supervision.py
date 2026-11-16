@@ -266,6 +266,7 @@ async def supervise(
             name=agent.name,
             url=agent.url,
             agent_status=agent.status,
+            coordinator_of_project=agent.coordinator_of_project,
             run_id=agent.latest_run_id,
         )
         if agent.latest_run_id is None:

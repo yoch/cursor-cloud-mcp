@@ -66,6 +66,7 @@ from cursor_cloud_mcp.models import (
     ImageInput,
     ModelListView,
     ModelParam,
+    ProjectListView,
     RemoteAgentSummary,
     RepositoryInput,
     RepositoryListView,
@@ -86,6 +87,7 @@ from cursor_cloud_mcp.present import (
     run_page_view,
     run_view,
 )
+from cursor_cloud_mcp.projects import list_projects, mark_coordinators
 from cursor_cloud_mcp.sessions import (
     cancel_and_observe,
     perform_archive,
@@ -259,6 +261,24 @@ def build_server(
 
         return await _run("cursor_list_environments", ctx, action)
 
+    @tool("cursor_list_projects", _READ)
+    async def cursor_list_projects(
+        ctx: Context[AppContext],
+        limit: int | None = Field(default=None, ge=1, le=100),
+        cursor: str | None = None,
+        project_id: str | None = None,
+        include_archived: bool | None = None,
+    ) -> ProjectListView:
+        """Cursor Projects you own or joined, newest first, one page at a time with next_cursor (a page can be empty and still have has_more). Read-only. A Project is a coordinator agent that starts and follows other agents. coordinator_agent_id is YOUR coordinator in it, an ordinary agent: cursor_get_agent and cursor_get_run read it, and cursor_create_run would message it (a paid run, like any other). For a Project you own, project_id and coordinator_agent_id are the same id; for one you joined, project_id is the owner's coordinator (not yours, do not use it as an agent_id) and coordinator_agent_id may be absent. Careful: cursor_archive_agent and cursor_delete_agent on your coordinator act on it, and per the spec a Project is ARCHIVED once its owner's coordinator is stopped, so never use them on a Project to keep; agent rows from cursor_list_agents, cursor_get_agent and cursor_supervise carry coordinator_of_project when the agent is one. project_id returns that Project alone, with agents: the agents your coordinator started, newest first, one page (limit and cursor then apply to those agents, and next_cursor belongs to them). agents_error means that list could not be read while the Project could. include_archived (the API includes archived Projects by default) is refused with project_id. No tool creates, renames or archives a Project as such. Projects need a user API key: a service-account key lists none, and a team can turn them off (PERMISSION)."""
+
+        async def action(app: AppContext) -> ProjectListView:
+            _optional_cursor(cursor)
+            return await list_projects(
+                _client(app), limit=limit, cursor=cursor, project_id=project_id, include_archived=include_archived
+            )
+
+        return await _run("cursor_list_projects", ctx, action)
+
     @tool("cursor_list_agents", _READ)
     async def cursor_list_agents(
         ctx: Context[AppContext],
@@ -268,7 +288,7 @@ def build_server(
         name: Annotated[str | None, Field(min_length=1, max_length=NAME_MAX_CHARS)] = None,
         pr_url: str | None = None,
     ) -> AgentPageView:
-        """Account agents, one page at a time, in API order (not by date). Read-only. name filters by case-insensitive substring, scanning up to five pages of 100 (scanned); continue with next_cursor. pr_url returns only the agent linked to that PR. Archived agents are listed unless include_archived=false (the API default is true)."""
+        """Account agents, one page at a time, in API order (not by date). Read-only. name filters by case-insensitive substring, scanning up to five pages of 100 (scanned); continue with next_cursor. pr_url returns only the agent linked to that PR. Archived agents are listed unless include_archived=false (the API default is true). coordinator_of_project on a row means that agent is your coordinator in a Project: archiving or deleting it archives the Project, so a cleanup of idle agents must skip it."""
         return await _run(
             "cursor_list_agents",
             ctx,
@@ -288,7 +308,7 @@ def build_server(
         cursor: str | None = None,
         usage: bool = False,
     ) -> SuperviseView:
-        """Overview of a fleet of runners in one call: each agent with its latest run's status, read in parallel. Read-only. status=active keeps agents with a run in progress; all keeps every agent, archived ones included unless include_archived=false (combine with name to follow runners that just finished). A transient failure (UPSTREAM, TIMEOUT) is retried once; a failed read then only marks its row (read_error): a row without status is unread (UNREAD) or has no run (NO_RUN), never a reason to relaunch; re-read it with cursor_get_run. Each row carries the latest run's git (the agent's current pushed state, scope=agent_current_state) and model, the one this MCP recorded locally (absent if unknown).
+        """Overview of a fleet of runners in one call: each agent with its latest run's status, read in parallel. Read-only. status=active keeps agents with a run in progress; all keeps every agent, archived ones included unless include_archived=false (combine with name to follow runners that just finished). A transient failure (UPSTREAM, TIMEOUT) is retried once; a failed read then only marks its row (read_error): a row without status is unread (UNREAD) or has no run (NO_RUN), never a reason to relaunch; re-read it with cursor_get_run. Each row carries the latest run's git (the agent's current pushed state, scope=agent_current_state) and model, the one this MCP recorded locally (absent if unknown). coordinator_of_project on a row means that agent is your coordinator in a Project: archiving or deleting it archives the Project.
 usage=true adds each agent's charged_cents (one usage read per agent) and summary.charged_cents_total: the fleet's spend as the API returns it. An agent with an ended run for which the API recorded no tokens gets no_usage_recorded true: its cost is unknown, not zero (charged_cents is then shown only if something was charged), and summary.no_usage_recorded lists those agents, for which the total is a lower bound. A run still in progress is not counted as missing.
 activity=true also reads each unfinished run's stream (or a terminal run without a result): last_event_at, idle_seconds, unfinished_background_tasks, last tool call. Slower: the API has no tail, so each stream is replayed, about 30 s for an idle run, 8 in parallel. The rows keep signals, not texts: last_events and the other heavy fields are stripped; stream_error and complete remain on the activity. summary.stale lists runs idle for stale_after_minutes; summary.unfinished_after_end lists ended runs whose background tasks were last seen running. Detail: cursor_get_run(activity=true)."""
 
@@ -308,6 +328,7 @@ activity=true also reads each unfinished run's stream (or a terminal run without
                 keep=keep,
                 wanted=limit or SUPERVISE_DEFAULT_AGENTS,
             )
+            page = page.model_copy(update={"items": await mark_coordinators(client, page.items)})
             return await supervise(
                 client,
                 page,
@@ -326,7 +347,7 @@ activity=true also reads each unfinished run's stream (or a terminal run without
 
     @tool("cursor_get_agent", _READ)
     async def cursor_get_agent(ctx: Context[AppContext], agent_id: str) -> AgentView:
-        """Agent metadata: status, repositories, environment, latest_run_id, url. Read-only. Execution state is on the run (cursor_get_run). model is the last model this MCP sent to the agent, from its local journal (source local_journal): the API cannot re-read it, so it is absent when not sent from here, and a change made elsewhere is not seen. unconfirmed true: that send ended in MUTATION_OUTCOME_UNKNOWN."""
+        """Agent metadata: status, repositories, environment, latest_run_id, url. Read-only. Execution state is on the run (cursor_get_run). model is the last model this MCP sent to the agent, from its local journal (source local_journal): the API cannot re-read it, so it is absent when not sent from here, and a change made elsewhere is not seen. unconfirmed true: that send ended in MUTATION_OUTCOME_UNKNOWN. coordinator_of_project is the Project's id when this agent is your coordinator in a Project: archiving or deleting it archives the Project."""
         return await _run("cursor_get_agent", ctx, lambda app: _agent(app, agent_id))
 
     @tool("cursor_create_agent", _CREATE)
@@ -596,7 +617,7 @@ tail=N returns the last N events instead, with last_event_at. The API can neithe
         agent_id: str,
         unarchive: bool = False,
     ) -> ArchiveView:
-        """Archives an agent (reversible), or unarchives it with unarchive=true. An archived agent stays readable, is hidden from the default list and does not accept follow-up runs."""
+        """Archives an agent (reversible), or unarchives it with unarchive=true. An archived agent stays readable, is hidden from the default list and does not accept follow-up runs. Not for an agent whose row has coordinator_of_project: it is your coordinator in a Project, and per the spec a Project is ARCHIVED once its owner's coordinator is stopped. The server only marks such rows; it does not refuse."""
         action: Literal["archive", "unarchive"] = "unarchive" if unarchive else "archive"
         return await _run(
             "cursor_archive_agent",
@@ -611,7 +632,7 @@ tail=N returns the last N events instead, with last_event_at. The API can neithe
         agent_id: str,
         confirm_agent_id: str,
     ) -> DeleteView:
-        """Permanently deletes an agent. Irreversible: only on explicit request. Requires CURSOR_MCP_ALLOW_DELETE=1 and confirm_agent_id equal to agent_id."""
+        """Permanently deletes an agent. Irreversible: only on explicit request. Requires CURSOR_MCP_ALLOW_DELETE=1 and confirm_agent_id equal to agent_id. Never on an agent whose row has coordinator_of_project (your coordinator in a Project): that archives the Project per the spec. The server only marks such rows; it does not refuse."""
         return await _run(
             "cursor_delete_agent",
             ctx,
@@ -764,22 +785,26 @@ async def _agents(
     _optional_cursor(cursor)
     client = _client(app)
     if name is None and not is_scan_cursor(cursor):
-        return agent_page_view(
+        page = agent_page_view(
             await client.list_agents(limit=limit, cursor=cursor, include_archived=include_archived, pr_url=pr_url)
         )
-    # The API does not filter by name: bounded page scan, local filter.
-    return await scan_agents(
-        client,
-        cursor=cursor,
-        include_archived=include_archived,
-        pr_url=pr_url,
-        keep=name_filter(name) if name is not None else lambda _agent: True,
-        wanted=limit or AGENT_SCAN_DEFAULT_MATCHES,
-    )
+    else:
+        # The API does not filter by name: bounded page scan, local filter.
+        page = await scan_agents(
+            client,
+            cursor=cursor,
+            include_archived=include_archived,
+            pr_url=pr_url,
+            keep=name_filter(name) if name is not None else lambda _agent: True,
+            wanted=limit or AGENT_SCAN_DEFAULT_MATCHES,
+        )
+    return page.model_copy(update={"items": await mark_coordinators(client, page.items)})
 
 
 async def _agent(app: AppContext, agent_id: str) -> AgentView:
-    view = agent_view(await _client(app).get_agent(agent_id))
+    client = _client(app)
+    view = agent_view(await client.get_agent(agent_id))
+    [view] = await mark_coordinators(client, [view])
     return view.model_copy(update={"model": app.journal.for_agent(view.agent_id)})
 
 
