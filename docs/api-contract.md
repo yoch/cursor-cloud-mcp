@@ -1,6 +1,6 @@
 # API contract used
 
-Consulted on September 30, 2026, re-read on October 1, 2026. Re-read on October 19, 2026: the spec had doubled; re-read on November 10, 2026 (see the last two sections). The parts below are updated where this server now uses them.
+Consulted on September 30, 2026, re-read on October 1, 2026. Re-read on October 19, 2026: the spec had doubled; re-read on November 10, 2026 and again on November 16, 2026 (see the last three sections). The parts below are updated where this server now uses them.
 
 This document does not copy the OpenAPI. It fixes the fields this MCP server sends or reads. The officially read contract prevails over any other source. The discrepancies are listed below.
 
@@ -16,6 +16,8 @@ This document does not copy the OpenAPI. It fixes the fields this MCP server sen
 - SHA-256 fingerprint of the raw file: `7fb350f40e928721afaba13d44377880f235f087734bc26ef51b54f7323ad209`
 - October 19, 2026: `etag: "57a4cf20b2db5ce669b8c9a8beed34d6"`, 114038 bytes, SHA-256 `d6bf8a5740df6ac252ab14f9858a7406830bc175a05528f21e60468b559dc5a3`
 - November 10, 2026: `etag: "ea6fc66ea63a13ad6c768de490b1276f"`, `last-modified: Mon, 09 Nov 2026 23:26:24 GMT`, 146464 bytes, SHA-256 `dd3b836c4e95ad68892274280e53c348619cdd2051988793d2a85e8213d9a489`. The endpoints page is also served at <https://cursor.com/docs/cloud-agent/api/overview>, byte for byte
+- November 16, 2026: `etag: "1c8bc6320e442c2c7e20d13a7b21fcba"`, `last-modified: Mon, 16 Nov 2026 14:29:43 GMT`, 166185 bytes, SHA-256 `738f84ce36282fbbfac2dde96cdb4d059ed15e1f92d1c4ccc27ef0574e44a1d9`. The spec changed the day it was read.
+- Both files are kept locally and git-ignored: `docs/cloud-agents-openapi.yaml` (November 16) and `docs/cloud-agents-openapi.previous.yaml` (November 10, SHA-256 checked against the line above), with the response headers in `docs/openapi-headers.txt`. This document still does not copy the OpenAPI. Keep the previous file before replacing the current one: a diff needs it, and the November 10 file was only found again in a previous session's scratch directory.
 
 Authentication chosen: `Authorization: Bearer`. The OpenAPI also accepts Basic with the key as the username and an empty password. Both schemes are documented as equivalent. No redirect is followed.
 
@@ -44,6 +46,9 @@ Authentication chosen: `Authorization: Bearer`. The OpenAPI also accepts Basic w
 | `GET /v1/environments/{id}` | 200 `GetEnvironmentResponse` | `cursor_list_environments(environment_id)` |
 | `GET /v1/environments/{id}/builds/active` | 200 `EnvironmentActiveBuild` | same |
 | `GET /v1/environments/{id}/builds/{buildId}` | 200 `EnvironmentBuild` | same |
+| `GET /v1/projects` | 200 `ListProjectsResponse` | `cursor_list_projects` |
+| `GET /v1/projects/{id}` | 200 `Project` | `cursor_list_projects(project_id)` |
+| `GET /v1/projects/{id}/agents` | 200 `ListProjectAgentsResponse` | same, the agents of the caller's coordinator |
 | `GET /v0/private-workers/pools` | 200, endpoints page only | `cursor_list_environments`, first page, best effort |
 | `GET /v0/agents/{id}/conversation` | 200, legacy v0 page only | `cursor_read_conversation` |
 
@@ -84,6 +89,7 @@ Authentication chosen: `Authorization: Bearer`. The OpenAPI also accepts Basic w
 - Repositories: `items[].url`. No cursor in this schema.
 - Agents, page: `items[]` (`id`, `status`, `env`, `url`, `createdAt`, `updatedAt`, optional `name` and `latestRunId`) and `nextCursor` if present. Its absence means end of list, not a `null` value.
 - Agent: the page's fields, plus `repos`, `workOnCurrentBranch`, `autoCreatePR` when present. An absence stays an absence.
+- Projects, page: `items[]` and `nextCursor` under the same rule, which may be set on an empty page. Project: `id` (the only field relied on), and if present `status` (`ACTIVE` or `ARCHIVED`), `name`, `coordinatorAgentId`, `appearance` (`icon`, `color`), `createdAt`, `updatedAt`, `url`. Query: `limit`, `cursor`, `includeArchived` (sent only when given). The Project's agents are `Agent` rows read as agent summaries; `GET /v1/projects/{id}` also accepts the caller's own coordinator id, whose response carries the Project's id, so that one id is compared to the requested one only when it is not the coordinator's.
 - Runs, page: `items[]` of the `Run` schema and `nextCursor` under the same rule.
 - Run: `id`, `agentId`, `status`, `createdAt`, `updatedAt`, and if present `durationMs`, `result`, `error` (free form; `code: message` if it is an object), `git.branches[]` (`repoUrl`, `branch`, `prUrl`). `git` is the agent's current state, not an immutable snapshot of the run. `repoUrl` is returned without a scheme. No `final_sha` is invented.
 - Cancellation, archiving, unarchiving, deletion: `id`. It is compared to the requested identifier when present.
@@ -107,7 +113,7 @@ Statuses used for classification: 400 validation, 401 authentication, 403 permis
 
 `GET /v1/agents/{id}/usage` may answer `403 feature_unavailable` (early access).
 
-An account-state refusal can come as `400 validation_error` with a message starting with "Blocked by privacy setting" (observed on `GET /v1/environments`, November 10, 2026). It is classified `PERMISSION`, not `VALIDATION`: no argument can fix it. A failed authentication answers `401` with a top-level `code` and `message` instead of an `error` object; both shapes are read.
+An account-state refusal can come as `400 validation_error` with a message starting with "Blocked by privacy setting" (observed on `GET /v1/environments` with a `grok_` key, November 10, 2026; the same call answered `200` on November 12). It is classified `PERMISSION`, not `VALIDATION`: no argument can fix it. A failed authentication answers `401` with a top-level `code` and `message` instead of an `error` object; both shapes are read.
 
 `GET /v1/repositories` is limited to 1 request per user per minute, and 30 per hour. The page states that the response may take tens of seconds.
 
@@ -140,6 +146,8 @@ Re-read on October 5, 2026 against the code of the official Python SDK `cursor-s
 | Run error (`Run.error`) | yes, if present | no | yes | never observed: absent from the `ERROR` runs re-read on October 5, 2026 |
 | `helpUrl`, `provider` of errors | yes | yes | yes | no |
 | Images in the prompt | yes (`images`) | yes | yes | no |
+| Projects (`GET /v1/projects`, one Project, its agents) | yes, read-only (`cursor_list_projects`) | November 16 spec | not read | list, one Project and its coordinator as an agent: yes (November 16, 2026, both key types); the agents under a Project and a coordinator's stream: no |
+| Projects, creation, rename, archive | no, on purpose | November 16 spec | not read | no |
 | Remote MCP servers (`mcpServers`) | no | yes | yes | no |
 | Custom subagents | no | yes | yes | no |
 | Idempotency key (`Idempotency-Key`, creation and send) | no (`agentId` fixed before sending instead) | no | yes (uuid4 per creation) | **ignored** (October 5, 2026, see below) |
@@ -211,3 +219,15 @@ The OpenAPI grew from 114 KB to 146 KB. What this server uses is in the sections
 - **New error codes, all on endpoints left out:** `key_not_supported`, `user_required`, `team_membership_required`, `personal_secrets_disabled`, and the `secret_*` and `repo_file_*` families. A follow-up or steer to a subagent answers `400 validation_error`.
 - **Returned but not specified:** `isMaxMode` on model variants; `openAsCursorGithubApp` and `skipReviewerRequest` on agents (ignored); `cost` in usage, still.
 - **Still absent:** the model in agent, run and usage responses; `Run.error`; a server-side tail of the stream; v1 webhooks.
+
+## November 16, 2026 re-read: what the spec added
+
+The OpenAPI grew from 146 KB to 166 KB. The November 10 file was found again on disk (SHA-256 checked), so this is a real line diff: 519 lines added and 4 removed, in 8 hunks. Nothing used by the existing tools changed shape.
+
+- **Used:** `GET /v1/projects`, `GET /v1/projects/{id}` and `GET /v1/projects/{id}/agents`, read-only, behind `cursor_list_projects`. `GET /v1/projects` is also read by the agent tools (`cursor_list_agents`, `cursor_get_agent`, `cursor_supervise`): up to five pages of 100, cached 60 seconds, errors included, to put `coordinator_of_project` on the row of an agent that is the caller's coordinator in a Project. A marker only; the server refuses nothing.
+- **Projects, as specified:** a Project is created with a coordinator agent. The Project's `id` is the owner's coordinator agent id; `coordinatorAgentId` is the caller's own coordinator and is omitted when they joined a Project and their coordinator there was archived or stopped. `POST /v1/projects` enqueues the coordinator's first run. To message it, send a follow-up run to the coordinator (`POST /v1/agents/{id}/runs`); replies come on the stream, where each message the coordinator sends is one whole `assistant` event and `Run.result` is its last message. A user key is required (`403 user_required` for a service-account key, which lists no Project); a team can turn Projects off (`403 projects_disabled`); renaming, archiving and unarchiving are owner-only (`403 owner_required`); an archived Project answers `409 project_archived`. `includeArchived` defaults to `true`. A page can hold fewer than `limit` Projects, or none, while `nextCursor` is still set.
+- **Observed on November 16 (free GETs, one `crsr_` and one `grok_` key, same account):** both keys read the same single Project with the spec's fields and nothing else (`appearance`, `coordinatorAgentId`, `createdAt`, `id`, `name`, `status`, `updatedAt`, `url`); `includeArchived` `false` and `true` return the same page; `GET /v1/projects/{id}` is `200`; `GET /v1/projects/{id}/agents` is `200` with 0 agents; an unknown id is `404 project_not_found`. `GET /v1/agents/{id}` with the id of the account's own Project, which it owns, answers `200` (`IDLE`), and `GET /v1/agents` lists the coordinator, so the existing agent tools already see it. A Project the caller joined was not seen: there `id` is the owner's coordinator and `coordinatorAgentId` the caller's own, per the spec. Through the tools, with both key types, `cursor_get_agent` and `cursor_get_run` read the coordinator and its last run; `cursor_read_run_events` on that run answered `410 stream_expired`, as an old run does, so the coordinator stream described by the spec (one whole `assistant` event per message it sends) was not seen. The Project had no agent under it: the rows of `GET /v1/projects/{id}/agents` are specified, not observed. Run `scripts/probe_api.py` to repeat the reads.
+- **Spec only, not tried:** `cursor_create_run` on a coordinator is not refused by the local guards (the coordinator is `IDLE`, `workOnCurrentBranch` is `false`) but it would be a paid run. The spec says a Project is `ARCHIVED` when its owner's coordinator was stopped, so `cursor_archive_agent` or `cursor_delete_agent` on a Project's id very likely archives or removes the Project: not tried on the account's only Project.
+- **Left out:** `POST /v1/projects`, `PATCH /v1/projects/{id}`, Project archive and unarchive. Creation is paid, cannot be tried while the account answers `QUOTA`, and a coordinator starts agents of its own, outside this server's cost guards. `GET /v1/agents/{id}/stream` is new: one stream across all of an agent's runs, open until the client leaves or the agent is archived, `status` events and no `result`, resumed with `Last-Event-ID` or `lastEventId`, `X-Cursor-Stream-Retention-Seconds`, `410 stream_expired`, `429 too_many_open_streams` (50 per caller by default). Without a cursor it starts where the newest run started, which might help with the missing tail marker; it was not probed.
+- **New error codes:** `owner_required`, `projects_disabled`, `project_not_found`, `project_id_conflict`, `project_archived`, `too_many_open_streams`. They land in existing classes by status (`403` `PERMISSION`, `404` `NOT_FOUND`, `409` `CONFLICT`, `429` `QUOTA`) and the remote code stays in `remote_code`.
+- **Not documented anywhere in the spec:** why `POST /v1/agents` answers `usage_limit_exceeded`, or whether API-created agents are billed differently from app-created ones. The code is only listed among the possible values, with no endpoint attached.
