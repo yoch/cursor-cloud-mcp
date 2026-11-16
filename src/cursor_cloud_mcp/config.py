@@ -20,6 +20,9 @@ CANCEL_TOOL_BUDGET_SECONDS = 45.0
 MUTATION_MIN_SECONDS = 5.0
 REPOSITORY_CACHE_TTL_SECONDS = 300.0
 MODEL_CACHE_TTL_SECONDS = 600.0
+# Which agents are a Project's coordinator: short, so a Project created in the web app shows up quickly.
+PROJECT_COORDINATOR_CACHE_TTL_SECONDS = 60.0
+PROJECT_COORDINATOR_MAX_PAGES = 5
 MAX_RESPONSE_BYTES = 8_000_000
 STREAM_MAX_BYTES = 1_000_000
 ARTIFACT_MAX_BYTES = 5_000_000
@@ -73,6 +76,8 @@ IMAGE_MAX_BYTES = 15 * 1024 * 1024
 IMAGE_URL_MAX_CHARS = 2048
 IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
 ENVIRONMENT_NAME_MAX_CHARS = 255
+# GET /v1/environments: the repo filter can be repeated up to 100 times.
+ENVIRONMENT_REPO_FILTER_MAX = 100
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 _UNEXPANDED = re.compile(r"^\$\{[^}]*\}$|^\{env:[^}]*\}$")
 _FIXTURE_WITH_KEY = (

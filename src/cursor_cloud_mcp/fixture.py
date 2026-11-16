@@ -9,6 +9,8 @@ import httpx
 SEEDED_AGENT_ID = "bc-00000000-0000-0000-0000-000000000001"
 BUSY_AGENT_ID = "bc-00000000-0000-0000-0000-000000000099"
 INCOMPATIBLE_AGENT_ID = "bc-00000000-0000-0000-0000-000000000088"
+PROJECT_ID = "bc-00000000-0000-0000-0000-0000000000a1"
+PROJECT_RUN_ID = "run-project-0001"
 SEEDED_RUN_ID = "run-00000000-0000-0000-0000-000000000001"
 ERROR_PROMPT = "EXPECTED_ERROR"
 _NOW = "2026-09-30T12:00:00.000Z"
@@ -25,6 +27,8 @@ class FixtureTransport(httpx.AsyncBaseTransport):
             SEEDED_AGENT_ID: _agent(SEEDED_AGENT_ID, "IDLE", False, SEEDED_RUN_ID),
             BUSY_AGENT_ID: _agent(BUSY_AGENT_ID, "ACTIVE", False, "run-busy"),
             INCOMPATIBLE_AGENT_ID: _agent(INCOMPATIBLE_AGENT_ID, "IDLE", True, "run-current-branch"),
+            # A Project's coordinator is an ordinary agent that the real API also lists.
+            PROJECT_ID: _agent(PROJECT_ID, "IDLE", False, PROJECT_RUN_ID),
         }
         self.runs: dict[tuple[str, str], dict[str, Any]] = {
             (SEEDED_AGENT_ID, SEEDED_RUN_ID): _run(
@@ -34,6 +38,7 @@ class FixtureTransport(httpx.AsyncBaseTransport):
                 "Fake result. " + ("abcde" * 3000),
             ),
             (BUSY_AGENT_ID, "run-busy"): _run("run-busy", BUSY_AGENT_ID, "RUNNING", None),
+            (PROJECT_ID, PROJECT_RUN_ID): _run(PROJECT_RUN_ID, PROJECT_ID, "FINISHED", "Coordinator reply."),
             (INCOMPATIBLE_AGENT_ID, "run-current-branch"): _run(
                 "run-current-branch",
                 INCOMPATIBLE_AGENT_ID,
@@ -67,7 +72,9 @@ class FixtureTransport(httpx.AsyncBaseTransport):
         if request.method == "GET" and path == "/v0/private-workers/pools":
             return _json(200, {"pools": [_POOL]})
         if request.method == "GET" and path.startswith("/v1/environments"):
-            return _environment_route(path)
+            return _environment_route(path, request.url.params)
+        if request.method == "GET" and path.startswith("/v1/projects"):
+            return _project_route(path, request.url.params, self.agents)
         if request.method == "POST" and path == "/v1/agents":
             return self._create_agent(request)
         parts = [part for part in path.split("/") if part]
@@ -177,9 +184,11 @@ class FixtureTransport(httpx.AsyncBaseTransport):
             return _error(404, "agent_not_found", "Unknown agent.")
         if agent.get("status") == "ARCHIVED":
             return _error(409, "agent_archived", "Agent archived.")
+        body = _body(request)
+        if "delivery" in body:
+            return self._steer(body, agent_id)
         if agent_id == BUSY_AGENT_ID:
             return _error(409, "agent_busy", "A run is already active.")
-        body = _body(request)
         prompt = ""
         prompt_body = body.get("prompt")
         if isinstance(prompt_body, dict):
@@ -191,6 +200,21 @@ class FixtureTransport(httpx.AsyncBaseTransport):
         agent["latestRunId"] = run_id
         agent["status"] = "IDLE"
         return _json(201, {"run": self.runs[(agent_id, run_id)]})
+
+    def _steer(self, body: dict[str, Any], agent_id: str) -> httpx.Response:
+        """Body checked first, as the API does. A running turn takes the prompt; otherwise it is queued."""
+        if body["delivery"] != "steer":
+            return _error(400, "validation_error", 'delivery must be "steer"')
+        extra = sorted(key for key in body if key not in {"prompt", "delivery"})
+        if extra:
+            names = ", ".join(f'"{key}"' for key in extra)
+            verb = "is" if len(extra) == 1 else "are"
+            return _error(400, "validation_error", f'{names} {verb} not allowed with delivery "steer"')
+        latest = self.agents[agent_id].get("latestRunId")
+        run = self.runs.get((agent_id, str(latest)))
+        if run is not None and run["status"] in {"CREATING", "RUNNING", "WAITING_FOR_BACKGROUND_WORK"}:
+            return _json(202, {"delivery": "steered", "runId": run["id"]})
+        return _json(202, {"delivery": "queued"})
 
     def _cancel(self, agent_id: str, run_id: str) -> httpx.Response:
         run = self.runs.get((agent_id, run_id))
@@ -433,9 +457,19 @@ _POOL = {
 }
 
 
-def _environment_route(path: str) -> httpx.Response:
+def _environment_route(path: str, params: httpx.QueryParams) -> httpx.Response:
     if path == "/v1/environments":
-        return _json(200, {"items": [_ENVIRONMENT]})
+        owner = params.get("owner")
+        if owner not in (None, "personal", "team"):
+            return _error(400, "validation_error", "owner must be personal or team")
+        query, named, repos = params.get("query"), params.get("named"), params.get_list("repo")
+        keep = (
+            owner in (None, _ENVIRONMENT["owner"])
+            and (query is None or query.casefold() in str(_ENVIRONMENT["name"]).casefold())
+            and named != "false"
+            and (not repos or any(repo in entry["url"] for repo in repos for entry in _ENVIRONMENT["repos"]))
+        )
+        return _json(200, {"items": [_ENVIRONMENT] if keep else []})
     if path == f"/v1/environments/{_ENV_ID}":
         return _json(200, _ENVIRONMENT)
     if path == f"/v1/environments/{_ENV_ID}/builds/active":
@@ -453,6 +487,31 @@ def _environment_route(path: str) -> httpx.Response:
         }
         return _json(200, build)
     return _error(404, "environment_not_found", "Unknown environment.")
+
+
+_PROJECT = {
+    "id": PROJECT_ID,
+    "name": "Fixture project",
+    "status": "ACTIVE",
+    "coordinatorAgentId": PROJECT_ID,
+    "appearance": {"icon": "rocket", "color": "blue"},
+    "createdAt": _NOW,
+    "updatedAt": _NOW,
+    "url": f"https://cursor.com/agents/{PROJECT_ID}",
+}
+
+
+def _project_route(path: str, params: httpx.QueryParams, agents: dict[str, dict[str, Any]]) -> httpx.Response:
+    if path == "/v1/projects":
+        if params.get("includeArchived") not in (None, "true", "false"):
+            return _error(400, "validation_error", "includeArchived must be true or false")
+        return _json(200, {"items": [_PROJECT]})
+    if path == f"/v1/projects/{PROJECT_ID}":
+        return _json(200, _PROJECT)
+    if path == f"/v1/projects/{PROJECT_ID}/agents":
+        # The agents this coordinator started: the seeded one, unless a test deleted it.
+        return _json(200, {"items": [agents[SEEDED_AGENT_ID]] if SEEDED_AGENT_ID in agents else []})
+    return _error(404, "project_not_found", "Project not found.")
 
 
 def _json(status: int, payload: dict[str, Any]) -> httpx.Response:

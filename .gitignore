@@ -9,7 +9,7 @@ build/
 *.egg-info/
 .coverage
 htmlcov/
-docs/cloud-agents-openapi.yaml
+docs/cloud-agents-openapi*.yaml
 docs/openapi-headers.txt
 examples/resolved/
 

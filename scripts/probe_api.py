@@ -80,6 +80,77 @@ async def free_probes(http: httpx.AsyncClient) -> None:
                     if body[field]:
                         row[f"{field}_item_keys"] = sorted(body[field][0])
         emit(**row)
+    await projects_probe(http)
+
+
+def json_body(response: httpx.Response) -> dict[str, object]:
+    """The JSON object of a 200, or an empty one: a non-JSON body (an HTML 502 page) must not stop later probes."""
+    if response.status_code != 200:
+        return {}
+    try:
+        body = response.json()
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+async def projects_probe(http: httpx.AsyncClient) -> None:
+    """Read-only look at the Projects API (spec of November 16, 2026): counts and fields, never a name.
+
+    A project's id is also its coordinator agent's id; the last rows check that reading it as an agent works
+    and whether the coordinator is listed by `GET /v1/agents`.
+    """
+    pages: dict[str, list[dict[str, object]]] = {}
+    for label, params in (("default", {}), ("false", {"includeArchived": "false"}), ("true", {"includeArchived": "true"})):
+        response = await http.get("/v1/projects", params={"limit": "100", **params})
+        body = json_body(response)
+        pages[label] = body.get("items", [])  # type: ignore[assignment]
+        archived = sum(1 for item in pages[label] if item.get("status") == "ARCHIVED")
+        emit(
+            probe="projects_list",
+            param=label,
+            http=response.status_code,
+            code=error_code(response),
+            projects=len(pages[label]),
+            archived=archived,
+            has_next_cursor=bool(body.get("nextCursor")),
+        )
+    if not pages["default"]:
+        emit(probe="projects_detail", skipped="no project readable with this key")
+        return
+    project = pages["default"][0]
+    project_id = str(project["id"])
+    emit(probe="projects_fields", fields=sorted(project), coordinator_is_own_id=project.get("coordinatorAgentId") == project_id)
+    response = await http.get(f"/v1/projects/{project_id}")
+    emit(probe="project_get", http=response.status_code, code=error_code(response))
+    response = await http.get(f"/v1/projects/{project_id}/agents", params={"limit": "100"})
+    body = json_body(response)
+    emit(
+        probe="project_agents",
+        http=response.status_code,
+        code=error_code(response),
+        agents=len(body.get("items", [])) if response.status_code == 200 else None,  # type: ignore[arg-type]
+    )
+    response = await http.get(f"/v1/agents/{project_id}")
+    emit(probe="project_id_as_agent", http=response.status_code, status=json_body(response).get("status"))
+    cursor: str | None = None
+    listed = scanned = 0
+    complete = False
+    for _ in range(5):
+        response = await http.get("/v1/agents", params={"limit": "100", **({"cursor": cursor} if cursor else {})})
+        body = json_body(response)
+        if response.status_code != 200 or "items" not in body:
+            break
+        scanned += len(body["items"])  # type: ignore[arg-type]
+        listed += sum(1 for item in body["items"] if item.get("id") == project_id)  # type: ignore[union-attr]
+        cursor = body.get("nextCursor")  # type: ignore[assignment]
+        complete = not cursor
+        if complete or listed:
+            break
+    # listed=false only means "absent" when the walk reached the end of the list.
+    emit(probe="coordinator_in_agents_list", scanned=scanned, listed=bool(listed), scan_complete=complete or bool(listed))
+    response = await http.get("/v1/projects/bc-00000000-0000-0000-0000-000000000000")
+    emit(probe="project_unknown", http=response.status_code, code=error_code(response))
 
 
 def head_sha(repo: str) -> str:

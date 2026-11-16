@@ -2,7 +2,22 @@
 
 Instructions for an agent that must install or use this MCP server. Read this file in full before acting. The details of the API contract are in `docs/api-contract.md`.
 
-This server is local, over stdio. It exposes nineteen tools for the Cursor Cloud Agents v1 REST API. It is used to create a Cloud session, choose the model and the reasoning level, send a command, read the result, then archive or delete the session. It is not an orchestration platform. The package is published on PyPI as `cursor-cloud-mcp`.
+This server is local, over stdio. It exposes twenty tools for the Cursor Cloud Agents v1 REST API. It is used to create a Cloud session, choose the model and the reasoning level, send a command, read the result, then archive or delete the session. It is not an orchestration platform. The package is published on PyPI as `cursor-cloud-mcp`.
+
+## Unreleased, after 0.6.0
+
+From the Cursor spec of November 9, 2026 and real reads of November 10. "Not verified live" means the request shape is tested against the spec only: no real run could be created that day.
+
+- `cursor_create_run(delivery="steer")` adds a prompt to the run in progress instead of being refused with `AGENT_BUSY`. It takes only `prompt` and `images`. The result carries `delivery`: `steered` (`run_id` is the running run, no new run) or `queued` (the prompt is the agent's next follow-up, no `run_id`: re-read `cursor_get_agent`). Never send a steer twice, also after `MUTATION_OUTCOME_UNKNOWN`: a delivered steer creates no run, so look for the prompt in the run's events or the conversation instead. `PERMISSION` with `remote_code: feature_unavailable` means the account does not have it: `replace_active=true` remains. Not verified live beyond the API's body validation. **`run_id` and `status` of `cursor_create_run` are now optional**: both are absent on a queued steer.
+- `cursor_create_run` takes `env_vars` and `forward_env`, for that run only. Not verified live.
+- `WAITING_FOR_BACKGROUND_WORK` is a known, non-terminal run status (it was reported with `status_known: false`). Not observed live.
+- `cursor_get_usage`: a run whose token counts are all zero carries `no_usage_recorded: true`; `runs_without_usage` counts them and `warnings` says the zeros are not a cost of zero. `cursor_supervise(usage=true)` gives an agent with such an ended run `no_usage_recorded: true` (a run still in progress is not counted; `charged_cents` is then shown only if something was charged), and `summary.no_usage_recorded` lists those agents, for which the total is a lower bound. Seen live: agents created on a unified Cursor and Grok account reported zero tokens after minutes of work.
+- `cursor_list_models`: `default_max_mode: true` when the catalog flags the default variant Max Mode, and with `model_id`, `max_mode_variants`. A creation or follow-up whose effective selection is such a variant returns `model.max_mode: true` and a warning. The flag is not written to the local journal, so `model` read back later does not carry it; its `params` do.
+- `cursor_get_account` adds `api_key_type` (`crsr`, `grok` or `other`, from the configured key's prefix) and `notes`.
+- `cursor_list_environments` takes the API's filters: `query`, `owner`, `named`, `repositories`. They are refused with `environment_id`.
+- `cursor_list_projects` (read-only, from the spec of November 16, 2026): the Projects you own or joined, one page at a time, and with `project_id` one Project plus the agents its coordinator started. A Project is a coordinator agent. `coordinator_agent_id` is your own coordinator in it, an ordinary agent: for a Project you own it equals `project_id`; for one you joined, `project_id` is the owner's coordinator, not yours, and `coordinator_agent_id` may be absent (only the owned case was seen). Read live on November 16 with a `crsr_` and a `grok_` key, on the account's own Project: the list, the Project, and `cursor_get_agent` and `cursor_get_run` on its coordinator. From the spec only, not seen: the rows of `agents` (the account's only Project has none), and the stream of a coordinator run (`cursor_read_run_events` on its last run answered `STREAM_EXPIRED`, as an old run does). `cursor_create_run` on a coordinator is not refused locally (`IDLE`, `work_on_current_branch` false) and would be a paid run: not tried. **`cursor_archive_agent` and `cursor_delete_agent` on your coordinator act on it, and per the spec a Project is `ARCHIVED` once its owner's coordinator is stopped: not tried, do not use them on a Project to keep.** To keep a cleanup of idle agents from archiving a Project by accident, the rows of `cursor_list_agents`, `cursor_get_agent` and `cursor_supervise` carry `coordinator_of_project` (the Project's id) when the agent is your coordinator in a Project. It is only a marker: nothing is refused, and the rows are unmarked when the Projects list cannot be read (Projects turned off, service-account key, an error). It costs one `GET /v1/projects` (up to five pages of 100), cached for 60 seconds, errors included. Seen live on November 16 with both key types, in all three tools. No tool creates, renames or archives a Project as such.
+- Cursor's "Blocked by privacy setting" refusal is now `PERMISSION`, with a `recovery` saying the arguments are not the cause; it used to read "Parameters rejected.". Seen live on `cursor_list_environments` with a `grok_` key, while a `crsr_` key of the same account was accepted. Two days later (November 12) the same call answered `200` with the `grok_` key; the classification stays in case the refusal returns.
+- Environment variable names containing `CURSOR_SANDBOX` (any letter case) are refused locally, as the spec now says.
 
 ## Migration 0.5 → 0.6
 
@@ -243,7 +258,7 @@ What the API does not tell you, measured on October 6, 2026. These are API limit
 - `FINISHED` means the agent ended its turn, not that its job is done. Jobs it started in the background may have been killed or may still be running.
 - A `RUNNING` run keeps `updated_at` at its creation time, even after hours: it is not a liveness signal.
 - An `ERROR` run carries no cause: neither `error` nor `result`.
-- A run in progress cannot receive a message: a follow-up answers `AGENT_BUSY`.
+- A run in progress refuses an ordinary follow-up (`AGENT_BUSY`). Since November 2026 the API takes a steer instead (`delivery="steer"`), where the account has it.
 - The stream can only be replayed from its start.
 
 What to use instead:
@@ -253,6 +268,7 @@ cursor_supervise(name="runner")                 every runner, latest run, one ca
 cursor_supervise(name="runner", activity=true)  + last_event_at, idle_seconds, background tasks (about 30-60 s)
 cursor_get_run(agent_id, run_id, activity=true) detail of one run: last text, last tool call, background tasks
 cursor_read_run_events(..., tail=20)            the last 20 events
+cursor_create_run(..., delivery="steer")        add a message to the run in progress, cancelling nothing
 cursor_create_run(..., replace_active=true)     redirect a runner: stop its run, then follow up
 ```
 

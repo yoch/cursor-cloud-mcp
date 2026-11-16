@@ -7,7 +7,13 @@ from collections.abc import Awaitable, Callable
 from typing import Literal, Never
 
 from cursor_cloud_mcp import budget, redaction
-from cursor_cloud_mcp.catalog import REASONING_IDS, effective_selection, resolve_model_selection
+from cursor_cloud_mcp.catalog import (
+    REASONING_IDS,
+    effective_selection,
+    find_model,
+    resolve_model_selection,
+    selection_max_mode,
+)
 from cursor_cloud_mcp.client import CursorCloudClient
 from cursor_cloud_mcp.config import (
     CANCEL_REREAD_PAUSE_SECONDS,
@@ -28,6 +34,7 @@ from cursor_cloud_mcp.models import (
     ImageInput,
     ModelParam,
     ModelSelectionView,
+    RemoteCreateRun,
     RepositoryInput,
     agent_status_known,
     run_terminal,
@@ -37,6 +44,7 @@ from cursor_cloud_mcp.present import (
     create_run_view,
     ensure_continuation_allowed,
     reused_agent_view,
+    steer_view,
 )
 from cursor_cloud_mcp.validation import (
     normalize_repository,
@@ -184,10 +192,36 @@ async def perform_followup(
     replace_active: bool = False,
     journal: ModelJournal | None = None,
     images: list[ImageInput] | None = None,
+    delivery: Literal["steer"] | None = None,
+    env_vars: dict[str, str] | None = None,
+    forward_env: list[str] | None = None,
+    settings: Settings,
 ) -> CreateRunView:
     checked_prompt = require_prompt(prompt)
     checked_mode = require_mode(mode)
     checked_images = require_images(images)
+    if delivery is not None:
+        # Everything below is refused before any request: nothing is read, cancelled or sent.
+        _require_bare_steer(
+            mode=checked_mode,
+            model=model_id is not None or bool(model_params) or reasoning_level is not None,
+            replace_active=replace_active,
+            # Empty containers add nothing to the body, as on an ordinary follow-up.
+            env=bool(env_vars) or bool(forward_env),
+        )
+        agent = await client.get_agent(agent_id)
+        ensure_continuation_allowed(agent)
+        steer_body: dict[str, object] = {"prompt": _prompt_body(checked_prompt, checked_images), "delivery": delivery}
+        steered = await client.steer_run(agent_id, steer_body, previous_latest_run_id=agent.latestRunId)
+        if isinstance(steered, RemoteCreateRun):
+            started = create_run_view(steered, previous_latest_run_id=agent.latestRunId, url=agent.url)
+            note = "Cursor answered this steer with a new run instead of adding the prompt to a running turn."
+            return started.model_copy(update={"warnings": [note]})
+        return steer_view(steered, agent_id=agent.id, previous_latest_run_id=agent.latestRunId, url=agent.url)
+    merged = _environment_variables(settings, env_vars, forward_env)
+    if merged is not None:
+        # Per-call values: redacted from logs and errors from now on.
+        redaction.register(*merged.values())
     agent = await client.get_agent(agent_id)
     ensure_continuation_allowed(agent)
     # Verified against the real API on October 5, 2026: model on POST /runs changes the model, and the choice persists.
@@ -208,9 +242,11 @@ async def perform_followup(
         body["mode"] = checked_mode
     if model_body is not None:
         body["model"] = model_body
+    if merged is not None:
+        body["envVars"] = merged
     replaced: str | None = None
     if replace_active and agent.latestRunId is not None:
-        # The API cannot steer a running cloud run (agent_busy): stop it, then follow up on the
+        # The caller chose to replace rather than steer: stop the run, then follow up on the
         # same agent, which keeps its conversation, so no full resume prompt is needed.
         replaced = await _stop_active_run(client, agent_id, agent.latestRunId)
     try:
@@ -230,6 +266,26 @@ async def perform_followup(
     if replaced is not None:
         updates["replaced_run_id"] = replaced
     return view.model_copy(update=updates)
+
+
+def _require_bare_steer(*, mode: str | None, model: bool, replace_active: bool, env: bool) -> None:
+    """A steer body is ``prompt`` and ``delivery`` only: the API refuses any other field (400)."""
+    extra = [
+        name
+        for name, given in (
+            ("mode", mode is not None),
+            ("model_id, model_params or reasoning_level", model),
+            ("env_vars or forward_env", env),
+            ("replace_active", replace_active),
+        )
+        if given
+    ]
+    if extra:
+        raise failure(
+            ErrorCode.VALIDATION,
+            f"delivery=steer takes only the prompt and its images, not: {'; '.join(extra)}. "
+            "A steer adds to the running turn: it changes neither the model nor the mode, and cancels nothing.",
+        )
 
 
 async def cancel_and_observe(
@@ -433,14 +489,22 @@ async def _model_choice(
         note = f"CURSOR_MCP_DEFAULT_MODEL is not valid in the catalog: {exc.body.message}"
         raise CursorFailure(exc.body.model_copy(update={"message": note})) from None
     params, defaulted, unset = effective_selection(catalog, body)
+    # Only a complete selection can be matched to a variant: with a parameter unset, the catalog does not say.
+    max_mode = not unset and selection_max_mode(find_model(catalog, str(body["id"])), params)
     selection = ModelSelectionView(
         id=str(body["id"]),
         params=params or None,
         defaulted=defaulted or None,
         unset=unset or None,
+        max_mode=max_mode or None,
         source=source,
     )
     warnings: list[str] = []
+    if max_mode:
+        warnings.append(
+            "The catalog flags this selection Max Mode. cursor_list_models(model_id) lists the flagged "
+            "variants (max_mode_variants) and the others."
+        )
     if defaulted:
         values = ", ".join(f"{name}={params[name]}" for name in defaulted)
         warnings.append(
