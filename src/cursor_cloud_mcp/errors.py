@@ -100,6 +100,23 @@ def failure(
     )
 
 
+def failure_note(exc: CursorFailure) -> str:
+    """One line for a failure that is reported inside a successful result, not raised.
+
+    Keeps what a caller needs to react: the HTTP status, Cursor's own code and the wait it asked for.
+    """
+    body = exc.body
+    details = []
+    if body.http_status is not None:
+        details.append(f"http {body.http_status}")
+    if body.remote_code is not None:
+        details.append(f"remote_code {body.remote_code}")
+    if body.retry_after_seconds is not None:
+        details.append(f"retry after {body.retry_after_seconds:g}s")
+    suffix = f" [{', '.join(details)}]" if details else ""
+    return f"{body.code.value}: {body.message}{suffix}"
+
+
 def explain(code: ErrorCode) -> str:
     """Stable sentence per code. The ``Never`` makes a new code fail type checking."""
     match code:

@@ -584,6 +584,9 @@ async def test_supervise_reads_runs_in_parallel_but_bounded() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/agents":
             return httpx.Response(200, json={"items": agents})
+        if request.url.path == "/v1/projects":
+            # The coordinator marker's own read: not one of the run reads whose concurrency is measured.
+            return httpx.Response(200, json={"items": []})
         state["now"] += 1
         state["peak"] = max(state["peak"], state["now"])
         await asyncio.sleep(0.05)

@@ -5,7 +5,7 @@ description: Run and supervise Cursor Cloud agents through the cursor-cloud-mcp 
 
 # Cursor agents: compute fleets and coding agents
 
-Written against cursor-cloud-mcp 0.6.0. If a tool or parameter differs, trust the server's tool
+Written against cursor-cloud-mcp 0.7.0. If a tool or parameter differs, trust the server's tool
 descriptions. **(observed)** marks behavior seen in real fleets that the API does not promise.
 
 Read only what the task needs:
@@ -44,7 +44,8 @@ user's approval in one short block before the first paid call.
    `cursor_supervise(name, status="all", usage=true)` sums a fleet (`summary.charged_cents_total`).
    Read it after the probe and at every checkpoint. No quota or reset is visible: `QUOTA` with
    `usage_limit_exceeded` means the spend limit is reached, stop all paid calls and tell the user.
-   Do not turn tokens into dollar estimates.
+   Do not turn tokens into dollar estimates. `no_usage_recorded` on a run or an agent means the
+   API recorded nothing: its cost is unknown, not zero, and the fleet total leaves it out.
 8. **Client timeout ≥ 100 s** (the server bounds calls at 95 s); a client that gives up earlier
    may abandon a creation already sent.
 9. **Always name the model and every cost parameter** (`model_id`, `reasoning_level`,
@@ -78,13 +79,20 @@ user's own machines instead. Coordinator and workers share git branches only.
 - An `ERROR` run carries no cause; `cursor_get_run` adds the activity summary by itself. Runs
   blocked for hours in one `await` ended in `ERROR` after 2 to 4 h while their `nohup` job went
   on (observed).
-- A run in progress cannot receive a message (`AGENT_BUSY`): `replace_active=true` cancels it
-  first. A worker whose run ended its turn (detached job, section 5) takes a plain follow-up.
+- A run in progress refuses a plain follow-up (`AGENT_BUSY`): `delivery="steer"` adds the prompt
+  to the running turn where the account has it (never send it twice), `replace_active=true`
+  cancels the run first. A worker whose run ended its turn (detached job, section 5) takes a
+  plain follow-up.
 - The API never returns the model. `model` in agent, run, supervise and usage views is what this
   server recorded locally when it sent it (`source: local_journal`, `inherited` for a run sent
   without one); absent means unknown, not the default.
 - An idle agent's VM may be released, and an agent left long enough may end up archived
   (suspected, not measured): a follow-up must not assume the job's processes or files survived.
+- Old agents may not respond. Seen once (November 25, 2026): a follow-up to an agent idle for
+  two weeks was accepted but sat 4 min in `RUNNING` with only heartbeats, while the same prompt
+  on a fresh agent finished in 23 s. Not documented by Cursor. Prefer fresh agents for urgent
+  work; when reusing an old one, wait about 10 min before cancelling, since a new VM may be
+  starting and a cancel stops it (Cursor staff, on the forum, about a VM that ran out of memory).
 - The stream replays from its start only: `activity=true` and `tail` cost 30 to 60 s per run.
 - `cursor_supervise` defaults to `status="active"` (runs in progress only); loops that act on
   ended runs need `status="all"`. `name` is a case-insensitive substring over at most five pages
@@ -176,7 +184,8 @@ Two signals: the **job produces** (pushes) and the **agent is alive** (stream). 
 3. Same with `activity=true` (30 to 60 s): `idle_seconds`, `summary.stale`,
    `summary.unfinished_after_end`, background tasks. Rows in `summary.incomplete` are inconclusive.
 4. One worker: `cursor_get_run(activity=true)` and `cursor_read_run_events(tail=20)`; start there
-   for any `ERROR` run.
+   for any `ERROR` run. Add `include_shell_output=true` to see what a command still running has
+   printed so far (`shell_output` events, newest output kept within `tool_output_limit`).
 
 Supervisor loop: terminal run with the result marker → next job; terminal without it → same job
 again (it resumes); no push for an hour since the latest of last push, assignment and relaunch →

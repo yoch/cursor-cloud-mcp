@@ -108,6 +108,15 @@ class RemoteCreateRun(BaseModel):
     run: RemoteRun
 
 
+class RemoteSteer(BaseModel):
+    """202 answer to a steer: ``steered`` (a running turn took it) or ``queued`` (it is the next follow-up)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    delivery: Literal["steered", "queued"]
+    runId: str | None = None
+
+
 class RemoteAgentPage(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -162,6 +171,8 @@ class RemoteModelVariant(BaseModel):
     displayName: str
     description: str | None = None
     isDefault: bool | None = None
+    # Returned by the real API (seen on November 10, 2026), absent from the OpenAPI.
+    isMaxMode: bool | None = None
 
 
 class RemoteModel(BaseModel):
@@ -249,6 +260,35 @@ class RemoteEnvironmentPage(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     items: list[RemoteEnvironment]
+    nextCursor: str | None = None
+
+
+class RemoteProjectAppearance(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    icon: str | None = None
+    color: str | None = None
+
+
+class RemoteProject(BaseModel):
+    """Only ``id`` is relied on, as for environments: one odd row must not make the whole page unreadable."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    status: str | None = None
+    name: str | None = None
+    coordinatorAgentId: str | None = None
+    appearance: RemoteProjectAppearance | None = None
+    createdAt: str | None = None
+    updatedAt: str | None = None
+    url: str | None = None
+
+
+class RemoteProjectPage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    items: list[RemoteProject]
     nextCursor: str | None = None
 
 
@@ -376,6 +416,9 @@ class AccountView(BaseModel):
     user_last_name: str | None = None
     # The API omits the user fields for service-account and team keys.
     service_account_key: bool | None = None
+    # From the configured key's prefix, never the key: crsr (Cursor dashboard key), grok (unified account key).
+    api_key_type: Literal["crsr", "grok", "other"] | None = None
+    notes: list[str] | None = None
     server: ServerStatusView | None = None
 
 
@@ -392,7 +435,11 @@ class ModelView(BaseModel):
     defaults: dict[str, str] | None = None
     reasoning_param: str | None = None
     restricted_combinations: bool | None = None
+    # True when the default variant is flagged Max Mode by the catalog; absent otherwise.
+    default_max_mode: bool | None = None
     variants: list[dict[str, str]] | None = None
+    # With model_id: the variants the catalog flags Max Mode, as parameter values.
+    max_mode_variants: list[dict[str, str]] | None = None
 
 
 class ModelBriefView(BaseModel):
@@ -403,6 +450,7 @@ class ModelBriefView(BaseModel):
     id: str
     aliases: list[str] | None = None
     defaults: dict[str, str] | None = None
+    default_max_mode: bool | None = None
 
 
 class ModelListView(BaseModel):
@@ -424,6 +472,8 @@ class ModelSelectionView(BaseModel):
     params: dict[str, str] | None = None
     defaulted: list[str] | None = None
     unset: list[str] | None = None
+    # True when the catalog flags this exact selection Max Mode; absent otherwise or when unset is not empty.
+    max_mode: bool | None = None
     source: Literal["request", "server_default", "local_journal"]
     # local_journal only: when it was recorded, and true when the run did not set it but inherits it.
     recorded_at: str | None = None
@@ -541,6 +591,9 @@ class AgentSummaryView(BaseModel):
     updated_at: str
     latest_run_id: str | None = None
     env: EnvView
+    # Set when this agent is the caller's coordinator in a Project: the Project's id. Archiving or deleting it
+    # acts on that coordinator, and per the spec a Project is ARCHIVED once its owner's coordinator is stopped.
+    coordinator_of_project: str | None = None
 
 
 class AgentPageView(BaseModel):
@@ -550,6 +603,41 @@ class AgentPageView(BaseModel):
     next_cursor: str | None = None
     has_more: bool
     scanned: int | None = None
+
+
+class ProjectView(BaseModel):
+    """A Project: a coordinator agent that starts and follows other agents.
+
+    ``coordinator_agent_id`` is the caller's own coordinator. For a Project the caller owns it equals
+    ``project_id``; for one they joined, ``project_id`` is the owner's coordinator and this field may be absent.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str
+    name: str | None = None
+    status: str | None = None
+    coordinator_agent_id: str | None = None
+    icon: str | None = None
+    color: str | None = None
+    url: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ProjectListView(BaseModel):
+    """A page of Projects, or one Project (``items`` has it alone) with a page of the agents its coordinator started.
+
+    ``next_cursor`` and ``has_more`` belong to ``items`` for a list and to ``agents`` for one Project.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[ProjectView]
+    agents: list[AgentSummaryView] | None = None
+    agents_error: str | None = None
+    next_cursor: str | None = None
+    has_more: bool
 
 
 class AgentView(AgentSummaryView):
@@ -626,10 +714,13 @@ class RunEventView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     event_id: str | None = None
-    kind: Literal["status", "assistant", "tool_call", "thinking", "result", "error", "done"]
+    kind: Literal["status", "assistant", "tool_call", "thinking", "result", "error", "done", "shell_output"]
     text: str | None = None
     status: str | None = None
     call_id: str | None = None
+    # shell_output only: what the shell command printed so far, newest part kept.
+    stdout: str | None = None
+    stderr: str | None = None
     tool_name: str | None = None
     tool_status: str | None = None
     tool_args: str | None = None
@@ -689,6 +780,7 @@ class SupervisedAgentView(BaseModel):
     name: str | None = None
     url: str
     agent_status: str
+    coordinator_of_project: str | None = None
     run_id: str | None = None
     status: str | None = None
     terminal: bool | None = None
@@ -703,6 +795,8 @@ class SupervisedAgentView(BaseModel):
     model: ModelSelectionView | None = None
     # usage=true: the agent's total charged cost as the API returns it.
     charged_cents: float | None = None
+    # usage=true: the API recorded no tokens for an ended run of this agent. Its cost is unknown, not zero.
+    no_usage_recorded: bool | None = None
     usage_error: str | None = None
 
 
@@ -716,6 +810,8 @@ class SuperviseSummaryView(BaseModel):
     incomplete: list[str] | None = None
     read_errors: int | None = None
     charged_cents_total: float | None = None
+    # Agents with unrecorded usage: charged_cents_total is only a lower bound for them.
+    no_usage_recorded: list[str] | None = None
     usage_errors: int | None = None
 
 
@@ -750,8 +846,11 @@ class CreateRunView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     agent_id: str
-    run_id: str
-    status: str
+    # A follow-up: the new run. A steer: the running run that took the prompt, absent when it was queued.
+    run_id: str | None = None
+    status: str | None = None
+    # Steer only: steered (a running turn took the prompt, no new run) or queued (it is the agent's next follow-up).
+    delivery: Literal["steered", "queued"] | None = None
     previous_latest_run_id: str | None = None
     url: str | None = None
     model: ModelSelectionView | None = None
@@ -802,6 +901,8 @@ class RunUsageView(BaseModel):
     cost: CostView | None = None
     # Ratio of the two returned numbers, not a price list: charged_cents / total_tokens * 1e6.
     charged_cents_per_million_tokens: float | None = None
+    # True when every token count is zero: the API recorded nothing for this run, which is not a cost of zero.
+    no_usage_recorded: bool | None = None
     model: ModelSelectionView | None = None
 
 
@@ -814,6 +915,8 @@ class UsageView(BaseModel):
     total_cost: CostView | None = None
     charged_cents_per_million_tokens: float | None = None
     runs: list[RunUsageView]
+    runs_without_usage: int | None = None
+    warnings: list[str] | None = None
 
 
 class RunEventsView(BaseModel):
@@ -892,7 +995,8 @@ class DeleteView(BaseModel):
 
 _KNOWN_AGENT_STATUSES = {"ACTIVE", "IDLE", "ARCHIVED"}
 _RUN_TERMINAL = {"FINISHED": True, "ERROR": True, "CANCELLED": True, "EXPIRED": True}
-_RUN_OPEN = {"CREATING": False, "RUNNING": False}
+# WAITING_FOR_BACKGROUND_WORK: an active state added by the spec of November 9, 2026, not yet observed live.
+_RUN_OPEN = {"CREATING": False, "RUNNING": False, "WAITING_FOR_BACKGROUND_WORK": False}
 
 
 def agent_status_known(status: str) -> bool:

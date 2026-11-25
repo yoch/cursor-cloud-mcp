@@ -6,6 +6,7 @@ from cursor_cloud_mcp.models import (
     RemoteModel,
     RemoteModelList,
     RemoteModelParameter,
+    RemoteModelVariant,
 )
 
 REASONING_IDS = ("effort", "reasoning_effort", "reasoning")
@@ -41,14 +42,50 @@ def find_model(catalog: RemoteModelList, model_id: str) -> RemoteModel:
     )
 
 
+def projected_variants(model: RemoteModel) -> list[tuple[RemoteModelVariant, dict[str, str]]]:
+    """Each variant with its values for the published parameters: what a caller can actually select.
+
+    Variants can carry unpublished parameters, so several variants may project onto one selection.
+    """
+    published = {parameter.id for parameter in model.parameters or []}
+    return [
+        (variant, {item.id: item.value for item in variant.params if item.id in published})
+        for variant in model.variants or []
+    ]
+
+
 def default_selection(model: RemoteModel) -> dict[str, str] | None:
     """Values of the default variant, limited to the published parameters."""
-    published = {parameter.id for parameter in model.parameters or []}
-    for variant in model.variants or []:
+    for variant, values in projected_variants(model):
         if variant.isDefault:
-            values = {item.id: item.value for item in variant.params if item.id in published}
             return values or None
     return None
+
+
+def default_max_mode(model: RemoteModel) -> bool:
+    """True when the catalog flags the default variant Max Mode."""
+    return any(variant.isDefault and variant.isMaxMode for variant in model.variants or [])
+
+
+def max_mode_selections(model: RemoteModel) -> list[dict[str, str]]:
+    """Selections every variant behind which is flagged Max Mode, without duplicates.
+
+    A selection shared by a flagged and an unflagged variant (they differ by an unpublished
+    parameter) is left out: the catalog does not say which one Cursor runs.
+    """
+    projected = projected_variants(model)
+    found: list[dict[str, str]] = []
+    for _variant, values in projected:
+        if values in found:
+            continue
+        if all(variant.isMaxMode for variant, other in projected if other == values):
+            found.append(values)
+    return found
+
+
+def selection_max_mode(model: RemoteModel, params: dict[str, str]) -> bool:
+    """True when a complete selection is one the catalog flags Max Mode whatever its unpublished parameters."""
+    return params in max_mode_selections(model)
 
 
 def effective_selection(
@@ -151,10 +188,9 @@ def _require_combination(model: RemoteModel, chosen: list[tuple[str, str]]) -> N
 
 
 def _published_combinations(model: RemoteModel) -> list[set[tuple[str, str]]]:
-    published = {parameter.id for parameter in model.parameters or []}
     found: list[set[tuple[str, str]]] = []
-    for variant in model.variants or []:
-        combination = {(item.id, item.value) for item in variant.params if item.id in published}
+    for _variant, values in projected_variants(model):
+        combination = set(values.items())
         if combination not in found:
             found.append(combination)
     return found

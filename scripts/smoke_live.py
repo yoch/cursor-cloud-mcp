@@ -1,4 +1,4 @@
-"""Real, PAID smoke test of the nineteen tools, on the real stdio server.
+"""Real, PAID smoke test of the twenty tools, on the real stdio server.
 
 Opt-in: `SMOKE_PAID=1`. Two `composer-2.5` agents, a few very short runs,
 and both agents are deleted at the end, except with `SMOKE_KEEP=1`, which
@@ -26,7 +26,8 @@ REPO_URL = os.environ.get("SMOKE_REPO", "https://github.com/yoch/cursor-cloud-mc
 BRANCH = os.environ.get("SMOKE_BRANCH", "main")
 FWD_VALUE = "smoke-forwarded-value-12345678"
 PUB_VALUE = "smoke-public-value-87654321"
-SHA = "a" * 40
+# Refused by the server before any request (".." is not a Git ref). A full SHA is no longer one: it is sent.
+BAD_REF = "smoke..invalid"
 # Shared by both agent names, so cursor_supervise(name=TAG) finds exactly this run's agents.
 TAG = f"smoke-{uuid.uuid4().hex[:8]}"
 # Network variables passed to the server if they exist: proxy and certificate authority
@@ -159,7 +160,7 @@ async def main() -> int:
 
 async def run_all(client: Client, report: Report, created: list[str]) -> None:
     listed = await client.list_tools()
-    report.check("tools/list", len(listed.tools) == 19, f"tools={len(listed.tools)}")
+    report.check("tools/list", len(listed.tools) == 20, f"tools={len(listed.tools)}")
     tools = {tool.name: tool for tool in listed.tools}
     follow_up = tools.get("cursor_create_run")
     supervise = tools.get("cursor_supervise")
@@ -186,6 +187,16 @@ async def run_all(client: Client, report: Report, created: list[str]) -> None:
 
     ok, data = await call(client, "cursor_get_account")
     report.check("cursor_get_account", ok, f"key_name_present={'api_key_name' in data}")
+
+    # Free read. A team that turned Projects off answers PERMISSION: a warning, not a failure of this server.
+    ok, data = await call(client, "cursor_list_projects")
+    if ok:
+        report.check("cursor_list_projects", True, f"projects={len(data.get('items', []))}")  # type: ignore[arg-type]
+    elif data.get("code") == "PERMISSION":
+        report.add("cursor_list_projects", "WARN", f"code={data.get('code')}")
+    else:
+        # Anything else (a response the server cannot read, a refused parameter, a 5xx) is a regression to catch.
+        report.check("cursor_list_projects", False, f"code={data.get('code')}")
 
     ok, data = await call(client, "cursor_list_models")
     models = {str(item["id"]): item for item in data.get("items", [])} if ok else {}  # type: ignore[union-attr]
@@ -218,10 +229,10 @@ async def run_all(client: Client, report: Report, created: list[str]) -> None:
     ok, data = await call(
         client,
         "cursor_create_agent",
-        {"prompt": "x", "repository": REPO_URL, "starting_ref": SHA, "model_id": MODEL},
+        {"prompt": "x", "repository": REPO_URL, "starting_ref": BAD_REF, "model_id": MODEL},
     )
     report.check(
-        "SHA refused locally", not ok and code_of(data) == "VALIDATION", code_of(data)
+        "invalid starting_ref refused locally", not ok and code_of(data) == "VALIDATION", code_of(data)
     )
     ok, data = await call(
         client,
