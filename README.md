@@ -55,7 +55,7 @@ The server reads the process environment only, never a `.env` file. No tool chan
 | `cursor_create_run` | **Paid.** Follow-up run on the same agent; `delivery="steer"` adds to a run in progress, `replace_active` cancels it first. |
 | `cursor_list_runs` | An agent's runs, newest first. |
 | `cursor_get_run` | State, final result, branches; waits up to 60 s; `activity` adds what the stream shows. |
-| `cursor_read_run_events` | Stream excerpt, resumable, or the last N events (`tail`). |
+| `cursor_read_run_events` | Stream excerpt, resumable, or the last N events (`tail`); optionally the live output of shell commands. |
 | `cursor_read_conversation` | An agent's whole conversation as text, every run included (legacy v0 endpoint). |
 | `cursor_cancel_run` | Cancels, then re-reads to confirm. Pushed commits stay. |
 | `cursor_get_usage` | Tokens and cost in US cents, per agent or per run. |

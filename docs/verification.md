@@ -1,5 +1,13 @@
 # Verification
 
+## Follow-ups, live shell output, and the November 25 spec (November 25, 2026)
+
+Same account, a `grok_` key created that day. Reads as on November 16: `200` on `me`, `models`, `repositories`, `agents`, `environments`, `projects`; `403` on `pools` and `secrets`.
+
+- **Follow-ups are accepted.** `POST /v1/agents/{id}/runs` answered `201` twice. On an agent idle since November 10, the run sat 4 minutes in `RUNNING` with only heartbeats on its stream and was cancelled. On an agent the account owner had just created by hand, the same kind of prompt finished in 23 s with its result. So an agent created by hand in the Cursor interface can then be driven by this server. The old agent's silence is not explained (a VM being rebuilt is possible; the cancel may have cut it).
+- **Live shell output.** On the fresh agent, the run's stream read with `x-cursor-sdk-shell-tool-call-delta: true` (from `cursor-sdk` 1.5.0) carried 37 `interaction_update` events, 16 of them `shell-tool-call-delta`; the same stream replayed without the header carried 21, none of that type, everything else identical. The completed `tool_call` already carried the whole `stdout` and `stderr`. Wired as `cursor_read_run_events(include_shell_output=true)`; tests in `tests/test_shell_output.py` use the recorded shapes, anonymized.
+- **The spec changed again** (etag `50837eb2…`, 169228 bytes, modified 08:49 GMT): only `files` on `POST /v1/projects`, which this server does not wire; see `docs/api-contract.md`.
+
 ## Unified account, third look, and the November 16 spec (November 16, 2026)
 
 Same account, one `crsr_` key and one `grok_` key. Free GETs, then the paid `scripts/smoke_live.py` with the `crsr_` key (explicit go from the account owner), then a read of the online documentation.

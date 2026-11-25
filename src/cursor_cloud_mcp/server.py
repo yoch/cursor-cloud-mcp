@@ -512,11 +512,13 @@ activity=true adds what the stream shows (one full stream read): last_event_at a
         include_thinking: bool = False,
         tool_output_limit: int = Field(default=EVENT_TEXT_MAX_CHARS, ge=1, le=TOOL_OUTPUT_MAX_CHARS),
         tail: int | None = Field(default=None, ge=1, le=200),
+        include_shell_output: bool = False,
     ) -> RunEventsView:
         """Excerpt of the stream of a run (messages, tool calls, status), to follow its progress. Read-only. Resume with after_event_id = last_event_id. finished: the run has returned its result; stream_error: stream error, not the end of the run; interrupted: cut off, partial events returned. Texts are bounded (clipped): the full result is in cursor_get_run. STREAM_EXPIRED: use cursor_get_run.
 max_wait_seconds defaults to 20.
 tool_output_limit (default 500, max 4000) widens the tool args/result text of the returned events: clipped head + tail with an explicit marker, the total staying within the limit. tool_args_omitted/tool_result_omitted mean Cursor itself omitted that field upstream because of its size: raising the limit cannot recover it. A global cap on rendered tool text sets truncated; last_event_id stays on the last event returned, so a resume gives back the following events. In tail mode the cap trims the returned window from its oldest side (the newest events are always kept) and still sets truncated.
-tail=N returns the last N events instead, with last_event_at. The API can neither start a stream from its end nor mark the end of its replay: the whole replay is read (not kept) until the run's result, a live event, or the server's first heartbeat, which can take about 35 s on an idle run (max_wait_seconds defaults to 45 here). truncated true means that point was not reached. Not combinable with after_event_id."""
+tail=N returns the last N events instead, with last_event_at. The API can neither start a stream from its end nor mark the end of its replay: the whole replay is read (not kept) until the run's result, a live event, or the server's first heartbeat, which can take about 35 s on an idle run (max_wait_seconds defaults to 45 here). truncated true means that point was not reached. Not combinable with after_event_id.
+include_shell_output=true also returns what shell commands print while they run, as shell_output events (call_id, stdout, stderr): consecutive chunks of one command form one event that keeps the newest output within tool_output_limit (clipped marks a cut start). It asks Cursor for the deltas with the header cursor-sdk 1.5.0 sends; the header is not in the OpenAPI (seen live on November 25, 2026) and may change. The finished tool_call still carries the whole output; the deltas show it before the command ends."""
         if tail is not None and after_event_id is not None:
             return await _run(
                 "cursor_read_run_events",
@@ -528,7 +530,9 @@ tail=N returns the last N events instead, with last_event_at. The API can neithe
             return await _run(
                 "cursor_read_run_events",
                 ctx,
-                lambda app: _tail(app, agent_id, run_id, tail, include_thinking, tail_wait, tool_output_limit),
+                lambda app: _tail(
+                    app, agent_id, run_id, tail, include_thinking, tail_wait, tool_output_limit, include_shell_output
+                ),
                 budget_seconds=tail_wait,
             )
         wait = float(max_wait_seconds or 20)
@@ -544,6 +548,7 @@ tail=N returns the last N events instead, with last_event_at. The API can neithe
                 max_events=max_events,
                 include_thinking=include_thinking,
                 tool_output_limit=tool_output_limit,
+                include_shell_output=include_shell_output,
             ),
             budget_seconds=wait,
         )
@@ -883,6 +888,7 @@ async def _tail(
     include_thinking: bool,
     max_wait_seconds: float,
     tool_text_limit: int,
+    include_shell_output: bool = False,
 ) -> RunEventsView:
     replay = await walk_replay(
         _client(app),
@@ -892,6 +898,7 @@ async def _tail(
         include_thinking=include_thinking,
         max_wait_seconds=max_wait_seconds,
         tool_text_limit=tool_text_limit,
+        include_shell_output=include_shell_output,
     )
     return tail_view(agent_id, run_id, replay)
 

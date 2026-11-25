@@ -30,6 +30,12 @@ from cursor_cloud_mcp.validation import require_event_id, require_segment
 _UNPARSED = object()
 _KEEP = {"status", "assistant", "tool_call", "thinking", "result", "error", "done"}
 _IGNORE = {"heartbeat", "interaction_update"}
+# Not in the OpenAPI: sent by cursor-sdk 1.5.0 on the run stream. With it, Cursor adds an
+# interaction_update of type shell-tool-call-delta for each chunk a shell command prints
+# (stream stdout or stderr, content). Checked live on 2026-11-25: replayed with the header,
+# 16 such events for one command; without it, none, everything else identical.
+SHELL_DELTA_HEADER = "x-cursor-sdk-shell-tool-call-delta"
+_SHELL_DELTA = "shell-tool-call-delta"
 _POLL_SECONDS = 5.0
 _OUTER_GRACE_SECONDS = 0.5
 _TRANSIENT = {ErrorCode.TIMEOUT, ErrorCode.UPSTREAM, ErrorCode.QUOTA}
@@ -93,12 +99,13 @@ async def read_run_events(
     max_events: int,
     include_thinking: bool,
     tool_output_limit: int = EVENT_TEXT_MAX_CHARS,
+    include_shell_output: bool = False,
 ) -> RunEventsView:
     require_segment(agent_id, label="agent_id")
     require_segment(run_id, label="run_id")
     if after_event_id is not None:
         after_event_id = require_event_id(after_event_id)
-    headers = {"Accept": "text/event-stream"}
+    headers = _stream_headers(include_shell_output)
     if after_event_id is not None:
         headers["Last-Event-ID"] = after_event_id
     path = client.run_stream_path(agent_id, run_id)
@@ -120,6 +127,7 @@ async def read_run_events(
                     include_thinking=include_thinking,
                     retention_seconds=_retention(response),
                     tool_text_limit=tool_output_limit,
+                    include_shell_output=include_shell_output,
                 )
     except TimeoutError:
         if collected is not None:
@@ -152,6 +160,7 @@ async def walk_replay(
     include_thinking: bool,
     max_wait_seconds: float,
     tool_text_limit: int = EVENT_TEXT_MAX_CHARS,
+    include_shell_output: bool = False,
 ) -> Replay:
     """Walk the whole replay of a run's stream, keeping only the last ``keep`` events.
 
@@ -175,7 +184,7 @@ async def walk_replay(
     walked: Replay | None = None
     try:
         async with asyncio.timeout_at(deadline_at + _OUTER_GRACE_SECONDS):
-            async with _open_stream(client, path, {"Accept": "text/event-stream"}, deadline_at) as response:
+            async with _open_stream(client, path, _stream_headers(include_shell_output), deadline_at) as response:
                 walked = await _walk(
                     response,
                     deadline_at=deadline_at,
@@ -183,6 +192,7 @@ async def walk_replay(
                     include_thinking=include_thinking,
                     retention_seconds=_retention(response),
                     tool_text_limit=tool_text_limit,
+                    include_shell_output=include_shell_output,
                 )
     except TimeoutError:
         if walked is not None:
@@ -200,6 +210,7 @@ async def _walk(
     include_thinking: bool,
     retention_seconds: int | None,
     tool_text_limit: int,
+    include_shell_output: bool = False,
 ) -> Replay:
     parser = SseParser()
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -233,7 +244,12 @@ async def _walk(
                         if view.status is not None and view.kind in {"status", "result"}:
                             run_status = view.status
                         if keep > 0:
-                            _append(tail, view)
+                            _append(tail, view, tool_text_limit)
+                    elif include_shell_output and raw_event.event == "interaction_update":
+                        # Kept in the tail only: the activity tracker skips interaction_update.
+                        shell = _shell_view(raw_event, tool_text_limit)
+                        if shell is not None and keep > 0:
+                            _append(tail, shell, tool_text_limit)
                     tracker.feed(raw_event.event_id, raw_event.event, payload, view)
                     if raw_event.event == "error":
                         # Ends the walk, but proves nothing about the rest of the replay.
@@ -344,6 +360,7 @@ async def _collect(
     include_thinking: bool,
     retention_seconds: int | None,
     tool_text_limit: int,
+    include_shell_output: bool = False,
 ) -> RunEventsView:
     parser = SseParser()
     # A UTF-8 character may be split between two network chunks: incremental decoding.
@@ -369,13 +386,14 @@ async def _collect(
                     truncated = True
                     break
                 for raw_event in parser.feed(decoder.decode(chunk)):
-                    if raw_event.event in _IGNORE or raw_event.event not in _KEEP:
+                    view: RunEventView | None = None
+                    if include_shell_output and raw_event.event == "interaction_update":
+                        view = _shell_view(raw_event, tool_text_limit)
+                    elif raw_event.event in _KEEP and (raw_event.event != "thinking" or include_thinking):
+                        view = _simplify(raw_event, tool_limit=tool_text_limit)
+                    if view is None:
                         last_event_id = raw_event.event_id or last_event_id
                         continue
-                    if raw_event.event == "thinking" and not include_thinking:
-                        last_event_id = raw_event.event_id or last_event_id
-                        continue
-                    view = _simplify(raw_event, tool_limit=tool_text_limit)
                     cost = tool_text_cost(view)
                     if events and tool_text_total + cost > TOOL_TEXT_TOTAL_MAX_CHARS:
                         # Not returned: the cursor stays on the last returned event.
@@ -385,7 +403,7 @@ async def _collect(
                     last_event_id = raw_event.event_id or last_event_id
                     if view.status is not None and view.kind in {"status", "result"}:
                         run_status = view.status
-                    _append(events, view)
+                    _append(events, view, tool_text_limit)
                     if view.kind == "error":
                         # Stream error: on its own it does not prove the run has ended.
                         stream_error = True
@@ -461,17 +479,28 @@ def _simplify(
 
 def tool_text_cost(view: RunEventView) -> int:
     """Rendered tool text of one event: the unit of the global cap."""
+    if view.kind == "shell_output":
+        return len(view.stdout or "") + len(view.stderr or "")
     if view.kind != "tool_call":
         return 0
     return len(view.tool_args or "") + len(view.tool_result or "")
 
 
-def _append(events: MutableSequence[RunEventView], view: RunEventView) -> None:
+def _append(events: MutableSequence[RunEventView], view: RunEventView, shell_limit: int = EVENT_TEXT_MAX_CHARS) -> None:
     """The stream sends text word by word: consecutive fragments form a single event."""
     previous = events[-1] if events else None
     if previous is not None and _completes(previous, view):
         # A tool call arrives twice (running, then finished): only the last state is kept.
         events[-1] = view
+        return
+    if (
+        previous is not None
+        and view.kind == "shell_output"
+        and previous.kind == "shell_output"
+        and previous.call_id == view.call_id
+    ):
+        # One event per command and stretch of output, stdout and stderr side by side.
+        events[-1] = _merge_shell(previous, view, shell_limit)
         return
     if (
         previous is not None
@@ -496,6 +525,56 @@ def _completes(previous: RunEventView, view: RunEventView) -> bool:
     if previous.call_id is not None or view.call_id is not None:
         return previous.call_id == view.call_id
     return previous.tool_name == view.tool_name and previous.tool_args == view.tool_args
+
+
+def _stream_headers(include_shell_output: bool) -> dict[str, str]:
+    headers = {"Accept": "text/event-stream"}
+    if include_shell_output:
+        headers[SHELL_DELTA_HEADER] = "true"
+    return headers
+
+
+def _shell_view(event: SseEvent, limit: int) -> RunEventView | None:
+    """A shell-tool-call-delta interaction_update as a shell_output event; None for any other update."""
+    payload = _payload(event.data)
+    if not isinstance(payload, dict) or payload.get("type") != _SHELL_DELTA:
+        return None
+    stream = payload.get("stream")
+    content = payload.get("content")
+    if stream not in {"stdout", "stderr"} or not isinstance(content, str):
+        return None
+    text, clipped = _keep_end(content, limit)
+    return RunEventView(
+        event_id=event.event_id,
+        kind="shell_output",
+        call_id=_string_field(payload, "callId"),
+        stdout=text if stream == "stdout" else None,
+        stderr=text if stream == "stderr" else None,
+        clipped=clipped or None,
+    )
+
+
+def _merge_shell(previous: RunEventView, view: RunEventView, limit: int) -> RunEventView:
+    clipped = bool(previous.clipped or view.clipped)
+    update: dict[str, object] = {"event_id": view.event_id or previous.event_id}
+    for field in ("stdout", "stderr"):
+        added = getattr(view, field)
+        if not added:
+            continue
+        text, cut = _keep_end((getattr(previous, field) or "") + added, limit)
+        clipped = clipped or cut
+        update[field] = text
+    update["clipped"] = clipped or None
+    return previous.model_copy(update=update)
+
+
+def _keep_end(text: str, limit: int) -> tuple[str, bool]:
+    """The newest output matters most: a long text keeps its end behind a leading ellipsis."""
+    if len(text) <= limit:
+        return text, False
+    if limit <= 1:
+        return text[-limit:], True
+    return "…" + text[-(limit - 1) :], True
 
 
 _payload = parse_payload

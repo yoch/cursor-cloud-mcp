@@ -5,7 +5,7 @@ description: Run and supervise Cursor Cloud agents through the cursor-cloud-mcp 
 
 # Cursor agents: compute fleets and coding agents
 
-Written against cursor-cloud-mcp 0.6.0. If a tool or parameter differs, trust the server's tool
+Written against cursor-cloud-mcp 0.7.0. If a tool or parameter differs, trust the server's tool
 descriptions. **(observed)** marks behavior seen in real fleets that the API does not promise.
 
 Read only what the task needs:
@@ -88,6 +88,11 @@ user's own machines instead. Coordinator and workers share git branches only.
   without one); absent means unknown, not the default.
 - An idle agent's VM may be released, and an agent left long enough may end up archived
   (suspected, not measured): a follow-up must not assume the job's processes or files survived.
+- Old agents may not respond. Seen once (November 25, 2026): a follow-up to an agent idle for
+  two weeks was accepted but sat 4 min in `RUNNING` with only heartbeats, while the same prompt
+  on a fresh agent finished in 23 s. Not documented by Cursor. Prefer fresh agents for urgent
+  work; when reusing an old one, wait about 10 min before cancelling, since a new VM may be
+  starting and a cancel stops it (Cursor staff, on the forum, about a VM that ran out of memory).
 - The stream replays from its start only: `activity=true` and `tail` cost 30 to 60 s per run.
 - `cursor_supervise` defaults to `status="active"` (runs in progress only); loops that act on
   ended runs need `status="all"`. `name` is a case-insensitive substring over at most five pages
@@ -179,7 +184,8 @@ Two signals: the **job produces** (pushes) and the **agent is alive** (stream). 
 3. Same with `activity=true` (30 to 60 s): `idle_seconds`, `summary.stale`,
    `summary.unfinished_after_end`, background tasks. Rows in `summary.incomplete` are inconclusive.
 4. One worker: `cursor_get_run(activity=true)` and `cursor_read_run_events(tail=20)`; start there
-   for any `ERROR` run.
+   for any `ERROR` run. Add `include_shell_output=true` to see what a command still running has
+   printed so far (`shell_output` events, newest output kept within `tool_output_limit`).
 
 Supervisor loop: terminal run with the result marker → next job; terminal without it → same job
 again (it resumes); no push for an hour since the latest of last push, assignment and relaunch →

@@ -714,10 +714,13 @@ class RunEventView(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     event_id: str | None = None
-    kind: Literal["status", "assistant", "tool_call", "thinking", "result", "error", "done"]
+    kind: Literal["status", "assistant", "tool_call", "thinking", "result", "error", "done", "shell_output"]
     text: str | None = None
     status: str | None = None
     call_id: str | None = None
+    # shell_output only: what the shell command printed so far, newest part kept.
+    stdout: str | None = None
+    stderr: str | None = None
     tool_name: str | None = None
     tool_status: str | None = None
     tool_args: str | None = None
