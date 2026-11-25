@@ -10,7 +10,7 @@ from cursor_cloud_mcp.client import CursorCloudClient
 from cursor_cloud_mcp.server import _masked_error
 from tests.test_shell_output import _delta, _read
 from tests.test_supervision import _T0, _sse
-from tests.test_tools import _AGENT, _RUN, Router, _agent, _error_payload, _run, _session
+from tests.test_tools import _AGENT, _RUN, Router, _agent, _data, _error_payload, _run, _session
 
 pytestmark = pytest.mark.anyio
 
@@ -124,3 +124,26 @@ async def test_an_unexpected_2xx_on_a_follow_up_is_an_unknown_outcome() -> None:
     payload = _error_payload(result)
     assert payload["code"] == "MUTATION_OUTCOME_UNKNOWN"
     assert payload["http_status"] == 202
+
+
+async def test_environment_filters_apply_to_pools_too() -> None:
+    def responder(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v0/private-workers/pools":
+            pools = [
+                {"poolName": name, "scope": "team", "connectedWorkerCount": 1, "inUseWorkerCount": 0}
+                for name in ("GPU-runners", "cpu-runners")
+            ]
+            return httpx.Response(200, json={"pools": pools})
+        return httpx.Response(200, json={"items": []})
+
+    client, router = await _session(Router(responder))
+    try:
+        unfiltered = _data(await client.call_tool("cursor_list_environments", {}))
+        by_name = _data(await client.call_tool("cursor_list_environments", {"query": "gpu"}))
+        by_owner = _data(await client.call_tool("cursor_list_environments", {"owner": "team"}))
+    finally:
+        await client.__aexit__(None, None, None)
+    assert [pool["name"] for pool in unfiltered["pools"]] == ["GPU-runners", "cpu-runners"]
+    assert [pool["name"] for pool in by_name["pools"]] == ["GPU-runners"]  # case-insensitive, as the API
+    assert "pools" not in by_owner and "pools_error" not in by_owner
+    assert [call[1] for call in router.calls].count("/v0/private-workers/pools") == 2  # not read for owner

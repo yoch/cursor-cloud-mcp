@@ -48,8 +48,12 @@ async def list_environments(
         build, error = await _active_build(client, environment.environment_id)
         detail = environment.model_copy(update={"active_build": build, "active_build_error": error})
         return EnvironmentListView(items=[detail], has_more=False)
-    # Pools are not paginated: the first page carries them, read alongside it.
-    pools_task = asyncio.create_task(_pools(client)) if cursor is None else None
+    # Pools are not paginated: the first page carries them, read alongside it. The API filters only
+    # environments: query is applied to pool names here, and the other filters, which have no pool
+    # equivalent, leave the pools out.
+    pool_query = str(filters["query"]) if filters and "query" in filters else None
+    wants_pools = cursor is None and not (filters and set(filters) - {"query"})
+    pools_task = asyncio.create_task(_pools(client, pool_query)) if wants_pools else None
     try:
         page = await client.list_environments(limit=limit, cursor=cursor, filters=filters)
     except BaseException:
@@ -66,13 +70,18 @@ async def list_environments(
     return view.model_copy(update={"pools": pools, "pools_error": error})
 
 
-async def _pools(client: CursorCloudClient) -> tuple[list[PoolView] | None, str | None]:
+async def _pools(client: CursorCloudClient, query: str | None) -> tuple[list[PoolView] | None, str | None]:
     try:
         pools = await client.list_pools()
     except CursorFailure as exc:
         # Best effort: the documentation reserves this list to service-account keys.
         return None, failure_note(exc)
-    return [pool_view(item) for item in pools.pools], None
+    views = [pool_view(item) for item in pools.pools]
+    if query is not None:
+        # Same rule as the API's query on environments: a case-insensitive part of the name.
+        needle = query.casefold()
+        views = [view for view in views if needle in view.name.casefold()]
+    return views, None
 
 
 async def _active_build(client: CursorCloudClient, environment_id: str) -> tuple[ActiveBuildView | None, str | None]:
