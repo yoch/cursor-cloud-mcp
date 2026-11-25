@@ -394,7 +394,7 @@ async def _collect(
                     if view is None:
                         last_event_id = raw_event.event_id or last_event_id
                         continue
-                    cost = tool_text_cost(view)
+                    cost = _added_cost(events, view, tool_text_limit)
                     if events and tool_text_total + cost > TOOL_TEXT_TOTAL_MAX_CHARS:
                         # Not returned: the cursor stays on the last returned event.
                         truncated = True
@@ -493,14 +493,16 @@ def _append(events: MutableSequence[RunEventView], view: RunEventView, shell_lim
         # A tool call arrives twice (running, then finished): only the last state is kept.
         events[-1] = view
         return
-    if (
-        previous is not None
-        and view.kind == "shell_output"
-        and previous.kind == "shell_output"
-        and previous.call_id == view.call_id
-    ):
+    if previous is not None and _merges_shell(previous, view):
         # One event per command and stretch of output, stdout and stderr side by side.
         events[-1] = _merge_shell(previous, view, shell_limit)
+        return
+    running = _running_before_shell(events, view)
+    if running is not None:
+        # The command's output came between its two tool_call states: the finished state replaces the
+        # running one, after the output, so a command still takes one tool_call event.
+        del events[running]
+        events.append(view)
         return
     if (
         previous is not None
@@ -517,6 +519,39 @@ def _append(events: MutableSequence[RunEventView], view: RunEventView, shell_lim
         )
         return
     events.append(view)
+
+
+def _merges_shell(previous: RunEventView, view: RunEventView) -> bool:
+    # Without a call id two commands could not be told apart: never merged.
+    return (
+        view.kind == "shell_output"
+        and previous.kind == "shell_output"
+        and view.call_id is not None
+        and previous.call_id == view.call_id
+    )
+
+
+def _running_before_shell(events: MutableSequence[RunEventView], view: RunEventView) -> int | None:
+    """Index of the running tool_call that ``view`` finishes, behind that same call's shell_output events."""
+    if view.kind != "tool_call" or view.call_id is None:
+        return None
+    index = len(events) - 1
+    while index >= 0 and events[index].kind == "shell_output" and events[index].call_id == view.call_id:
+        index -= 1
+    if index == len(events) - 1 or index < 0:
+        return None
+    candidate = events[index]
+    if candidate.kind == "tool_call" and candidate.tool_status == "running" and candidate.call_id == view.call_id:
+        return index
+    return None
+
+
+def _added_cost(events: MutableSequence[RunEventView], view: RunEventView, shell_limit: int) -> int:
+    """Rendered tool text that appending ``view`` adds: a merged shell chunk only adds what its event grew by."""
+    if events and _merges_shell(events[-1], view):
+        previous = events[-1]
+        return max(0, tool_text_cost(_merge_shell(previous, view, shell_limit)) - tool_text_cost(previous))
+    return tool_text_cost(view)
 
 
 def _completes(previous: RunEventView, view: RunEventView) -> bool:

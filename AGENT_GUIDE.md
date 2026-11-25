@@ -4,6 +4,13 @@ Instructions for an agent that must install or use this MCP server. Read this fi
 
 This server is local, over stdio. It exposes twenty tools for the Cursor Cloud Agents v1 REST API. It is used to create a Cloud session, choose the model and the reasoning level, send a command, read the result, then archive or delete the session. It is not an orchestration platform. The package is published on PyPI as `cursor-cloud-mcp`.
 
+## 0.7.1
+
+Fixes from a code review of 0.7.0, no new parameter:
+
+- `include_shell_output`: a command that prints a lot no longer stops the read early with `truncated` (each merged chunk now counts only what its event grew by); a command's finished `tool_call` replaces its running one even when its output came in between, so a command takes one `tool_call` event; chunks without a call id are never merged.
+- `coordinator_of_project`: the Projects read behind the marker is capped at 8 s, so a slow `GET /v1/projects` no longer eats the budget of `cursor_get_agent`, `cursor_list_agents` or `cursor_supervise`. A transient failure is no longer cached for a minute: the last complete map is kept meanwhile. A lasting refusal (Projects off, a service-account key) is still cached.
+
 ## Migration 0.6 → 0.7
 
 From the Cursor spec of November 9, 2026 and real reads of November 10. "Not verified live" means the request shape is tested against the spec only: no real run could be created that day.

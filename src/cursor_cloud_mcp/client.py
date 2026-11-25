@@ -27,6 +27,7 @@ from cursor_cloud_mcp.config import (
     MUTATION_MIN_SECONDS,
     PROJECT_COORDINATOR_CACHE_TTL_SECONDS,
     PROJECT_COORDINATOR_MAX_PAGES,
+    PROJECT_COORDINATOR_MAX_SECONDS,
     REPOSITORIES_DEADLINE_SECONDS,
     REPOSITORY_CACHE_TTL_SECONDS,
 )
@@ -81,6 +82,15 @@ class ResponseTooLarge(Exception):
 
 class _Retry(Exception):
     """A GET may be retried once within the same budget."""
+
+
+# Failures of the Projects read that the next call would meet again: cached like an empty answer.
+_LASTING_PROJECT_FAILURES = {
+    ErrorCode.PERMISSION,
+    ErrorCode.AUTHENTICATION,
+    ErrorCode.NOT_FOUND,
+    ErrorCode.INCOMPATIBLE_RESPONSE,
+}
 
 
 @dataclass
@@ -488,10 +498,22 @@ class CursorCloudClient:
     async def project_coordinators(self) -> dict[str, str]:
         """Agent ids that are the caller's coordinator in a Project, each with that Project's id (lower-cased keys).
 
-        Best effort and cached for a minute, failures included: the answer only marks rows, so a team that turned
-        Projects off, a service-account key or a transient error give an empty map, never an error.
+        Best effort, never an error, and bounded to PROJECT_COORDINATOR_MAX_SECONDS so that it cannot eat the
+        budget of the reads it decorates. A complete answer is cached for a minute, and so is a refusal
+        (Projects turned off, a service-account key): both give the same map on the next call. A transient
+        failure (timeout, 5xx, rate limit) or a partial walk is not cached: the last complete map is returned
+        meanwhile, or an empty one if there was none, and the next call tries again.
         """
-        found, _hit = await self._coordinator_cache.get(self._fetch_coordinators, wait_cap=self._deadline)
+        try:
+            async with asyncio.timeout(PROJECT_COORDINATOR_MAX_SECONDS):
+                found, _hit = await self._coordinator_cache.get(
+                    self._fetch_coordinators, wait_cap=PROJECT_COORDINATOR_MAX_SECONDS
+                )
+        except (CursorFailure, TimeoutError) as exc:
+            code = exc.body.code.value if isinstance(exc, CursorFailure) else ErrorCode.TIMEOUT.value
+            logger.debug("project_coordinators_unavailable=%s", code)
+            entry = self._coordinator_cache.entry
+            return dict(entry[1]) if entry is not None else {}
         return found
 
     async def _fetch_coordinators(self) -> dict[str, str]:
@@ -507,8 +529,10 @@ class CursorCloudClient:
                 if not cursor:
                     break
         except CursorFailure as exc:
-            logger.debug("project_coordinators_unavailable=%s", exc.body.code.value)
-            return found
+            if exc.body.code in _LASTING_PROJECT_FAILURES and not found:
+                # A lasting refusal or an unreadable shape: cache "no Projects" rather than asking on every call.
+                return found
+            raise
         return found
 
     async def _fetch_repositories(self) -> RemoteRepositoryList:

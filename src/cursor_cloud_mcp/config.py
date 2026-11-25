@@ -23,6 +23,8 @@ MODEL_CACHE_TTL_SECONDS = 600.0
 # Which agents are a Project's coordinator: short, so a Project created in the web app shows up quickly.
 PROJECT_COORDINATOR_CACHE_TTL_SECONDS = 60.0
 PROJECT_COORDINATOR_MAX_PAGES = 5
+# The marker is best effort: its read never holds a tool longer than this.
+PROJECT_COORDINATOR_MAX_SECONDS = 8.0
 MAX_RESPONSE_BYTES = 8_000_000
 STREAM_MAX_BYTES = 1_000_000
 ARTIFACT_MAX_BYTES = 5_000_000
