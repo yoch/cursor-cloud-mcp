@@ -82,8 +82,10 @@ async def test_shell_deltas_of_one_command_form_one_event() -> None:
     view, seen = await _read(_shell_run(), include_shell_output=True)
     assert seen[0].headers[_HEADER] == "true"
     kinds = [event["kind"] for event in view["events"]]
-    assert kinds == ["status", "tool_call", "shell_output", "tool_call", "assistant", "result"]
-    shell = view["events"][2]
+    # The finished tool_call replaces the running one, after the output it printed.
+    assert kinds == ["status", "shell_output", "tool_call", "assistant", "result"]
+    assert view["events"][2]["tool_status"] == "completed"
+    shell = view["events"][1]
     assert shell["call_id"] == _CALL
     assert shell["stdout"] == "tick 1\ntick 2\n"
     assert shell["stderr"] == "warn 1\nwarn 2\n"
@@ -122,3 +124,27 @@ async def test_other_interaction_updates_stay_ignored() -> None:
     view, _ = await _read(chunks, include_shell_output=True)
     assert [event["kind"] for event in view["events"]] == ["status", "done"]
     assert view["last_event_id"] == f"{_T0 + 4}-0"
+
+
+async def test_merged_chunks_count_against_the_cap_by_what_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cursor_cloud_mcp import stream
+
+    monkeypatch.setattr(stream, "TOOL_TEXT_TOTAL_MAX_CHARS", 1000)
+    chunks = [_sse("status", {"status": "RUNNING"}, _T0)]
+    # 5000 characters printed, far above the cap, but one event of at most 100 is kept.
+    chunks += [_delta("stdout", "x" * 49 + "\n", _T0 + 1 + index) for index in range(100)]
+    chunks.append(_sse("done", {}, _T0 + 200))
+    view, _ = await _read(chunks, include_shell_output=True, tool_output_limit=100)
+    assert view["truncated"] is False and view["finished"] is True
+    assert [event["kind"] for event in view["events"]] == ["status", "shell_output", "done"]
+
+
+async def test_chunks_without_a_call_id_are_never_merged() -> None:
+    chunks = [
+        _sse("status", {"status": "RUNNING"}, _T0),
+        _sse("interaction_update", {"type": "shell-tool-call-delta", "stream": "stdout", "content": "a\n"}, _T0 + 1),
+        _sse("interaction_update", {"type": "shell-tool-call-delta", "stream": "stdout", "content": "b\n"}, _T0 + 2),
+        _sse("done", {}, _T0 + 3),
+    ]
+    view, _ = await _read(chunks, include_shell_output=True)
+    assert [event.get("stdout") for event in view["events"]] == [None, "a\n", "b\n", None]

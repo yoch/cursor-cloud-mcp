@@ -6,6 +6,7 @@ import httpx
 import pytest
 from mcp import Client
 
+from cursor_cloud_mcp import budget
 from cursor_cloud_mcp.errors import ErrorCode, failure, failure_note
 from cursor_cloud_mcp.fixture import PROJECT_ID as FIXTURE_PROJECT_ID
 from cursor_cloud_mcp.fixture import SEEDED_AGENT_ID
@@ -399,3 +400,70 @@ async def test_fixture_mode_marks_its_coordinator() -> None:
         seeded = _data(await client.call_tool("cursor_get_agent", {"agent_id": SEEDED_AGENT_ID}))
     assert one["coordinator_of_project"] == FIXTURE_PROJECT_ID
     assert "coordinator_of_project" not in seeded
+
+
+async def _coordinators(responses: list[Callable[[], httpx.Response]], *, ttl: float, calls: int) -> list[dict[str, str]]:
+    from cursor_cloud_mcp.client import CursorCloudClient
+
+    sent: list[int] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(1)
+        return responses[min(len(sent), len(responses)) - 1]()
+
+    client = CursorCloudClient(
+        api_key="test-secret-key", transport=httpx.MockTransport(handler), project_cache_ttl_seconds=ttl
+    )
+    await client.open()
+    try:
+        with budget.tool_budget(30):
+            return [await client.project_coordinators() for _ in range(calls)] + [{"requests": str(len(sent))}]
+    finally:
+        await client.aclose()
+
+
+def _page() -> httpx.Response:
+    return httpx.Response(200, json={"items": [_project()]})
+
+
+async def test_a_transient_failure_keeps_the_last_complete_marker_map() -> None:
+    def failing() -> httpx.Response:
+        return httpx.Response(502, json={"error": {"code": "upstream_error", "message": "bad gateway"}})
+
+    first, second, sent = await _coordinators([_page, failing], ttl=0, calls=2)
+    assert first == {_PROJECT: _PROJECT}
+    assert second == first  # not replaced by the empty map of the failed read
+    assert sent == {"requests": "3"}  # the 502 GET is retried once by the client, then given up
+
+
+async def test_a_lasting_refusal_is_cached_as_no_projects() -> None:
+    def refused() -> httpx.Response:
+        return httpx.Response(403, json={"error": {"code": "projects_disabled", "message": "off"}})
+
+    first, second, sent = await _coordinators([refused], ttl=60, calls=2)
+    assert first == second == {}
+    assert sent == {"requests": "1"}
+
+
+async def test_a_stalled_projects_read_gives_up_quickly(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+    import time
+
+    import cursor_cloud_mcp.client as client_module
+    from cursor_cloud_mcp.client import CursorCloudClient
+
+    monkeypatch.setattr(client_module, "PROJECT_COORDINATOR_MAX_SECONDS", 0.3)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(30)
+        return _page()
+
+    client = CursorCloudClient(api_key="test-secret-key", transport=httpx.MockTransport(handler))
+    await client.open()
+    started = time.monotonic()
+    try:
+        with budget.tool_budget(30):
+            assert await client.project_coordinators() == {}
+    finally:
+        await client.aclose()
+    assert time.monotonic() - started < 5

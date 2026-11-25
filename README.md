@@ -76,7 +76,7 @@ The left column is a limit of the API, measured on real runs; the right column i
 | An `ERROR` run carries no cause | the activity summary (last events, last tool call, background tasks) is added automatically |
 | A stream can only be replayed from its start, with no end marker | `tail` and `activity` walk the whole replay without keeping it, and know where it ends |
 | A run in progress refuses an ordinary follow-up | `cursor_create_run(delivery="steer")` adds the prompt to the running turn; `replace_active=true` cancels, confirms, then follows up on the same agent |
-| Usage can read zero for a run that worked | `no_usage_recorded` marks those runs and agents, and keeps them out of the fleet total |
+| Usage can read zero for a run that worked | `no_usage_recorded` marks those runs and agents, and the fleet total says it is only a lower bound |
 | No listing of runs across agents | `cursor_supervise`: one call, parallel reads |
 | The model of an agent or a run is never returned | creations return the effective selection and warn about catalog defaults (such as `fast=true`); a local journal records each model sent and reads it back as `model` |
 | No quota or account spend | `cursor_supervise(usage=true)` sums a fleet's charged cost |
@@ -102,4 +102,4 @@ Releases: `__version__` in `src/cursor_cloud_mcp/__init__.py` is the only versio
 
 ## Out of scope
 
-No HTTP transport, no database, no local shell, no reading of the local checkout, no pull request merging, no images, no remote MCP servers or custom subagents in the VM, no budget cap enforced by this process.
+No HTTP transport, no database, no local shell, no reading of the local checkout, no pull request merging, no remote MCP servers or custom subagents in the VM, no budget cap enforced by this process.

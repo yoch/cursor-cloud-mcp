@@ -71,7 +71,9 @@ def _split_cursor(cursor: str | None) -> tuple[str | None, int]:
     if not is_scan_cursor(cursor):
         return cursor, 0
     parts = str(cursor).split("~", 2)
-    if len(parts) != 3 or not parts[1].isdigit() or not 0 < int(parts[1]) < _PAGE_SIZE:
+    skip = parts[1] if len(parts) == 3 else ""
+    # ASCII digits only, and short: str.isdigit() also accepts "²", which int() refuses.
+    if not (skip.isascii() and skip.isdigit() and len(skip) <= 3) or not 0 < int(skip) < _PAGE_SIZE:
         raise failure(ErrorCode.VALIDATION, "cursor is not one this server returned: pass next_cursor unchanged.")
     return parts[2] or None, int(parts[1])
 
@@ -381,7 +383,11 @@ def _summary(rows: list[SupervisedAgentView], stale_after_minutes: int) -> Super
     stale = [
         row.agent_id
         for row in complete
-        if row.terminal is not True and row.activity is not None and (row.activity.idle_seconds or 0) >= limit
+        # A run waiting for its background work is silent by design: not stale.
+        if row.terminal is not True
+        and row.status != "WAITING_FOR_BACKGROUND_WORK"
+        and row.activity is not None
+        and (row.activity.idle_seconds or 0) >= limit
     ]
     unfinished = [
         row.agent_id
