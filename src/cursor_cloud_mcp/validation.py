@@ -195,7 +195,8 @@ def require_mode(mode: str | None) -> str | None:
 
 
 def require_event_id(value: str) -> str:
-    if value.strip() == "" or len(value) > 200 or any(char in value for char in "\r\n"):
+    # Sent as the Last-Event-ID header: only printable ASCII can be encoded there.
+    if value.strip() == "" or len(value) > 200 or not (value.isascii() and value.isprintable()):
         raise failure(ErrorCode.VALIDATION, "after_event_id is invalid.")
     return value
 

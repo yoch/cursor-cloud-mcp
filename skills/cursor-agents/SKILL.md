@@ -5,7 +5,7 @@ description: Run and supervise Cursor Cloud agents through the cursor-cloud-mcp 
 
 # Cursor agents: compute fleets and coding agents
 
-Written against cursor-cloud-mcp 0.7.0. If a tool or parameter differs, trust the server's tool
+Written against cursor-cloud-mcp 0.7.1. If a tool or parameter differs, trust the server's tool
 descriptions. **(observed)** marks behavior seen in real fleets that the API does not promise.
 
 Read only what the task needs:
@@ -45,7 +45,7 @@ user's approval in one short block before the first paid call.
    Read it after the probe and at every checkpoint. No quota or reset is visible: `QUOTA` with
    `usage_limit_exceeded` means the spend limit is reached, stop all paid calls and tell the user.
    Do not turn tokens into dollar estimates. `no_usage_recorded` on a run or an agent means the
-   API recorded nothing: its cost is unknown, not zero, and the fleet total leaves it out.
+   API recorded nothing: its cost is unknown, not zero, and the fleet total is only a lower bound.
 8. **Client timeout ≥ 100 s** (the server bounds calls at 95 s); a client that gives up earlier
    may abandon a creation already sent.
 9. **Always name the model and every cost parameter** (`model_id`, `reasoning_level`,
@@ -185,7 +185,7 @@ Two signals: the **job produces** (pushes) and the **agent is alive** (stream). 
    `summary.unfinished_after_end`, background tasks. Rows in `summary.incomplete` are inconclusive.
 4. One worker: `cursor_get_run(activity=true)` and `cursor_read_run_events(tail=20)`; start there
    for any `ERROR` run. Add `include_shell_output=true` to see what a command still running has
-   printed so far (`shell_output` events, newest output kept within `tool_output_limit`).
+   printed so far (`shell_output` events, newest output kept, each stream within `tool_output_limit`).
 
 Supervisor loop: terminal run with the result marker → next job; terminal without it → same job
 again (it resumes); no push for an hour since the latest of last push, assignment and relaunch →
@@ -212,7 +212,8 @@ relaunch the same shard; after N relaunches, give up on that job and log it.
    stays, and the `stop` task, not the cancel, is what ends a `nohup` job.
 5. Collect; report with `cursor_get_usage` per agent; push summaries to a tracked path.
 6. Archive agents once results are re-verified: reversible, and an archived agent refuses
-   follow-ups, so a forgotten supervisor cannot relaunch it.
+   follow-ups, so a forgotten supervisor cannot relaunch it. Skip rows carrying
+   `coordinator_of_project`: archiving a Project's coordinator archives the Project.
 
 ## 10. Coding agent on a branch
 

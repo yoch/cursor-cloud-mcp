@@ -84,7 +84,7 @@ class _Retry(Exception):
     """A GET may be retried once within the same budget."""
 
 
-# Failures of the Projects read that the next call would meet again: cached like an empty answer.
+# Failures of the Projects read that the next call would likely meet again (see project_coordinators).
 _LASTING_PROJECT_FAILURES = {
     ErrorCode.PERMISSION,
     ErrorCode.AUTHENTICATION,
@@ -499,10 +499,11 @@ class CursorCloudClient:
         """Agent ids that are the caller's coordinator in a Project, each with that Project's id (lower-cased keys).
 
         Best effort, never an error, and bounded to PROJECT_COORDINATOR_MAX_SECONDS so that it cannot eat the
-        budget of the reads it decorates. A complete answer is cached for a minute, and so is a refusal
-        (Projects turned off, a service-account key): both give the same map on the next call. A transient
-        failure (timeout, 5xx, rate limit) or a partial walk is not cached: the last complete map is returned
-        meanwhile, or an empty one if there was none, and the next call tries again.
+        budget of the reads it decorates. An answer is cached for a minute; a walk that reaches
+        PROJECT_COORDINATOR_MAX_PAGES is cached as read. A failure never replaces a map that was read: the last
+        one is returned meanwhile and the next call tries again. Only when no map was ever read is a lasting
+        refusal (Projects turned off, a service-account key, an unreadable answer) cached as an empty map, so
+        that such an account does not pay one read per call.
         """
         try:
             async with asyncio.timeout(PROJECT_COORDINATOR_MAX_SECONDS):
@@ -529,8 +530,8 @@ class CursorCloudClient:
                 if not cursor:
                     break
         except CursorFailure as exc:
-            if exc.body.code in _LASTING_PROJECT_FAILURES and not found:
-                # A lasting refusal or an unreadable shape: cache "no Projects" rather than asking on every call.
+            if exc.body.code in _LASTING_PROJECT_FAILURES and not found and self._coordinator_cache.entry is None:
+                # Never read and refused: cache "no Projects" rather than asking on every call.
                 return found
             raise
         return found
@@ -813,6 +814,9 @@ def _interpret_bytes(
 ) -> object | None:
     # 202 is a success for a steer only (POST .../runs with delivery).
     accepted = status in {200, 201} or (status == 202 and mutation is not None and mutation.steer)
+    if not accepted and mutation is not None and 200 <= status < 300:
+        # Cursor took the request in some way the spec does not give: never report it as refused.
+        raise _uncertain(mutation, f"Unexpected success status {status} for this call.", status=status, request_id=request_id)
     if not accepted:
         raise _status_from(
             status,

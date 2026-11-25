@@ -8,7 +8,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Annotated, Literal, Never, TypeVar, cast
+from typing import Annotated, Literal, Never, TypeVar
 
 import httpx
 from mcp.server import MCPServer
@@ -310,7 +310,7 @@ def build_server(
     ) -> SuperviseView:
         """Overview of a fleet of runners in one call: each agent with its latest run's status, read in parallel. Read-only. status=active keeps agents with a run in progress; all keeps every agent, archived ones included unless include_archived=false (combine with name to follow runners that just finished). A transient failure (UPSTREAM, TIMEOUT) is retried once; a failed read then only marks its row (read_error): a row without status is unread (UNREAD) or has no run (NO_RUN), never a reason to relaunch; re-read it with cursor_get_run. Each row carries the latest run's git (the agent's current pushed state, scope=agent_current_state) and model, the one this MCP recorded locally (absent if unknown). coordinator_of_project on a row means that agent is your coordinator in a Project: archiving or deleting it archives the Project.
 usage=true adds each agent's charged_cents (one usage read per agent) and summary.charged_cents_total: the fleet's spend as the API returns it. An agent with an ended run for which the API recorded no tokens gets no_usage_recorded true: its cost is unknown, not zero (charged_cents is then shown only if something was charged), and summary.no_usage_recorded lists those agents, for which the total is a lower bound. A run still in progress is not counted as missing.
-activity=true also reads each unfinished run's stream (or a terminal run without a result): last_event_at, idle_seconds, unfinished_background_tasks, last tool call. Slower: the API has no tail, so each stream is replayed, about 30 s for an idle run, 8 in parallel. The rows keep signals, not texts: last_events and the other heavy fields are stripped; stream_error and complete remain on the activity. summary.stale lists runs idle for stale_after_minutes; summary.unfinished_after_end lists ended runs whose background tasks were last seen running. Detail: cursor_get_run(activity=true)."""
+activity=true also reads each unfinished run's stream (or a terminal run without a result): last_event_at, idle_seconds, unfinished_background_tasks, last tool call. Slower: the API has no tail, so each stream is replayed, about 30 s for an idle run, 8 in parallel. The rows keep signals, not texts: last_events and the other heavy fields are stripped; stream_error and complete remain on the activity. summary.stale lists runs idle for stale_after_minutes (not WAITING_FOR_BACKGROUND_WORK, silent by design); summary.unfinished_after_end lists ended runs whose background tasks were last seen running. Detail: cursor_get_run(activity=true)."""
 
         async def action(app: AppContext) -> SuperviseView:
             client = _client(app)
@@ -518,7 +518,7 @@ activity=true adds what the stream shows (one full stream read): last_event_at a
 max_wait_seconds defaults to 20.
 tool_output_limit (default 500, max 4000) widens the tool args/result text of the returned events: clipped head + tail with an explicit marker, the total staying within the limit. tool_args_omitted/tool_result_omitted mean Cursor itself omitted that field upstream because of its size: raising the limit cannot recover it. A global cap on rendered tool text sets truncated; last_event_id stays on the last event returned, so a resume gives back the following events. In tail mode the cap trims the returned window from its oldest side (the newest events are always kept) and still sets truncated.
 tail=N returns the last N events instead, with last_event_at. The API can neither start a stream from its end nor mark the end of its replay: the whole replay is read (not kept) until the run's result, a live event, or the server's first heartbeat, which can take about 35 s on an idle run (max_wait_seconds defaults to 45 here). truncated true means that point was not reached. Not combinable with after_event_id.
-include_shell_output=true also returns what shell commands print while they run, as shell_output events (call_id, stdout, stderr): consecutive chunks of one command form one event that keeps the newest output within tool_output_limit (clipped marks a cut start). It asks Cursor for the deltas with the header cursor-sdk 1.5.0 sends; the header is not in the OpenAPI (seen live on November 25, 2026) and may change. The finished tool_call still carries the whole output; the deltas show it before the command ends."""
+include_shell_output=true also returns what shell commands print while they run, as shell_output events (call_id, stdout, stderr): consecutive chunks of one command form one event that keeps the newest output, each of stdout and stderr within tool_output_limit (clipped marks a cut start). It asks Cursor for the deltas with the header cursor-sdk 1.5.0 sends; the header is not in the OpenAPI (seen live on November 25, 2026) and may change. The finished tool_call still carries the whole output; the deltas show it before the command ends."""
         if tail is not None and after_event_id is not None:
             return await _run(
                 "cursor_read_run_events",
@@ -718,8 +718,7 @@ async def _run[V](
         return result
     except CursorFailure as exc:
         outcome = exc.body.code.value
-        # Mask the values, not the serialized JSON: its shape and keys stay intact.
-        raise ToolFailure(cast(dict[str, object], redaction.redact_value(exc.as_dict()))) from None
+        raise ToolFailure(_masked_error(exc.as_dict())) from None
     except asyncio.CancelledError:
         # The caller gave up: no fabricated response, the Cursor run is not cancelled.
         outcome = "cancelled"
@@ -730,6 +729,16 @@ async def _run[V](
     finally:
         duration_ms = int((time.perf_counter() - started) * 1000)
         logger.info("tool=%s outcome=%s duration_ms=%d", name, outcome, duration_ms)
+
+
+# Fields this server or Cursor fill with codes and ids, never with a caller's value. A forward_env or
+# env_vars value registered for masking (a run id, "AGENT_BUSY") must not blank them out.
+_UNMASKED_ERROR_FIELDS = frozenset({"code", "agent_id", "run_id", "previous_latest_run_id", "remote_code", "request_id"})
+
+
+def _masked_error(body: dict[str, object]) -> dict[str, object]:
+    """Mask the values, not the serialized JSON: its shape and keys stay intact, and so do codes and ids."""
+    return {key: value if key in _UNMASKED_ERROR_FIELDS else redaction.redact_value(value) for key, value in body.items()}
 
 
 def _app(ctx: Context[AppContext]) -> AppContext:
