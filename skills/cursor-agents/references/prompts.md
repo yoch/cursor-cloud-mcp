@@ -9,8 +9,10 @@ Rules shared by all templates, and why:
   to the base branch.
 - Forbid reading or printing credentials: environment variables given at creation are visible to
   the agent and anything it prints lands in the run's stream.
-- Bound every wait: a run blocked for hours in one `await` tends to end in `ERROR`. Better, do not
-  wait at all (templates 6 and 7): a run that waits pays tokens for every check.
+- Bound every wait: a run blocked for hours in one `await` tends to end in `ERROR`. Space the
+  checks (one wait of up to 30 minutes between two): a run that waits pays tokens for every check.
+- Keep the run alive while a long job works (templates 1 to 3): once a run has ended, its VM may be
+  paused within minutes and a detached job then stops silently (template 6).
 - Start commands append to the log (`>>`): `>` empties it before the job's lock is checked, so a
   refused double start would still wipe the running job's log and its RESULT line.
 - Never let a prompt kill a computation that is still running unless that is the explicit goal.
@@ -94,8 +96,12 @@ individual timing, not only the mean. Compare ratios measured on one VM, not acr
 
 ## 6. Detached start (the run ends its turn, the job goes on)
 
-The default for long jobs: no tokens spent while the job runs alone. The coordinator wakes the
-agent with template 7 when a branch stalls, the job should be done, or there is something to say.
+Not for long jobs. Once the run has ended, nothing keeps its VM running: a fleet of cloud agents
+saw theirs paused about 10 to 15 minutes after the run ended (reported November 2026, not
+measured), and the detached jobs stopped without any signal, visible only because pushes stopped.
+Use it only for a job that finishes within a few minutes of the end of the turn, or one that is
+chunked, resumable, and may lose the time between two checks: every check (template 7) then
+restarts it from its last pushed chunk. For anything longer, use template 1.
 
 ```
 Long job for this machine: worker <K> of the <tag> fleet. Do not read or print any credential.
@@ -114,7 +120,8 @@ Final answer: DETACHED job=<K> pid=<pid> chunks=<n>, or the failure and the last
 
 ## 7. Check (short follow-up to a detached worker)
 
-Assumes nothing survived: the VM may have been released since the last run.
+Assumes nothing survived: the VM may have been paused or released since the last run ended, so
+finding the job stopped is the expected case, not an anomaly.
 
 ```
 Check of job <K>. Do NOT kill a running job. Do not read or print any credential.

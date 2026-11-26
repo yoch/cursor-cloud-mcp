@@ -133,6 +133,9 @@ async def test_finished_run_reports_a_background_task_last_seen_running() -> Non
     finally:
         await client.__aexit__(None, None, None)
     assert "activity" not in plain  # a finished run with a result reads no stream unless asked
+    assert "warnings" not in plain
+    # Its machine may be paused once the run is over: the jobs it left running may have stopped.
+    assert len(view["warnings"]) == 1 and "paused" in view["warnings"][0]
     assert sum(1 for call in router.calls if call[1].endswith("/stream")) == 1
     activity = view["activity"]
     assert activity["unfinished_background_tasks"] == 1
@@ -770,7 +773,7 @@ async def test_supervise_default_limit_is_enforced() -> None:
     finally:
         await client.__aexit__(None, None, None)
     assert len(view["items"]) == 50
-    assert view["has_more"] is True and view["next_cursor"].startswith("mcp~50~")
+    assert view["has_more"] is True and view["next_cursor"].startswith("mcps~x~50~")
 
 
 async def test_a_malformed_scan_cursor_is_refused() -> None:
@@ -1004,3 +1007,21 @@ async def test_a_slow_close_does_not_lose_the_events_already_read() -> None:
     assert view["truncated"] is True
     assert [event["kind"] for event in view["events"]][:2] == ["status", "assistant"]
     assert view["last_event_id"] == f"{_T0 + 900_500}-0"
+
+
+async def test_a_partial_walk_raises_no_machine_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cursor_cloud_mcp import supervision
+    from cursor_cloud_mcp.models import ActivityView
+
+    async def partial(*_args: object, **_kwargs: object) -> tuple[ActivityView, None]:
+        return ActivityView(scanned_events=3, unfinished_background_tasks=1, complete=False), None
+
+    monkeypatch.setattr(supervision, "read_activity", partial)
+    finished = _run(status="FINISHED", result="done")
+    client, _ = await _session(_router(finished, []))
+    try:
+        view = _data(await client.call_tool("cursor_get_run", {"agent_id": _AGENT, "run_id": _RUN, "activity": True}))
+    finally:
+        await client.__aexit__(None, None, None)
+    assert view["activity"]["complete"] is False
+    assert "warnings" not in view  # the task may have ended after the point the walk reached

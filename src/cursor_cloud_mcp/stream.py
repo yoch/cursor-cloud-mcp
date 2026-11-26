@@ -100,6 +100,7 @@ async def read_run_events(
     include_thinking: bool,
     tool_output_limit: int = EVENT_TEXT_MAX_CHARS,
     include_shell_output: bool = False,
+    compact: bool = False,
 ) -> RunEventsView:
     require_segment(agent_id, label="agent_id")
     require_segment(run_id, label="run_id")
@@ -128,6 +129,7 @@ async def read_run_events(
                     retention_seconds=_retention(response),
                     tool_text_limit=tool_output_limit,
                     include_shell_output=include_shell_output,
+                    compact=compact,
                 )
     except TimeoutError:
         if collected is not None:
@@ -161,6 +163,7 @@ async def walk_replay(
     max_wait_seconds: float,
     tool_text_limit: int = EVENT_TEXT_MAX_CHARS,
     include_shell_output: bool = False,
+    compact: bool = False,
 ) -> Replay:
     """Walk the whole replay of a run's stream, keeping only the last ``keep`` events.
 
@@ -193,6 +196,7 @@ async def walk_replay(
                     retention_seconds=_retention(response),
                     tool_text_limit=tool_text_limit,
                     include_shell_output=include_shell_output,
+                    compact=compact,
                 )
     except TimeoutError:
         if walked is not None:
@@ -211,6 +215,7 @@ async def _walk(
     retention_seconds: int | None,
     tool_text_limit: int,
     include_shell_output: bool = False,
+    compact: bool = False,
 ) -> Replay:
     parser = SseParser()
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -244,7 +249,11 @@ async def _walk(
                         if view.status is not None and view.kind in {"status", "result"}:
                             run_status = view.status
                         if keep > 0:
-                            _append(tail, view, tool_text_limit)
+                            # The tracker keeps the full view; only the returned tail is compacted.
+                            shown = _simplify(raw_event, payload, tool_limit=tool_text_limit, compact=True) if (
+                                compact and view.kind == "tool_call"
+                            ) else view
+                            _append(tail, shown, tool_text_limit)
                     elif include_shell_output and raw_event.event == "interaction_update":
                         # Kept in the tail only: the activity tracker skips interaction_update.
                         shell = _shell_view(raw_event, tool_text_limit)
@@ -361,6 +370,7 @@ async def _collect(
     retention_seconds: int | None,
     tool_text_limit: int,
     include_shell_output: bool = False,
+    compact: bool = False,
 ) -> RunEventsView:
     parser = SseParser()
     # A UTF-8 character may be split between two network chunks: incremental decoding.
@@ -390,7 +400,7 @@ async def _collect(
                     if include_shell_output and raw_event.event == "interaction_update":
                         view = _shell_view(raw_event, tool_text_limit)
                     elif raw_event.event in _KEEP and (raw_event.event != "thinking" or include_thinking):
-                        view = _simplify(raw_event, tool_limit=tool_text_limit)
+                        view = _simplify(raw_event, tool_limit=tool_text_limit, compact=compact)
                     if view is None:
                         last_event_id = raw_event.event_id or last_event_id
                         continue
@@ -441,6 +451,7 @@ def _simplify(
     payload: object = _UNPARSED,
     *,
     tool_limit: int = EVENT_TEXT_MAX_CHARS,
+    compact: bool = False,
 ) -> RunEventView:
     if payload is _UNPARSED:
         payload = _payload(event.data)
@@ -448,8 +459,15 @@ def _simplify(
     if event.event == "tool_call":
         payload = tool_payload(payload)
         status = _string_field(payload, "status")
-        args, args_clipped = clip_edges(payload.get("args"), tool_limit)
-        result, result_clipped = clip_edges(payload.get("result"), tool_limit)
+        raw_args, raw_result = payload.get("args"), payload.get("result")
+        if compact:
+            # Without a callId, the running and completed states of a call are matched on their rendered args:
+            # compacting those could merge two calls that share a command (other cwd, other timeout).
+            if _string_field(payload, "callId") is not None:
+                raw_args = compact_args(raw_args)
+            raw_result = compact_result(raw_result)
+        args, args_clipped = clip_edges(raw_args, tool_limit)
+        result, result_clipped = clip_edges(raw_result, tool_limit)
         # Shape verified live on 2026-10-09 (an 8 MB terminal output produced
         # truncated: {result: true} with result absent): the field is omitted from the
         # stream because of its size, and the flag says so. Only this upstream signal
@@ -475,6 +493,47 @@ def _simplify(
         return RunEventView(event_id=event.event_id, kind=kind, text=text, status=status, clipped=clipped or None)
     text, clipped = _text_of(payload, event.data)
     return RunEventView(event_id=event.event_id, kind=kind, text=text, status=status, clipped=clipped or None)
+
+
+# compact=true: what a reader needs from a tool call, without Cursor's internal fields (parsing results,
+# call ids...). Field names as Cursor's tool_call payloads carry them; any other shape is left as it is.
+_OUTCOME_BRANCHES = ("success", "failure", "error")
+_EXIT_KEYS = ("exitCode", "exit_code")
+_OUTPUT_KEYS = ("stdout", "stderr", "output", "interleavedOutput")
+
+
+def compact_args(args: object) -> object:
+    """The command alone when the call has one (shell tools), marked when it runs in the background, else the
+    arguments unchanged."""
+    if isinstance(args, dict):
+        command = args.get("command")
+        if isinstance(command, str) and command:
+            return f"[background] {command}" if args.get("isBackground") is True else command
+    return args
+
+
+def compact_result(result: object) -> object:
+    """Outcome, exit code and outputs as plain text when the result carries them, else the result unchanged."""
+    if not isinstance(result, dict):
+        return result
+    for branch in (*_OUTCOME_BRANCHES, None):
+        node = result if branch is None else result.get(branch)
+        if not isinstance(node, dict):
+            continue
+        exit_code = next((node[key] for key in _EXIT_KEYS if node.get(key) is not None), None)
+        outputs = [(key, node[key]) for key in _OUTPUT_KEYS if isinstance(node.get(key), str) and node[key]]
+        if exit_code is None and not outputs:
+            continue
+        head = " ".join(part for part in (f"[{branch}]" if branch else "", _exit_text(exit_code)) if part)
+        lines = [head] if head else []
+        for key, text in outputs:
+            lines.append(f"{key}:\n{text.rstrip()}")
+        return "\n".join(lines)
+    return result
+
+
+def _exit_text(exit_code: object) -> str:
+    return "" if exit_code is None else f"exit_code={exit_code}"
 
 
 def tool_text_cost(view: RunEventView) -> int:

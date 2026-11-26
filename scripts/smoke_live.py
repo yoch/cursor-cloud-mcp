@@ -1,4 +1,4 @@
-"""Real, PAID smoke test of the twenty tools, on the real stdio server.
+"""Real, PAID smoke test of the twenty-one tools, on the real stdio server.
 
 Opt-in: `SMOKE_PAID=1`. Two `composer-2.5` agents, a few very short runs,
 and both agents are deleted at the end, except with `SMOKE_KEEP=1`, which
@@ -160,7 +160,7 @@ async def main() -> int:
 
 async def run_all(client: Client, report: Report, created: list[str]) -> None:
     listed = await client.list_tools()
-    report.check("tools/list", len(listed.tools) == 20, f"tools={len(listed.tools)}")
+    report.check("tools/list", len(listed.tools) == 21, f"tools={len(listed.tools)}")
     tools = {tool.name: tool for tool in listed.tools}
     follow_up = tools.get("cursor_create_run")
     supervise = tools.get("cursor_supervise")
@@ -345,7 +345,7 @@ async def smoke_repo_agent(
     )  # type: ignore[arg-type]
     ok, data = await call(client, "cursor_get_usage", {"agent_id": agent_id})
     if ok:
-        total = data["total_usage"]["total_tokens"]  # type: ignore[index]
+        total = (data.get("total_usage") or {}).get("total_tokens", 0)  # type: ignore[union-attr]
         cost = data.get("total_cost") or {}
         report.check(
             "cursor_get_usage",

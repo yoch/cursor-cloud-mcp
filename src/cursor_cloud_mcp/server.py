@@ -28,6 +28,7 @@ from cursor_cloud_mcp.config import (
     CLIENT_SAFE_BUDGET_SECONDS,
     CONVERSATION_DEFAULT_MESSAGES,
     CONVERSATION_TEXT_DEFAULT_CHARS,
+    CREATE_RUNS_MAX_TARGETS,
     CREATE_TOOL_BUDGET_SECONDS,
     ENVIRONMENT_NAME_MAX_CHARS,
     ENVIRONMENT_REPO_FILTER_MAX,
@@ -40,6 +41,10 @@ from cursor_cloud_mcp.config import (
     RESULT_MAX_LIMIT,
     SUPERVISE_ACTIVITY_BUDGET_SECONDS,
     SUPERVISE_DEFAULT_AGENTS,
+    SUPERVISE_DEFAULT_CONCURRENCY,
+    SUPERVISE_MAX_AGENT_IDS,
+    SUPERVISE_MAX_CONCURRENCY,
+    SUPERVISE_READ_RESERVE_SECONDS,
     TAIL_DEFAULT_WAIT_SECONDS,
     TOOL_BUDGET_SECONDS,
     TOOL_OUTPUT_MAX_CHARS,
@@ -60,6 +65,7 @@ from cursor_cloud_mcp.models import (
     CancelView,
     ConversationView,
     CreateAgentView,
+    CreateRunsView,
     CreateRunView,
     DeleteView,
     EnvironmentListView,
@@ -72,6 +78,7 @@ from cursor_cloud_mcp.models import (
     RepositoryListView,
     RunEventsView,
     RunPageView,
+    RunTargetInput,
     RunView,
     SuperviseView,
     UsageView,
@@ -87,13 +94,14 @@ from cursor_cloud_mcp.present import (
     run_page_view,
     run_view,
 )
-from cursor_cloud_mcp.projects import list_projects, mark_coordinators
+from cursor_cloud_mcp.projects import coordinator_map, list_projects, mark_coordinators
 from cursor_cloud_mcp.sessions import (
     cancel_and_observe,
     perform_archive,
     perform_create,
     perform_delete,
     perform_followup,
+    perform_followups,
 )
 from cursor_cloud_mcp.stream import read_run_events, wait_run, walk_replay
 from cursor_cloud_mcp.supervision import (
@@ -213,7 +221,7 @@ def build_server(
 
     @tool("cursor_get_account", _READ)
     async def cursor_get_account(ctx: Context[AppContext]) -> AccountView:
-        """Checks the Cursor key (GET /v1/me) and reports the account, plus server: what this server allows (writes_enabled, delete_enabled, fixture), its CURSOR_MCP_DEFAULT_MODEL, its model journal and the forward_env names. Start here: these settings change only with the server's environment and a restart. Read-only. The API exposes no quota, remaining budget or spend for the account: cost is per agent (cursor_get_usage), and cursor_supervise(usage=true) sums it over a fleet. QUOTA with remote_code usage_limit_exceeded means the spend limit or prepaid balance is used up; only the account owner sees or raises it. api_key_type is the configured key's family, read from its prefix: crsr (a key from the Cursor dashboard), grok (a key of a unified Cursor and Grok account) or other; notes says what Cursor documents as refused for that type."""
+        """Checks the Cursor key (GET /v1/me) and reports the account, plus server: what this server allows (writes_enabled, delete_enabled, fixture), its CURSOR_MCP_DEFAULT_MODEL, its model journal and the forward_env names. Start here: these settings change only with the server's environment and a restart. server.version is the running code's version; editable_install true (with source) means the server runs from a development checkout, whose uncommitted changes run too: a client meant for real work should launch a published, pinned version instead. Read-only. The API exposes no quota, remaining budget or spend for the account: cost is per agent (cursor_get_usage), and cursor_supervise(usage=true) sums it over a fleet. QUOTA with remote_code usage_limit_exceeded means the spend limit or prepaid balance is used up; only the account owner sees or raises it. api_key_type is the configured key's family, read from its prefix: crsr (a key from the Cursor dashboard), grok (a key of a unified Cursor and Grok account) or other; notes says what Cursor documents as refused for that type."""
         return await _run("cursor_get_account", ctx, _account)
 
     @tool("cursor_list_models", _READ)
@@ -288,7 +296,7 @@ def build_server(
         name: Annotated[str | None, Field(min_length=1, max_length=NAME_MAX_CHARS)] = None,
         pr_url: str | None = None,
     ) -> AgentPageView:
-        """Account agents, one page at a time, in API order (not by date). Read-only. name filters by case-insensitive substring, scanning up to five pages of 100 (scanned); continue with next_cursor. pr_url returns only the agent linked to that PR. Archived agents are listed unless include_archived=false (the API default is true). coordinator_of_project on a row means that agent is your coordinator in a Project: archiving or deleting it archives the Project, so a cleanup of idle agents must skip it."""
+        """Account agents, one page at a time, in API order (not by date). Read-only. name filters by case-insensitive substring, scanning up to five pages of 100 (scanned); continue with next_cursor. A scan that ends before the list does says why in scan_stopped (max_pages, budget, or read_error with scan_error when a page failed after others were read): the rows found so far are returned, and next_cursor resumes on the first unread agent. pr_url returns only the agent linked to that PR. Archived agents are listed unless include_archived=false (the API default is true). coordinator_of_project on a row means that agent is your coordinator in a Project: archiving or deleting it archives the Project, so a cleanup of idle agents must skip it."""
         return await _run(
             "cursor_list_agents",
             ctx,
@@ -298,7 +306,7 @@ def build_server(
     @tool("cursor_supervise", _READ)
     async def cursor_supervise(
         ctx: Context[AppContext],
-        status: Literal["active", "all"] = "active",
+        status: Literal["active", "all"] | None = None,
         name: Annotated[str | None, Field(min_length=1, max_length=NAME_MAX_CHARS)] = None,
         pr_url: str | None = None,
         include_archived: bool | None = None,
@@ -307,36 +315,46 @@ def build_server(
         limit: int | None = Field(default=None, ge=1, le=100),
         cursor: str | None = None,
         usage: bool = False,
+        agent_ids: Annotated[list[str] | None, Field(min_length=1, max_length=SUPERVISE_MAX_AGENT_IDS)] = None,
+        concurrency: int = Field(default=SUPERVISE_DEFAULT_CONCURRENCY, ge=1, le=SUPERVISE_MAX_CONCURRENCY),
     ) -> SuperviseView:
-        """Overview of a fleet of runners in one call: each agent with its latest run's status, read in parallel. Read-only. status=active keeps agents with a run in progress; all keeps every agent, archived ones included unless include_archived=false (combine with name to follow runners that just finished). A transient failure (UPSTREAM, TIMEOUT) is retried once; a failed read then only marks its row (read_error): a row without status is unread (UNREAD) or has no run (NO_RUN), never a reason to relaunch; re-read it with cursor_get_run. Each row carries the latest run's git (the agent's current pushed state, scope=agent_current_state) and model, the one this MCP recorded locally (absent if unknown). coordinator_of_project on a row means that agent is your coordinator in a Project: archiving or deleting it archives the Project.
+        """Overview of a fleet of runners in one call: each agent with its latest run's status, read in parallel. Read-only.
+Which agents: agent_ids (up to 100 bc-<uuid> ids, the fastest: no scan of the account, one agent read each, whatever their status; not combinable with status, name, pr_url, cursor, limit or include_archived), or else a scan of the account's agents (the API filters by neither name nor run status: pages of 100 are read and filtered here). status=active (the default) keeps agents with a run in progress; all keeps every agent. Archived agents are left out of the scan unless include_archived=true (the API's own default includes them; status=active never needs them). name is a case-insensitive substring. A scan reads at most five pages and keeps time for the run reads: scan_stopped says why it ended early (max_pages, budget, or read_error when a page failed after others were read, with scan_error), and next_cursor resumes it; the rows found so far are returned either way.
+Rows: a transient failure (UPSTREAM, TIMEOUT) is retried once; a failed read then only marks its row (read_error): a row without status is unread (UNREAD) or has no run (NO_RUN), never a reason to relaunch; re-read it with cursor_get_run. Each row carries the latest run's git (the agent's current pushed state, scope=agent_current_state: branch names and PR URL as Cursor reports them, never a commit SHA) and model, the one this MCP recorded locally (absent if unknown). coordinator_of_project on a row means that agent is your coordinator in a Project: archiving or deleting it archives the Project. concurrency (default 8, up to 16) bounds the parallel reads of each kind.
 usage=true adds each agent's charged_cents (one usage read per agent) and summary.charged_cents_total: the fleet's spend as the API returns it. An agent with an ended run for which the API recorded no tokens gets no_usage_recorded true: its cost is unknown, not zero (charged_cents is then shown only if something was charged), and summary.no_usage_recorded lists those agents, for which the total is a lower bound. A run still in progress is not counted as missing.
-activity=true also reads each unfinished run's stream (or a terminal run without a result): last_event_at, idle_seconds, unfinished_background_tasks, last tool call. Slower: the API has no tail, so each stream is replayed, about 30 s for an idle run, 8 in parallel. The rows keep signals, not texts: last_events and the other heavy fields are stripped; stream_error and complete remain on the activity. summary.stale lists runs idle for stale_after_minutes (not WAITING_FOR_BACKGROUND_WORK, silent by design); summary.unfinished_after_end lists ended runs whose background tasks were last seen running. Detail: cursor_get_run(activity=true)."""
+activity=true also reads each run's stream: last_event_at, idle_seconds, unfinished_background_tasks, last tool call. Slower: the API has no tail, so each stream is replayed, about 30 s for an idle run, concurrency in parallel, each replay starting as soon as its run status is read. The rows keep signals, not texts: last_events and the other heavy fields are stripped; stream_error and complete remain on the activity. summary.stale lists runs idle for stale_after_minutes (not WAITING_FOR_BACKGROUND_WORK, silent by design); summary.unfinished_after_end lists ended runs whose background tasks were last seen running: their machine may be paused or released once the run is over, so those jobs may have stopped. Detail: cursor_get_run(activity=true)."""
 
         async def action(app: AppContext) -> SuperviseView:
             client = _client(app)
-            _optional_cursor(cursor)
-            by_name = name_filter(name) if name is not None else None
-
-            def keep(agent: RemoteAgentSummary) -> bool:
-                return (status == "all" or agent.status == "ACTIVE") and (by_name is None or by_name(agent))
-
-            page = await scan_agents(
-                client,
-                cursor=cursor,
+            ids = _supervised_ids(
+                agent_ids, status=status, name=name, pr_url=pr_url, cursor=cursor, limit=limit,
                 include_archived=include_archived,
-                pr_url=pr_url,
-                keep=keep,
-                wanted=limit or SUPERVISE_DEFAULT_AGENTS,
             )
-            page = page.model_copy(update={"items": await mark_coordinators(client, page.items)})
-            return await supervise(
-                client,
-                page,
-                activity=activity,
-                stale_after_minutes=stale_after_minutes,
-                usage=usage,
-                journal=app.journal,
-            )
+            _optional_cursor(cursor)
+            # The Project coordinator map is read meanwhile, not before the reads (up to 8 s on its own).
+            coordinators = asyncio.ensure_future(coordinator_map(client))
+            try:
+                if ids is not None:
+                    page = AgentPageView(items=[], has_more=False)
+                else:
+                    page = await _supervised_page(client, status, name, pr_url, include_archived, limit, cursor)
+                view = await supervise(
+                    client,
+                    page,
+                    activity=activity,
+                    stale_after_minutes=stale_after_minutes,
+                    usage=usage,
+                    journal=app.journal,
+                    agent_ids=ids,
+                    concurrency=concurrency,
+                    coordinators=coordinators,
+                )
+            finally:
+                # Already done after a normal pass; on an error, wait for its cleanup (response closed, cache
+                # lock released) so that nothing outlives the call.
+                coordinators.cancel()
+                await asyncio.gather(coordinators, return_exceptions=True)
+            return view
 
         return await _run(
             "cursor_supervise",
@@ -373,6 +391,7 @@ activity=true also reads each unfinished run's stream (or a terminal run without
         skip_reviewer_request: bool = False,
     ) -> CreateAgentView:
         """Creates an agent and starts its first run. PAID. Returns agent_id, run_id and url without waiting for the run to finish.
+name: the agent's display name, settable only here: the API has no rename (no PATCH on agents), so an agent created in the Cursor interface keeps the name given there; without name, Cursor derives one from the prompt. Give each fleet a tag unique on the account (cursor_supervise and cursor_list_agents filter on it).
 Repository: repository + starting_ref (branch name or full commit SHA), or repositories (up to 500; on self-hosted workers only a named any-repo pool takes more than one); without a repository, a compute-only session.
 Model: model_id (id or unambiguous alias), reasoning_level (value of the catalog's reasoning_param), model_params for the other parameters; everything is checked against the catalog before sending. Without model_id, CURSOR_MCP_DEFAULT_MODEL applies if set (source server_default; model_params and reasoning_level override its parameters), else the account's default with a warning. model echoes the effective selection: defaulted names the parameters left to the catalog default (such as fast=true), unset those Cursor picks; warnings says so. The selection is recorded in the local journal, since the API never returns it.
 Environment: env_type cloud (Cursor VM, size not selectable), pool or machine (the user's workers), with env_name: saved environments and pools are listed by cursor_list_environments.
@@ -454,6 +473,40 @@ images: as in cursor_create_agent. A worker that ends its turn after starting a 
             budget_seconds=CREATE_TOOL_BUDGET_SECONDS,
         )
 
+    @tool("cursor_create_runs", _FOLLOW_UP)
+    async def cursor_create_runs(
+        ctx: Context[AppContext],
+        targets: Annotated[list[RunTargetInput], Field(min_length=1, max_length=CREATE_RUNS_MAX_TARGETS)],
+        prompt: Annotated[str, Field(min_length=1, max_length=PROMPT_MAX_CHARS)],
+        mode: Literal["agent", "plan"] | None = None,
+        model_id: str | None = None,
+        model_params: list[ModelParam] | None = None,
+        reasoning_level: str | None = None,
+        replace_active: bool = False,
+        delivery: Literal["steer"] | None = None,
+    ) -> CreateRunsView:
+        """Sends the same follow-up to several agents in one call (up to 50), each as cursor_create_run would. PAID: one run per agent. {worker} in the prompt is replaced by each target's worker value (every target then needs one; worker values without {worker} are refused), so one template serves a whole fleet without editing each prompt by hand. Refused as a whole, before anything is sent: an agent listed twice, a missing worker value, a prompt over the limit once filled in, a model rejected by the catalog, a steer with other fields. mode, model_id, model_params, reasoning_level, replace_active and delivery have the meaning of cursor_create_run and apply to every target (env_vars, forward_env and images are not taken here).
+Each agent gets its own row, in the order given, and one agent's failure never stops the others: outcome sent (run_id, status, or delivery for a steer), not_sent (refused here or by the API: error_code, error; with replace_active, recovery says when the previous run had already been cancelled), or unknown (MUTATION_OUTCOME_UNKNOWN: the request may have gone through; follow the row's recovery: for a follow-up, a newer run in cursor_list_runs(agent_id) may be it (check its created_at, another caller could have sent it); a steer creates no run, look for its prompt in cursor_read_run_events(tail) or cursor_read_conversation, and never send it again). Nothing is ever resent automatically, here or by the client. Sends run 8 at a time within one 95 s budget: a row whose send could not start in time is not_sent with TIMEOUT, nothing sent."""
+        return await _run(
+            "cursor_create_runs",
+            ctx,
+            lambda app: perform_followups(
+                _client(app),
+                targets=targets,
+                prompt=prompt,
+                mode=mode,
+                model_id=model_id,
+                model_params=model_params,
+                reasoning_level=reasoning_level,
+                replace_active=replace_active,
+                delivery=delivery,
+                journal=app.journal,
+                settings=app.settings,
+            ),
+            mutation=True,
+            budget_seconds=CREATE_TOOL_BUDGET_SECONDS,
+        )
+
     @tool("cursor_list_runs", _READ)
     async def cursor_list_runs(
         ctx: Context[AppContext],
@@ -474,8 +527,8 @@ images: as in cursor_create_agent. A worker that ends its turn after starting a 
         result_limit: int = Field(default=RESULT_DEFAULT_LIMIT, ge=1, le=RESULT_MAX_LIMIT),
         activity: bool | None = None,
     ) -> RunView:
-        """State, final result and branches of a run. Read-only. wait_seconds (up to 60) re-reads every five seconds until a terminal state; timed_out true means the run is still going: call again. If a re-read fails after a first read, the previous observation is returned with reread_error: it is no guarantee about the current state. A long result is read in windows with result_offset = next_result_offset. git describes the agent's current state, not a frozen SHA. model is the one this MCP recorded for the run (inherited true: the run was sent without one and keeps the agent's previous model), absent if unknown.
-activity=true adds what the stream shows (one full stream read): last_event_at and idle_seconds (the API's updated_at stays frozen while a run is RUNNING), the last observed events (last_events, the true end of the stream only when complete), the last assistant text and tool call (wider clip), and background_tasks with their last observed state. FINISHED only means the agent ended its turn: unfinished_background_tasks > 0 means jobs it started were last seen running. By default (activity omitted) the summary is added only to a terminal run without a result, since the API gives no error cause; activity=false never reads the stream. A stream ending on an error event returns a partial summary with stream_error true, never cached. A terminal run's complete summary is cached. complete false means the stream walk did not reach its end within the call's budget (95 s at most, wait included)."""
+        """State, final result and branches of a run. Read-only. wait_seconds (up to 60) re-reads every five seconds until a terminal state; timed_out true means the run is still going: call again. If a re-read fails after a first read, the previous observation is returned with reread_error: it is no guarantee about the current state. A long result is read in windows with result_offset = next_result_offset. git describes the agent's current state as Cursor reports it: the repository, plus a branch and PR URL only for what Cursor tracked (a branch pushed by a plain git push from a job may not appear), never a commit SHA; ask the agent for git rev-parse HEAD in its final answer, or read the remote (git ls-remote). model is the one this MCP recorded for the run (inherited true: the run was sent without one and keeps the agent's previous model), absent if unknown.
+activity=true adds what the stream shows (one full stream read): last_event_at and idle_seconds (the API's updated_at stays frozen while a run is RUNNING), the last observed events (last_events, the true end of the stream only when complete), the last assistant text and tool call (wider clip), and background_tasks with their last observed state. FINISHED only means the agent ended its turn: unfinished_background_tasks > 0 means jobs it started were last seen running, and warnings then says so: the API gives no machine state, and a VM was seen paused about 10 to 15 minutes after its run ended, stopping such jobs silently. By default (activity omitted) the summary is added only to a terminal run without a result, since the API gives no error cause; activity=false never reads the stream. A stream ending on an error event returns a partial summary with stream_error true, never cached. A terminal run's complete summary is cached. complete false means the stream walk did not reach its end within the call's budget (95 s at most, wait included)."""
 
         async def action(app: AppContext) -> RunView:
             client = _client(app)
@@ -513,12 +566,14 @@ activity=true adds what the stream shows (one full stream read): last_event_at a
         tool_output_limit: int = Field(default=EVENT_TEXT_MAX_CHARS, ge=1, le=TOOL_OUTPUT_MAX_CHARS),
         tail: int | None = Field(default=None, ge=1, le=200),
         include_shell_output: bool = False,
+        compact: bool = False,
     ) -> RunEventsView:
         """Excerpt of the stream of a run (messages, tool calls, status), to follow its progress. Read-only. Resume with after_event_id = last_event_id. finished: the run has returned its result; stream_error: stream error, not the end of the run; interrupted: cut off, partial events returned. Texts are bounded (clipped): the full result is in cursor_get_run. STREAM_EXPIRED: use cursor_get_run.
 max_wait_seconds defaults to 20.
 tool_output_limit (default 500, max 4000) widens the tool args/result text of the returned events: clipped head + tail with an explicit marker, the total staying within the limit. tool_args_omitted/tool_result_omitted mean Cursor itself omitted that field upstream because of its size: raising the limit cannot recover it. A global cap on rendered tool text sets truncated; last_event_id stays on the last event returned, so a resume gives back the following events. In tail mode the cap trims the returned window from its oldest side (the newest events are always kept) and still sets truncated.
-tail=N returns the last N events instead, with last_event_at. The API can neither start a stream from its end nor mark the end of its replay: the whole replay is read (not kept) until the run's result, a live event, or the server's first heartbeat, which can take about 35 s on an idle run (max_wait_seconds defaults to 45 here). truncated true means that point was not reached. Not combinable with after_event_id.
-include_shell_output=true also returns what shell commands print while they run, as shell_output events (call_id, stdout, stderr): consecutive chunks of one command form one event that keeps the newest output, each of stdout and stderr within tool_output_limit (clipped marks a cut start). It asks Cursor for the deltas with the header cursor-sdk 1.5.0 sends; the header is not in the OpenAPI (seen live on November 25, 2026) and may change. The finished tool_call still carries the whole output; the deltas show it before the command ends."""
+tail=N returns the last N events instead, with last_event_at. The API can neither start a stream from its end nor mark the end of its replay: the whole replay is read (not kept) until the run's result, a live event, or the server's first heartbeat, which can take about 35 s on an idle run (max_wait_seconds defaults to 45 here). truncated true means that point was not reached. Not combinable with after_event_id. On a run that just started, the stream may hold only its status event: the agent has not acted yet, read again later.
+include_shell_output=true also returns what shell commands print while they run, as shell_output events (call_id, stdout, stderr): consecutive chunks of one command form one event that keeps the newest output, each of stdout and stderr within tool_output_limit (clipped marks a cut start). It asks Cursor for the deltas with the header cursor-sdk 1.5.0 sends; the header is not in the OpenAPI (seen live on November 25, 2026) and may change. The finished tool_call still carries the whole output; the deltas show it before the command ends.
+compact=true trims tool calls to what a reader needs: tool_args is the command alone when the call has one (shell tools) and a callId (without one, the arguments stay whole: they are what tells two such calls apart), and tool_result becomes plain text with the outcome, exit code, stdout and stderr when the result carries them; Cursor's internal fields (parsing results, call ids) go. Any other shape is returned unchanged, so compact never hides a result it does not recognize."""
         if tail is not None and after_event_id is not None:
             return await _run(
                 "cursor_read_run_events",
@@ -531,7 +586,15 @@ include_shell_output=true also returns what shell commands print while they run,
                 "cursor_read_run_events",
                 ctx,
                 lambda app: _tail(
-                    app, agent_id, run_id, tail, include_thinking, tail_wait, tool_output_limit, include_shell_output
+                    app,
+                    agent_id,
+                    run_id,
+                    tail,
+                    include_thinking,
+                    tail_wait,
+                    tool_output_limit,
+                    include_shell_output,
+                    compact,
                 ),
                 budget_seconds=tail_wait,
             )
@@ -549,6 +612,7 @@ include_shell_output=true also returns what shell commands print while they run,
                 include_thinking=include_thinking,
                 tool_output_limit=tool_output_limit,
                 include_shell_output=include_shell_output,
+                compact=compact,
             ),
             budget_seconds=wait,
         )
@@ -586,7 +650,7 @@ include_shell_output=true also returns what shell commands print while they run,
         agent_id: str,
         run_id: str | None = None,
     ) -> UsageView:
-        """Tokens and cost (US cents, as the API returns them) of an agent, or of a single run with run_id. Read-only. Nothing is estimated: a cost missing from the API stays missing. A run whose token counts are all zero carries no_usage_recorded true (runs_without_usage counts them, warnings says so): the API returns zeros when it recorded nothing, which is not a cost of zero. charged_cents_per_million_tokens is the ratio of the returned numbers, not a price list. Each run row carries the model this MCP recorded for it (local journal), absent if unknown: the API names no model."""
+        """Tokens and cost (US cents, as the API returns them) of an agent, or of a single run with run_id. Read-only. Nothing is estimated: a cost missing from the API stays missing. A run whose token counts are all zero carries no_usage_recorded true (runs_without_usage counts them, warnings says so): the API returns zeros when it recorded nothing, which is not a cost of zero, so that row has no usage field and no cost unless something was charged; total_usage and total_cost are absent likewise when nothing at all was recorded, and otherwise cover the recorded runs only. charged_cents_per_million_tokens is the ratio of the returned numbers, not a price list. Each run row carries the model this MCP recorded for it (local journal), absent if unknown: the API names no model."""
         return await _run("cursor_get_usage", ctx, lambda app: _usage(app, agent_id, run_id))
 
     @tool("cursor_list_artifacts", _READ)
@@ -815,6 +879,78 @@ async def _agents(
     return page.model_copy(update={"items": await mark_coordinators(client, page.items)})
 
 
+def _supervised_ids(
+    agent_ids: list[str] | None,
+    *,
+    status: str | None,
+    name: str | None,
+    pr_url: str | None,
+    cursor: str | None,
+    limit: int | None,
+    include_archived: bool | None,
+) -> list[str] | None:
+    """agent_ids checked and deduplicated (first spelling kept), or None for a scan."""
+    if agent_ids is None:
+        return None
+    mixed = [
+        label
+        for label, value in (
+            ("status", status),
+            ("name", name),
+            ("pr_url", pr_url),
+            ("cursor", cursor),
+            ("limit", limit),
+            ("include_archived", include_archived),
+        )
+        if value is not None
+    ]
+    if mixed:
+        raise failure(
+            ErrorCode.VALIDATION,
+            f"agent_ids names the agents to read: {', '.join(mixed)} only apply to a scan of the account.",
+        )
+    seen: set[str] = set()
+    ids: list[str] = []
+    for value in agent_ids:
+        require_agent_id(value, label="agent_ids item")
+        if value.casefold() not in seen:
+            seen.add(value.casefold())
+            ids.append(value)
+    return ids
+
+
+async def _supervised_page(
+    client: CursorCloudClient,
+    status: str | None,
+    name: str | None,
+    pr_url: str | None,
+    include_archived: bool | None,
+    limit: int | None,
+    cursor: str | None,
+) -> AgentPageView:
+    by_name = name_filter(name) if name is not None else None
+    wanted_status = status or "active"
+    # Archived agents are filtered server-side unless asked for: a fleet is rarely archived, and on an old
+    # account they are most of the pages. They are dropped here too, whatever the API did with the filter.
+    archived = include_archived is True and wanted_status == "all"
+
+    def keep(agent: RemoteAgentSummary) -> bool:
+        if not archived and agent.status == "ARCHIVED":
+            return False
+        return (wanted_status == "all" or agent.status == "ACTIVE") and (by_name is None or by_name(agent))
+
+    return await scan_agents(
+        client,
+        cursor=cursor,
+        include_archived=archived,
+        pr_url=pr_url,
+        keep=keep,
+        wanted=limit or SUPERVISE_DEFAULT_AGENTS,
+        reserve_seconds=SUPERVISE_READ_RESERVE_SECONDS,
+        scoped=True,
+    )
+
+
 async def _agent(app: AppContext, agent_id: str) -> AgentView:
     client = _client(app)
     view = agent_view(await client.get_agent(agent_id))
@@ -898,6 +1034,7 @@ async def _tail(
     max_wait_seconds: float,
     tool_text_limit: int,
     include_shell_output: bool = False,
+    compact: bool = False,
 ) -> RunEventsView:
     replay = await walk_replay(
         _client(app),
@@ -908,6 +1045,7 @@ async def _tail(
         max_wait_seconds=max_wait_seconds,
         tool_text_limit=tool_text_limit,
         include_shell_output=include_shell_output,
+        compact=compact,
     )
     return tail_view(agent_id, run_id, replay)
 

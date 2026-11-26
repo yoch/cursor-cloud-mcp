@@ -57,10 +57,7 @@ async def mark_coordinators[R: AgentSummaryView](client: CursorCloudClient, rows
     """
     if not rows:
         return list(rows)
-    try:
-        coordinators = await client.project_coordinators()
-    except CursorFailure:
-        return list(rows)
+    coordinators = await coordinator_map(client)
     if not coordinators:
         return list(rows)
     return [
@@ -69,3 +66,11 @@ async def mark_coordinators[R: AgentSummaryView](client: CursorCloudClient, rows
         else row
         for row in rows
     ]
+
+
+async def coordinator_map(client: CursorCloudClient) -> dict[str, str]:
+    """Lower-cased agent ids of the caller's Project coordinators, each with its Project's id. Never an error."""
+    try:
+        return await client.project_coordinators()
+    except CursorFailure:
+        return {}

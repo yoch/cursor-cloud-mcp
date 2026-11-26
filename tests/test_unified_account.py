@@ -63,7 +63,11 @@ async def test_runs_without_recorded_usage_are_flagged_not_priced_at_zero() -> N
     finally:
         await client.__aexit__(None, None, None)
     assert view["runs"][0]["no_usage_recorded"] is True
+    # Unrecorded is unknown, not zero: the API's zeros are left out rather than shown.
+    assert "usage" not in view["runs"][0] and "cost" not in view["runs"][0]
     assert "no_usage_recorded" not in view["runs"][1]
+    assert view["runs"][1]["usage"]["total_tokens"] > 0
+    assert view["runs"][1]["cost"]["charged_cents"] == 0  # real usage covered by the plan: a true zero
     assert view["runs_without_usage"] == 1
     assert "1 of 2 run(s) report no usage" in view["warnings"][0]
 
@@ -585,3 +589,17 @@ async def test_agent_busy_recovery_names_the_steer_before_the_cancellation() -> 
     assert payload["code"] == "AGENT_BUSY"
     recovery = str(payload["recovery"])
     assert recovery.index("delivery=steer") < recovery.index("replace_active=true")
+
+
+async def test_an_agent_with_nothing_recorded_has_no_totals() -> None:
+    def responder(_request: httpx.Request) -> httpx.Response:
+        runs = [{"id": _RUN, "usage": _ZERO, "cost": _FREE}]
+        return httpx.Response(200, json={"totalUsage": _ZERO, "cost": _FREE, "runs": runs})
+
+    client, _router = await _session(Router(responder))
+    try:
+        view = _data(await client.call_tool("cursor_get_usage", {"agent_id": _AGENT}))
+    finally:
+        await client.__aexit__(None, None, None)
+    assert "total_usage" not in view and "total_cost" not in view
+    assert view["runs_without_usage"] == 1

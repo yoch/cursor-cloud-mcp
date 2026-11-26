@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/cursor-cloud-mcp)](https://pypi.org/project/cursor-cloud-mcp/)
 [![License: MIT](https://img.shields.io/pypi/l/cursor-cloud-mcp)](https://github.com/yoch/cursor-cloud-mcp/blob/main/LICENSE)
 
-Drive [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent) (formerly Background Agents) from any MCP client: Claude Code, Codex CLI or OpenCode. This local stdio MCP server exposes the Cursor Cloud Agents v1 REST API as twenty tools: create a Cloud agent, choose its model, send follow-up runs, supervise a fleet of agents, read results, usage and cost, then archive or delete. It is not an orchestration platform.
+Drive [Cursor Cloud Agents](https://cursor.com/docs/cloud-agent) (formerly Background Agents) from any MCP client: Claude Code, Codex CLI or OpenCode. This local stdio MCP server exposes the Cursor Cloud Agents v1 REST API as twenty-one tools: create a Cloud agent, choose its model, send follow-up runs, supervise a fleet of agents, read results, usage and cost, then archive or delete. It is not an orchestration platform.
 
 To have an agent install or use it, give it [`AGENT_GUIDE.md`](https://github.com/yoch/cursor-cloud-mcp/blob/main/AGENT_GUIDE.md): client setup, usage patterns, recovery and troubleshooting. Each tool's description, seen by every MCP client, is the reference for its parameters and fields.
 
@@ -19,8 +19,10 @@ uvx cursor-cloud-mcp
 To pin the version, or for a client with a short startup timeout, install it once and register the `cursor-cloud-mcp` command:
 
 ```bash
-uv tool install cursor-cloud-mcp    # or: pipx install cursor-cloud-mcp
+uv tool install cursor-cloud-mcp==<version>    # or: pipx install cursor-cloud-mcp==<version>
 ```
+
+Point real work at a published version, never at a development checkout (`uv run --directory <repo>`, an editable install): the server would run whatever that checkout holds at start time, another session's uncommitted changes included. `cursor_get_account` reports `server.version`, and `server.editable_install` with its `source` when the server runs from such a checkout. Upgrading is a deliberate step: `uv tool upgrade cursor-cloud-mcp` (or a new pinned install), then restart the client.
 
 Client fragments for Claude Code, Codex and OpenCode are in [`examples/`](https://github.com/yoch/cursor-cloud-mcp/blob/main/examples). **Set the client's tool timeout to at least 100 seconds**: no call takes more than 95, but a client that gives up earlier may abandon a creation that was already sent, and pay for a second one on retry.
 
@@ -53,6 +55,7 @@ The server reads the process environment only, never a `.env` file. No tool chan
 | `cursor_get_agent` | Agent metadata, url, latest run, recorded model. |
 | `cursor_create_agent` | **Paid.** Creates an agent and starts its first run; prompts may carry images. |
 | `cursor_create_run` | **Paid.** Follow-up run on the same agent; `delivery="steer"` adds to a run in progress, `replace_active` cancels it first. |
+| `cursor_create_runs` | **Paid.** The same follow-up to up to 50 agents in one call, `{worker}` filled in per agent; one result row each, nothing resent. |
 | `cursor_list_runs` | An agent's runs, newest first. |
 | `cursor_get_run` | State, final result, branches; waits up to 60 s; `activity` adds what the stream shows. |
 | `cursor_read_run_events` | Stream excerpt, resumable, or the last N events (`tail`); optionally the live output of shell commands. |

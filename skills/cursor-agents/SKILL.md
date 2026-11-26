@@ -5,7 +5,7 @@ description: Run and supervise Cursor Cloud agents through the cursor-cloud-mcp 
 
 # Cursor agents: compute fleets and coding agents
 
-Written against cursor-cloud-mcp 0.7.1. If a tool or parameter differs, trust the server's tool
+Written against cursor-cloud-mcp 0.8.0. If a tool or parameter differs, trust the server's tool
 descriptions. **(observed)** marks behavior seen in real fleets that the API does not promise.
 
 Read only what the task needs:
@@ -69,8 +69,11 @@ user's own machines instead. Coordinator and workers share git branches only.
 ## 3. API facts behind every decision
 
 - **Tools**: launch `cursor_create_agent`; follow up `cursor_create_run(agent_id, prompt,
-  replace_active)` (same agent, same conversation, usually same machine with its files (observed));
-  fleet view `cursor_supervise(name, status, activity, stale_after_minutes, limit, cursor)`; one run
+  replace_active)` (same agent, same conversation, usually same machine with its files (observed)),
+  or the whole fleet at once with `cursor_create_runs(targets=[{agent_id, worker}], prompt)`, where
+  `{worker}` in the prompt takes each target's value (one row per agent, nothing resent);
+  fleet view `cursor_supervise(agent_ids | name, status, activity, usage, stale_after_minutes, limit,
+  cursor, concurrency)`; one run
   `cursor_get_run(wait_seconds ≤ 60, activity)`, `cursor_read_run_events(tail=N)`,
   `cursor_list_runs`, `cursor_get_agent`, `cursor_list_agents(name)`; stop `cursor_cancel_run`,
   `cursor_archive_agent`; results `cursor_get_run` (final answer), `cursor_get_usage`.
@@ -86,19 +89,34 @@ user's own machines instead. Coordinator and workers share git branches only.
 - The API never returns the model. `model` in agent, run, supervise and usage views is what this
   server recorded locally when it sent it (`source: local_journal`, `inherited` for a run sent
   without one); absent means unknown, not the default.
-- An idle agent's VM may be released, and an agent left long enough may end up archived
-  (suspected, not measured): a follow-up must not assume the job's processes or files survived.
+- **A run that ended does not keep its VM.** The API exposes no machine state. Ten cloud agents
+  saw their VM paused about 10 to 15 minutes after their run ended, and the `nohup` jobs left
+  running stopped with no signal (reported November 2026, not measured); the files may survive a
+  pause, not a release. An agent left long enough may end up archived (suspected). So a long job
+  needs a run that waits for it (templates 1 to 3), and a follow-up must not assume that the
+  job's processes or files survived. `cursor_get_run(activity=true)` warns (`warnings`) when a
+  run ended while its background tasks were last seen running: read it that way once a worker's
+  run has ended (without `activity`, a `FINISHED` run with a result reads no stream and gets no
+  warning). `WAITING_FOR_BACKGROUND_WORK` (spec of November 2026, not observed) is a run still
+  active while such work goes on.
 - Old agents may not respond. Seen once (November 25, 2026): a follow-up to an agent idle for
   two weeks was accepted but sat 4 min in `RUNNING` with only heartbeats, while the same prompt
   on a fresh agent finished in 23 s. Not documented by Cursor. Prefer fresh agents for urgent
   work; when reusing an old one, wait about 10 min before cancelling, since a new VM may be
   starting and a cancel stops it (Cursor staff, on the forum, about a VM that ran out of memory).
 - The stream replays from its start only: `activity=true` and `tail` cost 30 to 60 s per run.
-- `cursor_supervise` defaults to `status="active"` (runs in progress only); loops that act on
-  ended runs need `status="all"`. `name` is a case-insensitive substring over at most five pages
-  of agents: give each fleet a tag unique on the account and zero-padded indices (`<tag>-w01`).
-- `git` in run views lists branch names and PR URL, no SHA, and can show an auto-generated
-  `cursor/...` branch even when the prompt named another (observed). Use `git ls-remote origin`.
+- `cursor_supervise(agent_ids=[...])` reads exactly those agents, with no scan of the account:
+  the fastest form for a known fleet, whatever the account's size. Otherwise it scans the agents
+  (the API filters by neither name nor run status), archived ones left out unless
+  `include_archived=true`. It defaults to `status="active"` (runs in progress only); loops that
+  act on ended runs need `status="all"`. `name` is a case-insensitive substring over at most five
+  pages of agents: give each fleet a tag unique on the account and zero-padded indices
+  (`<tag>-w01`). A scan cut short returns the rows found so far with `scan_stopped` and a
+  `next_cursor`. An agent's name is set at creation only: the API has no rename.
+- `git` in run views lists branch names and PR URL, no SHA, often only the repository URL (a
+  branch pushed by the job itself with `git push` is not listed), and can show an auto-generated
+  `cursor/...` branch even when the prompt named another (observed). Use `git ls-remote origin`,
+  and ask for `git rev-parse HEAD` in the final answer.
 - The artifact list is often empty: the result goes in the agent's final answer.
 - `cursor_read_conversation` gives an agent's whole text conversation (legacy endpoint): read it
   before a resume prompt when the runs' results are not enough. `injected` turns are Cursor's
@@ -127,17 +145,19 @@ a loop the user approved for paid calls.
 - **Refuse a double start** (pid file or lock) and **append to the log** (`>>`), so rerunning the
   start command is safe: `>` would empty the running job's log before the lock refuses.
 - **Stop by data**: a `stop` task on the control branch; workers exit after their current chunk.
-- **`nohup` job**, independent of the run: it survived cancels and `ERROR` ends (observed).
-- **Detached by default** (templates 6 and 7): the run starts the job, checks that one chunk was
-  pushed, then ends its turn. The coordinator watches pushes (section 7, no LLM cost) and sends
-  a short check run only when a branch stalls, the job should be done, or there is something to
-  say. A run that waits costs tokens all along (each check re-reads its context): 12 workers kept
-  waiting for 38 h cost hundreds of dollars for jobs that ran alone (observed). The check run
-  assumes nothing survived: if the process or the files are gone (VM released), it rebuilds from
-  git and restarts the job, which resumes from its last pushed chunk.
-- **Monitored in the run** (templates 1 to 3) only when the job needs care the coordinator cannot
-  give: no single wait longer than 30 min, a check every 15 min, rerun the start command if the
-  job died without a result.
+- **`nohup` job**, independent of the run: it survived cancels and `ERROR` ends (observed). A
+  later report (November 2026) saw such jobs stop once the VM was paused 10 to 15 min after their
+  run ended (next point); the two observations are not reconciled, so do not count on a job
+  outliving its run.
+- **Kept alive by its run** (templates 1 to 3): the run starts the job and stays in its turn while
+  the job works, since a VM was seen paused 10 to 15 min after its run ended, stopping the job
+  silently (section 3). Waiting costs tokens (each check re-reads the run's context): 12 workers
+  kept waiting for 38 h cost hundreds of dollars (observed). Keep the checks sparse: one wait of up
+  to 30 min between two, a check of the job and its pushes, rerun the start command if the job
+  died without a result.
+- **Detached** (templates 6 and 7) only for a job that ends within minutes of the end of the turn,
+  or a chunked one that may lose the time between two checks: the coordinator watches pushes
+  (section 7, no LLM cost) and each check run restarts the job from its last pushed chunk.
 - **A result marker** in the final answer (`RESULT job=<id> ...`) tells a finished job from a lost one.
 
 ## 6. Launch
@@ -178,14 +198,17 @@ Two signals: the **job produces** (pushes) and the **agent is alive** (stream). 
    SHA was first seen to change (git gives no push date) and exits 2 when a branch stalled or
    never appeared. Name every branch: a `<tag>/w*` prefix cannot see a worker that never pushed. From cron or a
    loop, start an LLM session only on exit 2: that is the wake-up of a detached fleet.
-2. `cursor_supervise(name="<tag>", status="all")`: latest run of every worker, a few seconds.
+2. `cursor_supervise(agent_ids=[...])` with the fleet's ids from the job files (no scan of the
+   account), or `cursor_supervise(name="<tag>", status="all")`: latest run of every worker, a few
+   seconds.
    A row without `status` is unread (`UNREAD`, after one retry) or has no run (`NO_RUN`): never
    relaunch on it, re-read that run with `cursor_get_run`.
 3. Same with `activity=true` (30 to 60 s): `idle_seconds`, `summary.stale`,
    `summary.unfinished_after_end`, background tasks. Rows in `summary.incomplete` are inconclusive.
 4. One worker: `cursor_get_run(activity=true)` and `cursor_read_run_events(tail=20)`; start there
    for any `ERROR` run. Add `include_shell_output=true` to see what a command still running has
-   printed so far (`shell_output` events, newest output kept, each stream within `tool_output_limit`).
+   printed so far (`shell_output` events, newest output kept, each stream within `tool_output_limit`),
+   and `compact=true` to get each tool call as its command, exit code, stdout and stderr only.
 
 Supervisor loop: terminal run with the result marker → next job; terminal without it → same job
 again (it resumes); no push for an hour since the latest of last push, assignment and relaunch →
@@ -197,6 +220,7 @@ relaunch the same shard; after N relaunches, give up on that job and log it.
 |---|---|
 | run ended, job not done | read `cursor_get_run(activity=true)` first, then `cursor_create_run(agent_id, prompt)` with template 3: only the new instruction, the agent keeps its conversation |
 | run ended, job done, more work queued | `cursor_create_run` with template 2 (new job on the same machine) |
+| the same instruction to many workers | `cursor_create_runs(targets=[{agent_id, worker}], prompt)` with `{worker}` in the prompt; read each row's `outcome`; for an `unknown` row follow its `recovery` (a follow-up: a newer run in `cursor_list_runs`; a steer creates no run: look for its prompt in the events or the conversation, never resend it) |
 | worker ended its turn (detached), something to say ("push your chunks", new task) | plain `cursor_create_run` with template 7 or the instruction: no cancel needed |
 | run busy or silent, job must survive | `cursor_create_run(..., replace_active=true)` with push-and-monitor (template 3): cancels, waits for terminal, then sends; nothing is sent if the run will not stop (`AGENT_BUSY`). Never a separate cancel then create, which races. |
 | job alive but hung (log and CPU time frozen) | report the evidence to the user; kill and restart only on their go-ahead |
@@ -223,6 +247,7 @@ GitHub (head, diff, checks) yourself; send fixes with `cursor_create_run` on the
 
 ## Open questions
 
-Maximum concurrent agents, maximum run length, idle VM lifetime, quota and reset: not exposed by
-the API, not measured. A safe way to change the worker script mid-fleet (likely a versioned task
+Maximum concurrent agents, maximum run length, quota and reset: not exposed by the API, not
+measured. Idle VM lifetime: a pause about 10 to 15 min after a run ended was reported once
+(November 2026), not measured; whether `WAITING_FOR_BACKGROUND_WORK` keeps the VM is unknown. A safe way to change the worker script mid-fleet (likely a versioned task
 on the control branch).
