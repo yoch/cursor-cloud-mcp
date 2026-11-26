@@ -31,7 +31,13 @@ from importlib.metadata import version
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-WRITE_TOOLS = {"cursor_create_agent", "cursor_create_run", "cursor_cancel_run", "cursor_archive_agent"}
+WRITE_TOOLS = {
+    "cursor_create_agent",
+    "cursor_create_run",
+    "cursor_create_runs",
+    "cursor_cancel_run",
+    "cursor_archive_agent",
+}
 # The server bounds every call at 95 s; leave room for the transport.
 CALL_TIMEOUT_SECONDS = 110.0
 # mcp 1.x takes a timedelta for read_timeout_seconds, 2.x a float.

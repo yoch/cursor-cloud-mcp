@@ -1,7 +1,10 @@
 """Projection of Cursor payloads onto MCP views. Unknown fields are ignored."""
 
+import importlib.metadata
 import json
 import logging
+import urllib.parse
+import urllib.request
 from typing import Literal
 
 from cursor_cloud_mcp import __version__
@@ -54,6 +57,7 @@ from cursor_cloud_mcp.models import (
     RemoteRun,
     RemoteRunPage,
     RemoteSteer,
+    RemoteTokenUsage,
     RemoteUsage,
     RepositoryListView,
     RepoView,
@@ -62,6 +66,7 @@ from cursor_cloud_mcp.models import (
     RunUsageView,
     RunView,
     ServerStatusView,
+    TokenUsageView,
     UsageView,
     agent_status_known,
     cursor_of,
@@ -138,7 +143,31 @@ def server_status(settings: Settings) -> ServerStatusView:
         journal_dir=settings.state_dir,
         journal="on" if settings.state_dir is not None else "off",
         forward_env=sorted(settings.forward_env) or None,
+        **_install_origin(),
     )
+
+
+def _install_origin() -> dict[str, object]:
+    """editable_install and source when the package is an editable install (PEP 610 direct_url.json), else nothing."""
+    try:
+        raw = importlib.metadata.distribution("cursor-cloud-mcp").read_text("direct_url.json")
+        origin = json.loads(raw) if raw else None
+    except (importlib.metadata.PackageNotFoundError, OSError, ValueError):
+        return {}
+    if not isinstance(origin, dict):
+        return {}
+    info = origin.get("dir_info")
+    if not (isinstance(info, dict) and info.get("editable") is True):
+        return {}
+    url = origin.get("url")
+    source = None
+    if isinstance(url, str) and url.startswith("file://"):
+        # A file URI: percent-decoded ("My%20Project" is "My Project"); a malformed one is shown as written.
+        try:
+            source = urllib.request.url2pathname(urllib.parse.urlsplit(url).path)
+        except ValueError:
+            source = url
+    return {"editable_install": True, "source": source}
 
 
 def model_list_view(
@@ -515,14 +544,18 @@ def cancel_view(
 
 
 def usage_view(remote: RemoteUsage) -> UsageView:
+    """Tokens and cost as returned, except that zeros the API sends for usage it did not record are left out.
+
+    Unrecorded is decided on tokens, never on the charged cost: a run covered by the plan is charged zero with
+    real usage. An unrecorded run has no usage field (unknown, not zero), and no cost unless something was charged.
+    """
     runs = [
         RunUsageView(
             run_id=item.id,
             usage_uuid=item.usageUuid,
-            usage=tokens_from(item.usage),
-            cost=_cost(item.cost),
+            usage=_recorded_tokens(item.usage),
+            cost=_recorded_cost(item.cost, item.usage.totalTokens),
             charged_cents_per_million_tokens=_rate(item.cost, item.usage.totalTokens),
-            # On tokens, never on the charged cost: a run covered by the plan is charged zero with real usage.
             no_usage_recorded=item.usage.totalTokens == 0 or None,
         )
         for item in remote.runs
@@ -538,13 +571,25 @@ def usage_view(remote: RemoteUsage) -> UsageView:
             )
         ]
     return UsageView(
-        total_usage=tokens_from(remote.totalUsage),
-        total_cost=_cost(remote.cost),
+        total_usage=_recorded_tokens(remote.totalUsage),
+        total_cost=_recorded_cost(remote.cost, remote.totalUsage.totalTokens),
         charged_cents_per_million_tokens=_rate(remote.cost, remote.totalUsage.totalTokens),
         runs=runs,
         runs_without_usage=silent or None,
         warnings=warnings,
     )
+
+
+def _recorded_tokens(usage: RemoteTokenUsage) -> TokenUsageView | None:
+    """Absent when every count is zero: the API's zeros then mean "not recorded", never "free"."""
+    return tokens_from(usage) if usage.totalTokens > 0 else None
+
+
+def _recorded_cost(cost: RemoteCost | None, tokens: int) -> CostView | None:
+    """With no recorded tokens, a zero charge is the same unknown as the tokens: only a real charge is kept."""
+    if cost is None or (tokens == 0 and cost.chargedCents == 0 and cost.rawCostCents == 0):
+        return None
+    return _cost(cost)
 
 
 def _rate(cost: RemoteCost | None, tokens: int) -> float | None:

@@ -138,6 +138,7 @@ async def test_listing_tools_does_not_call_cursor() -> None:
         "cursor_get_agent",
         "cursor_create_agent",
         "cursor_create_run",
+        "cursor_create_runs",
         "cursor_list_runs",
         "cursor_get_run",
         "cursor_read_run_events",

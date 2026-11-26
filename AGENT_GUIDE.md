@@ -2,7 +2,18 @@
 
 Instructions for an agent that must install or use this MCP server. Read this file in full before acting. The details of the API contract are in `docs/api-contract.md`.
 
-This server is local, over stdio. It exposes twenty tools for the Cursor Cloud Agents v1 REST API. It is used to create a Cloud session, choose the model and the reasoning level, send a command, read the result, then archive or delete the session. It is not an orchestration platform. The package is published on PyPI as `cursor-cloud-mcp`.
+This server is local, over stdio. It exposes twenty-one tools for the Cursor Cloud Agents v1 REST API. It is used to create a Cloud session, choose the model and the reasoning level, send a command, read the result, then archive or delete the session. It is not an orchestration platform. The package is published on PyPI as `cursor-cloud-mcp`.
+
+## 0.8.0
+
+- New tool `cursor_create_runs` (paid, writes required): the same follow-up to up to 50 agents, `{worker}` in the prompt replaced by each target's `worker`. Refused as a whole before any send when it cannot serve every target the same way (an agent listed twice, a missing `worker`, a model the catalog rejects, a steer with other fields). One row per agent: `sent`, `not_sent` (`error_code`, `error`) or `unknown` (`MUTATION_OUTCOME_UNKNOWN`: follow the row's `recovery`; for a steer, which creates no run, look for its prompt in the events or the conversation and never resend it). Nothing is resent. A mutation answered `5xx` is now `MUTATION_OUTCOME_UNKNOWN` whatever its remote code (before, a `5xx` carrying `rate_limit_exceeded` read as `QUOTA`, as if nothing had happened).
+- `cursor_get_usage`: a run for which the API recorded no tokens no longer shows its zeros: `usage` is absent (and `cost`, unless something was charged), `no_usage_recorded` stays; `total_usage` and `total_cost` are absent likewise when nothing at all was recorded. Absent means unknown, never free.
+- `cursor_supervise` holds a large account: `agent_ids` (up to 100) reads exactly those agents, with no scan of the account; otherwise archived agents are left out upstream unless `include_archived=true` (before, `status="all"` read them by default). Each agent goes through its own pipeline (status, then usage and stream replay side by side), the Projects read behind `coordinator_of_project` runs meanwhile instead of before, a scan keeps 15 s for the run reads, and a page that fails after others were read returns the rows found so far with `scan_stopped` (`max_pages`, `budget`, `read_error` with `scan_error`) and a `next_cursor` on the unread page. `concurrency` (default 8, up to 16) bounds the parallel reads. Before, a slow scan could leave every row with `TIMEOUT: Tool budget exhausted before sending`, or fail the whole call.
+- `cursor_get_run` carries `warnings` when a run ended while background tasks it started were last seen running: the API gives no machine state, and a VM was seen paused about 10 to 15 minutes after its run ended, stopping such jobs silently (reported November 2026, not measured). Long jobs need a run that waits for them; the skill's detached templates say so.
+- `cursor_read_run_events(compact=true)`: a tool call's `tool_args` is the command alone when it has one, and `tool_result` the outcome, exit code, stdout and stderr when it carries them, without Cursor's internal fields; any other shape is unchanged. The result field names come from Cursor's tool-call payloads and were not recorded on a live stream here.
+- `cursor_get_account` reports `server.editable_install` and `server.source` when the server runs from a development checkout.
+- Measured live on November 26, 2026 (read-only, an account of 251 agents, a fleet of 10): `cursor_supervise(agent_ids=...)` 2.7 s, 3.5 s with `usage`, 37 s with `activity`; by `name` with `status="all"` 14 to 18 s (172 agents scanned instead of 251: the API honours `includeArchived=false`; pages of 100 take several seconds each).
+- Documented limits: the API has no rename (an agent's name is set at creation), and a run's `git` carries no commit SHA, often only the repository URL.
 
 ## 0.7.1
 
@@ -276,6 +287,7 @@ What the API does not tell you, measured on October 6, 2026. These are API limit
 What to use instead:
 
 ```text
+cursor_supervise(agent_ids=[...])               a known fleet, no scan of the account (the fastest)
 cursor_supervise(name="runner")                 every runner, latest run, one call (a few seconds)
 cursor_supervise(name="runner", activity=true)  + last_event_at, idle_seconds, background tasks (about 30-60 s)
 cursor_get_run(agent_id, run_id, activity=true) detail of one run: last text, last tool call, background tasks

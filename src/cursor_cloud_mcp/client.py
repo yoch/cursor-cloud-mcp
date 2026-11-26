@@ -1034,6 +1034,10 @@ def _rate_limit_headers(headers: httpx.Headers) -> dict[str, object]:
 
 
 def _classify(status: int, remote_code: str | None, *, mutation: bool) -> ErrorCode:
+    if status >= 500 and mutation:
+        # First, whatever the remote code: a 5xx may come from a layer after the one that accepted the request,
+        # so a mutation answered 5xx may have happened. The remote code stays in the error for diagnosis.
+        return ErrorCode.MUTATION_OUTCOME_UNKNOWN
     if remote_code == "agent_busy":
         return ErrorCode.AGENT_BUSY
     if remote_code == "run_not_cancellable":

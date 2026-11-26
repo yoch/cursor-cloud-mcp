@@ -248,6 +248,8 @@ async def test_environments_list_pools_best_effort_and_detail_with_build() -> No
 
 async def test_account_reports_the_server_settings_without_secret_values(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FWD_TOKEN", "forwarded-secret-value")
+    # The test checkout itself is an editable install: that marker has its own test.
+    monkeypatch.setattr("cursor_cloud_mcp.present._install_origin", dict)
 
     def responder(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"apiKeyName": "ci", "createdAt": "2026-10-01T00:00:00.000Z"})
@@ -394,3 +396,35 @@ async def test_an_incomplete_environment_row_does_not_hide_the_page() -> None:
         await client.__aexit__(None, None, None)
     assert view["items"][0] == {"environment_id": _ENV}
     assert view["items"][1]["name"] == "Other" and view["pools"] == []
+
+
+class _Distribution:
+    def __init__(self, direct_url: str | None) -> None:
+        self.direct_url = direct_url
+
+    def read_text(self, name: str) -> str | None:
+        assert name == "direct_url.json"
+        return self.direct_url
+
+
+@pytest.mark.parametrize(
+    ("direct_url", "expected"),
+    [
+        ('{"url": "file:///work/cursor-cloud-mcp", "dir_info": {"editable": true}}',
+         {"editable_install": True, "source": "/work/cursor-cloud-mcp"}),
+        ('{"url": "file:///work/My%20Project", "dir_info": {"editable": true}}',
+         {"editable_install": True, "source": "/work/My Project"}),
+        ('{"url": "file:///work/cursor-cloud-mcp", "dir_info": {}}', {}),  # a local, non-editable build
+        ('{"url": "file://[broken", "dir_info": {"editable": true}}',
+         {"editable_install": True, "source": "file://[broken"}),  # shown as written, never an error
+        (None, {}),  # installed from PyPI: no direct_url.json
+        ("not json", {}),
+    ],
+)
+def test_an_editable_install_is_reported(
+    monkeypatch: pytest.MonkeyPatch, direct_url: str | None, expected: dict[str, object]
+) -> None:
+    from cursor_cloud_mcp import present
+
+    monkeypatch.setattr(present.importlib.metadata, "distribution", lambda _name: _Distribution(direct_url))
+    assert present._install_origin() == expected

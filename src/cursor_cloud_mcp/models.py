@@ -375,6 +375,15 @@ class RemoteArtifactDownload(BaseModel):
     expiresAt: str
 
 
+class RunTargetInput(BaseModel):
+    """One agent of cursor_create_runs, with the value that replaces ``{worker}`` in its prompt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    worker: str | None = Field(default=None, min_length=1, max_length=100)
+
+
 class RepositoryInput(BaseModel):
     """Repository requested at creation. ``starting_ref`` is a branch name or a full commit SHA."""
 
@@ -403,6 +412,10 @@ class ServerStatusView(BaseModel):
     journal: Literal["on", "off"]
     # Names only: their values are never read here.
     forward_env: list[str] | None = None
+    # Present when this server runs from an editable install: the code is whatever that checkout holds now,
+    # uncommitted changes included, not the published version. source is the checkout's path.
+    editable_install: bool | None = None
+    source: str | None = None
 
 
 class AccountView(BaseModel):
@@ -603,6 +616,11 @@ class AgentPageView(BaseModel):
     next_cursor: str | None = None
     has_more: bool
     scanned: int | None = None
+    # Why a scan ended before both the end of the list and the wanted matches: max_pages, budget (time kept
+    # for the reads that follow) or read_error (a page failed after others were read; scan_error says how).
+    # next_cursor resumes on the first unread agent.
+    scan_stopped: Literal["max_pages", "budget", "read_error"] | None = None
+    scan_error: str | None = None
 
 
 class ProjectView(BaseModel):
@@ -769,6 +787,7 @@ class RunView(RunSummaryView):
     activity: ActivityView | None = None
     activity_error: str | None = None
     model: ModelSelectionView | None = None
+    warnings: list[str] | None = None
 
 
 class SupervisedAgentView(BaseModel):
@@ -778,7 +797,8 @@ class SupervisedAgentView(BaseModel):
 
     agent_id: str
     name: str | None = None
-    url: str
+    # Absent only on a row of agent_ids whose agent could not be read (agent_status UNREAD, read_error).
+    url: str | None = None
     agent_status: str
     coordinator_of_project: str | None = None
     run_id: str | None = None
@@ -823,6 +843,8 @@ class SuperviseView(BaseModel):
     scanned: int | None = None
     has_more: bool
     next_cursor: str | None = None
+    scan_stopped: Literal["max_pages", "budget", "read_error"] | None = None
+    scan_error: str | None = None
 
 
 class CreateAgentView(BaseModel):
@@ -856,6 +878,45 @@ class CreateRunView(BaseModel):
     model: ModelSelectionView | None = None
     replaced_run_id: str | None = None
     warnings: list[str] | None = None
+    next_step: str
+
+
+class CreateRunsRowView(BaseModel):
+    """What happened for one agent of cursor_create_runs. Nothing is ever resent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    worker: str | None = None
+    # sent: the API took it. not_sent: refused before or by the API, no run started. unknown: the request may have
+    # gone through (MUTATION_OUTCOME_UNKNOWN): re-read the agent before anything else.
+    outcome: Literal["sent", "not_sent", "unknown"]
+    run_id: str | None = None
+    status: str | None = None
+    delivery: Literal["steered", "queued"] | None = None
+    replaced_run_id: str | None = None
+    url: str | None = None
+    model: ModelSelectionView | None = None
+    warnings: list[str] | None = None
+    error_code: str | None = None
+    error: str | None = None
+    recovery: str | None = None
+    previous_latest_run_id: str | None = None
+
+
+class CreateRunsSummaryView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    sent: int
+    not_sent: int
+    unknown: int
+
+
+class CreateRunsView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[CreateRunsRowView]
+    summary: CreateRunsSummaryView
     next_step: str
 
 
@@ -897,7 +958,8 @@ class RunUsageView(BaseModel):
 
     run_id: str
     usage_uuid: str | None = None
-    usage: TokenUsageView
+    # Absent when the API recorded nothing for the run (no_usage_recorded): unknown, not zero.
+    usage: TokenUsageView | None = None
     cost: CostView | None = None
     # Ratio of the two returned numbers, not a price list: charged_cents / total_tokens * 1e6.
     charged_cents_per_million_tokens: float | None = None
@@ -911,7 +973,8 @@ class UsageView(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    total_usage: TokenUsageView
+    # Absent when no token was recorded for the agent: unknown, not zero. Otherwise the recorded runs only.
+    total_usage: TokenUsageView | None = None
     total_cost: CostView | None = None
     charged_cents_per_million_tokens: float | None = None
     runs: list[RunUsageView]

@@ -54,6 +54,18 @@ AGENT_SCAN_MAX_PAGES = 5
 AGENT_SCAN_DEFAULT_MATCHES = 20
 AGENT_SCAN_MIN_SECONDS = 8.0
 SUPERVISE_DEFAULT_AGENTS = 50
+# A supervision scan stops reading agent pages when less than this is left: the run reads come next,
+# and a scan that eats the whole budget leaves every row unread ("budget exhausted before sending").
+SUPERVISE_READ_RESERVE_SECONDS = 15.0
+# One run (or agent) read in a supervision pass: a stuck read must not hold its slot for the whole budget.
+SUPERVISE_STATUS_READ_SECONDS = 15.0
+# cursor_supervise(agent_ids=...): the fleet named directly, no scan of the account.
+SUPERVISE_MAX_AGENT_IDS = 100
+SUPERVISE_DEFAULT_CONCURRENCY = 8
+# cursor_create_runs: at most this many agents per call, this many sends at once (each re-reads its agent first).
+CREATE_RUNS_MAX_TARGETS = 50
+CREATE_RUNS_CONCURRENCY = 8
+SUPERVISE_MAX_CONCURRENCY = 16
 # Two waves of stream replays (8 in parallel, about 35 s each when idle) fit, under the
 # 100 s client timeout of the examples.
 SUPERVISE_ACTIVITY_BUDGET_SECONDS = 90.0

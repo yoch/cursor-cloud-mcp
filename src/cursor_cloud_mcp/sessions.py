@@ -18,6 +18,7 @@ from cursor_cloud_mcp.client import CursorCloudClient
 from cursor_cloud_mcp.config import (
     CANCEL_REREAD_PAUSE_SECONDS,
     CANCEL_REREADS,
+    CREATE_RUNS_CONCURRENCY,
     ENV_MAX_COUNT,
     ENVIRONMENT_NAME_MAX_CHARS,
     REPO_MAX_COUNT,
@@ -29,6 +30,9 @@ from cursor_cloud_mcp.journal import ModelJournal
 from cursor_cloud_mcp.models import (
     ArchiveView,
     CreateAgentView,
+    CreateRunsRowView,
+    CreateRunsSummaryView,
+    CreateRunsView,
     CreateRunView,
     DeleteView,
     ImageInput,
@@ -36,6 +40,7 @@ from cursor_cloud_mcp.models import (
     ModelSelectionView,
     RemoteCreateRun,
     RepositoryInput,
+    RunTargetInput,
     agent_status_known,
     run_terminal,
 )
@@ -266,6 +271,126 @@ async def perform_followup(
     if replaced is not None:
         updates["replaced_run_id"] = replaced
     return view.model_copy(update=updates)
+
+
+WORKER_PLACEHOLDER = "{worker}"
+
+
+async def perform_followups(
+    client: CursorCloudClient,
+    *,
+    targets: list[RunTargetInput],
+    prompt: str,
+    mode: str | None,
+    model_id: str | None,
+    model_params: list[ModelParam] | None,
+    reasoning_level: str | None,
+    replace_active: bool,
+    delivery: Literal["steer"] | None,
+    journal: ModelJournal | None,
+    settings: Settings,
+    concurrency: int = CREATE_RUNS_CONCURRENCY,
+) -> CreateRunsView:
+    """One follow-up per target, ``{worker}`` filled in. Everything shared is checked before the first send.
+
+    A send that fails is reported on its row and never retried, here or by the client: a resend could start
+    a second paid run, and a steer sent twice is a second prompt.
+    """
+    prompts = _target_prompts(targets, prompt)
+    if delivery is not None:
+        _require_bare_steer(
+            mode=require_mode(mode),
+            model=model_id is not None or bool(model_params) or reasoning_level is not None,
+            replace_active=replace_active,
+            env=False,
+        )
+    elif model_id is not None or model_params or reasoning_level is not None:
+        # A rejected model is refused once, before anything is sent or cancelled.
+        await _model_choice(
+            client, model_id=model_id, model_params=model_params, reasoning_level=reasoning_level, source="request"
+        )
+    gate = asyncio.Semaphore(concurrency)
+
+    async def send(target: RunTargetInput, text: str) -> CreateRunsRowView:
+        row = CreateRunsRowView(agent_id=target.agent_id, worker=target.worker, outcome="not_sent")
+        async with gate:
+            try:
+                view = await perform_followup(
+                    client,
+                    agent_id=target.agent_id,
+                    prompt=text,
+                    mode=mode,
+                    model_id=model_id,
+                    model_params=model_params,
+                    reasoning_level=reasoning_level,
+                    replace_active=replace_active,
+                    journal=journal,
+                    delivery=delivery,
+                    settings=settings,
+                )
+            except CursorFailure as exc:
+                body = exc.body
+                unknown = body.code is ErrorCode.MUTATION_OUTCOME_UNKNOWN
+                return row.model_copy(
+                    update={
+                        "outcome": "unknown" if unknown else "not_sent",
+                        "error_code": body.code.value,
+                        "error": redaction.redact(body.message),
+                        "recovery": redaction.redact(body.recovery) if body.recovery else None,
+                        "run_id": body.run_id,
+                        "previous_latest_run_id": body.previous_latest_run_id,
+                    }
+                )
+        return row.model_copy(
+            update={
+                "outcome": "sent",
+                "run_id": view.run_id,
+                "status": view.status,
+                "delivery": view.delivery,
+                "replaced_run_id": view.replaced_run_id,
+                "url": view.url,
+                "model": view.model,
+                "warnings": view.warnings,
+            }
+        )
+
+    rows = list(await asyncio.gather(*(send(target, text) for target, text in zip(targets, prompts, strict=True))))
+    counts = {outcome: sum(1 for row in rows if row.outcome == outcome) for outcome in ("sent", "not_sent", "unknown")}
+    return CreateRunsView(
+        items=rows,
+        summary=CreateRunsSummaryView(**counts),
+        next_step=(
+            "Nothing is resent. unknown: follow the row's recovery before anything else; for a follow-up, a newer "
+            "run in cursor_list_runs(agent_id) may be it (check its created_at and prompt, another caller could have sent it); a steer creates no run, so look for its "
+            "prompt in cursor_read_run_events(tail) or cursor_read_conversation, and never send it again. "
+            "not_sent: fix the cause, then send to those agents only. "
+            "Follow the sent runs with cursor_supervise(agent_ids=[...])."
+        ),
+    )
+
+
+def _target_prompts(targets: list[RunTargetInput], prompt: str) -> list[str]:
+    """Each target's prompt, refused as a whole if one target cannot be served the same way as the others."""
+    seen: set[str] = set()
+    for target in targets:
+        require_agent_id(target.agent_id, label="targets[].agent_id")
+        if target.agent_id.casefold() in seen:
+            raise failure(
+                ErrorCode.VALIDATION,
+                f"{target.agent_id} is listed twice: one call sends one prompt per agent.",
+                agent_id=target.agent_id,
+            )
+        seen.add(target.agent_id.casefold())
+    templated = WORKER_PLACEHOLDER in prompt
+    named = [target for target in targets if target.worker is not None]
+    if templated and len(named) != len(targets):
+        raise failure(ErrorCode.VALIDATION, "The prompt uses {worker}: every target needs its worker value.")
+    if named and not templated:
+        raise failure(
+            ErrorCode.VALIDATION,
+            "worker values were given but the prompt has no {worker}: each agent would get the same text.",
+        )
+    return [require_prompt(prompt.replace(WORKER_PLACEHOLDER, target.worker or "")) for target in targets]
 
 
 def _require_bare_steer(*, mode: str | None, model: bool, replace_active: bool, env: bool) -> None:
